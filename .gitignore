@@ -11,10 +11,15 @@
 # testing
 /coverage
 
-# next.js
+# build outputs
+**/dist/
 /.next/
 /.vinext/
 /out/
+/.codex-build/
+/.tools/
+/bin/codex.exe
+/bin/codex
 
 # misc
 .DS_Store
@@ -28,11 +33,13 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
 
-# deployment and generated files
-.vercel
+# local Kodex state (never contains OPENAI_API_KEY)
+/.kodex-data/
+
+# generated files
 next-env.d.ts
-/dist/
-/.wrangler/
+*.tsbuildinfo
 /outputs/
 /work/

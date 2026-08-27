@@ -1,0 +1,15 @@
+{
+  "name": "@kodex/codex-protocol",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts" },
+    "./generated/*": { "types": "./dist/generated/*" }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty"
+  }
+}

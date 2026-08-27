@@ -1,0 +1,13 @@
+# Third-party software
+
+## OpenAI Codex
+
+- Upstream: https://github.com/openai/codex
+- Pinned commit: `f1433fc71f2062ae3c007a03d7ff549bc582d386`
+- Local source: `vendor/openai-codex/`
+- License: Apache License 2.0
+
+The upstream `LICENSE` and `NOTICE` files are preserved verbatim at
+`vendor/openai-codex/LICENSE` and `vendor/openai-codex/NOTICE`. Kodex does not
+rename or fork Codex internals; the product name “Kodex” applies only to this
+local host and UI.

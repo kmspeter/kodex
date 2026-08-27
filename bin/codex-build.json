@@ -1,0 +1,7 @@
+﻿{
+    "upstream":  "https://github.com/openai/codex",
+    "commit":  "f1433fc71f2062ae3c007a03d7ff549bc582d386",
+    "version":  "codex-cli 0.0.0",
+    "builtAt":  "2026-08-27T07:52:39.7330278Z",
+    "source":  "vendor/openai-codex"
+}
