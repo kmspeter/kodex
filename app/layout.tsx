@@ -14,17 +14,17 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL('http://localhost:3000'),
-  title: 'Desktop Agent UI',
-  description: 'A focused desktop coding-agent interface prototype.',
+  title: 'Kodex',
+  description: 'Kodex desktop workspace for coding tasks, reviews, and automations.',
   openGraph: {
-    title: 'Desktop Agent UI',
-    description: 'A focused coding workspace',
+    title: 'Kodex',
+    description: 'A focused desktop workspace for coding with agents.',
     images: [{ url: '/og.png', width: 1731, height: 909 }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Desktop Agent UI',
-    description: 'A focused coding workspace',
+    title: 'Kodex',
+    description: 'A focused desktop workspace for coding with agents.',
     images: ['/og.png'],
   },
 };
@@ -35,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="ko">
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         {children}
       </body>
