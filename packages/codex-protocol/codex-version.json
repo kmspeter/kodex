@@ -1,5 +1,6 @@
 {
-  "codexVersion": "codex-cli 0.0.0",
+  "sourceIdentity": "Codex source build f1433fc71f20",
+  "cliReportedVersion": "codex-cli 0.0.0",
   "codexCommit": "f1433fc71f2062ae3c007a03d7ff549bc582d386",
   "generatedAt": "2026-08-27T07:53:08.084Z",
   "generatedWith": "bin/codex"

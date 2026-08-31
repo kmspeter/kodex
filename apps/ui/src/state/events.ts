@@ -1,21 +1,28 @@
-import type { ServerNotification, ServerRequest, Thread, ThreadItem, Turn } from '@kodex/codex-protocol';
+import type { ServerNotification, Thread, ThreadItem, ThreadTokenUsage, Turn, TurnPlanStep } from '@kodex/codex-protocol';
+import type { PendingServerRequest } from '@kodex/kodex-api';
+
+export interface ProcessState {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
 
 export interface EventState {
   threads: Thread[];
   activeThread: Thread | null;
   activeTurnId: string | null;
   liveText: Record<string, string>;
-  pendingRequests: ServerRequest[];
+  pendingRequests: PendingServerRequest[];
   notices: string[];
+  turnDiff: string;
+  tokenUsage: ThreadTokenUsage | null;
+  turnPlan: { explanation: string | null; plan: TurnPlanStep[] } | null;
+  processes: Record<string, ProcessState>;
 }
 
 export const initialEventState: EventState = {
-  threads: [],
-  activeThread: null,
-  activeTurnId: null,
-  liveText: {},
-  pendingRequests: [],
-  notices: [],
+  threads: [], activeThread: null, activeTurnId: null, liveText: {}, pendingRequests: [], notices: [],
+  turnDiff: '', tokenUsage: null, turnPlan: null, processes: {},
 };
 
 function upsertItem(thread: Thread, turnId: string, item: ThreadItem): Thread {
@@ -28,34 +35,56 @@ function upsertItem(thread: Thread, turnId: string, item: ThreadItem): Thread {
   return { ...thread, turns };
 }
 
+function appendLive(state: EventState, itemId: string, delta: string): EventState {
+  return { ...state, liveText: { ...state.liveText, [itemId]: `${state.liveText[itemId] ?? ''}${delta}` } };
+}
+
+function decodeBase64(value: string): string {
+  try {
+    const binary = globalThis.atob(value);
+    const bytes = Uint8Array.from(binary, (character) => character.codePointAt(0) ?? 0);
+    return new TextDecoder().decode(bytes);
+  } catch { return '[invalid base64 output]'; }
+}
+
 export type EventAction =
   | { type: 'threads-loaded'; threads: Thread[] }
   | { type: 'thread-selected'; thread: Thread | null }
   | { type: 'turn-accepted'; threadId: string; turn: Turn }
-  | { type: 'server-request'; request: ServerRequest }
+  | { type: 'server-request'; request: PendingServerRequest }
   | { type: 'server-request-resolved'; id: string | number }
+  | { type: 'resync-started' }
   | { type: 'notification'; notification: ServerNotification };
 
 export function eventReducer(state: EventState, action: EventAction): EventState {
   if (action.type === 'threads-loaded') return { ...state, threads: action.threads };
-  if (action.type === 'thread-selected') return { ...state, activeThread: action.thread, activeTurnId: null, liveText: {} };
+  if (action.type === 'thread-selected') return { ...state, activeThread: action.thread, activeTurnId: null, liveText: {}, turnDiff: '', tokenUsage: null, turnPlan: null };
+  if (action.type === 'resync-started') return { ...state, activeTurnId: null, liveText: {}, pendingRequests: [], processes: {} };
   if (action.type === 'turn-accepted') {
     if (!state.activeThread || state.activeThread.id !== action.threadId) return state;
     const turns = [...state.activeThread.turns.filter((turn) => turn.id !== action.turn.id), action.turn];
     return { ...state, activeThread: { ...state.activeThread, turns }, activeTurnId: action.turn.id };
   }
   if (action.type === 'server-request') {
-    return { ...state, pendingRequests: [...state.pendingRequests.filter((entry) => String(entry.id) !== String(action.request.id)), action.request] };
+    return { ...state, pendingRequests: [...state.pendingRequests.filter((entry) => String(entry.request.id) !== String(action.request.request.id)), action.request] };
   }
   if (action.type === 'server-request-resolved') {
-    return { ...state, pendingRequests: state.pendingRequests.filter((entry) => String(entry.id) !== String(action.id)) };
+    return { ...state, pendingRequests: state.pendingRequests.filter((entry) => String(entry.request.id) !== String(action.id)) };
   }
 
   const notification = action.notification;
   switch (notification.method) {
     case 'thread/started': {
-      const params = notification.params;
-      return { ...state, threads: [params.thread, ...state.threads.filter((thread) => thread.id !== params.thread.id)] };
+      const { thread } = notification.params;
+      return { ...state, threads: [thread, ...state.threads.filter((entry) => entry.id !== thread.id)] };
+    }
+    case 'thread/status/changed': {
+      const { threadId, status } = notification.params;
+      return {
+        ...state,
+        threads: state.threads.map((thread) => thread.id === threadId ? { ...thread, status } : thread),
+        activeThread: state.activeThread?.id === threadId ? { ...state.activeThread, status } : state.activeThread,
+      };
     }
     case 'thread/name/updated': {
       const params = notification.params;
@@ -66,26 +95,18 @@ export function eventReducer(state: EventState, action: EventAction): EventState
       };
     }
     case 'thread/archived': {
-      const params = notification.params;
-      return { ...state, threads: state.threads.filter((thread) => thread.id !== params.threadId), activeThread: state.activeThread?.id === params.threadId ? null : state.activeThread };
+      const { threadId } = notification.params;
+      return { ...state, threads: state.threads.filter((thread) => thread.id !== threadId), activeThread: state.activeThread?.id === threadId ? null : state.activeThread };
     }
     case 'turn/started': {
       const params = notification.params;
       if (params.threadId !== state.activeThread?.id || !state.activeThread) return state;
-      return {
-        ...state,
-        activeTurnId: params.turn.id,
-        activeThread: { ...state.activeThread, turns: [...state.activeThread.turns.filter((turn) => turn.id !== params.turn.id), params.turn] },
-      };
+      return { ...state, activeTurnId: params.turn.id, activeThread: { ...state.activeThread, turns: [...state.activeThread.turns.filter((turn) => turn.id !== params.turn.id), params.turn] } };
     }
     case 'turn/completed': {
       const params = notification.params;
       if (params.threadId !== state.activeThread?.id || !state.activeThread) return state;
-      return {
-        ...state,
-        activeTurnId: null,
-        activeThread: { ...state.activeThread, turns: state.activeThread.turns.map((turn) => turn.id === params.turn.id ? params.turn : turn) },
-      };
+      return { ...state, activeTurnId: null, activeThread: { ...state.activeThread, turns: state.activeThread.turns.map((turn) => turn.id === params.turn.id ? params.turn : turn) } };
     }
     case 'item/started':
     case 'item/completed': {
@@ -95,16 +116,58 @@ export function eventReducer(state: EventState, action: EventAction): EventState
       const liveText = notification.method === 'item/completed' ? Object.fromEntries(Object.entries(state.liveText).filter(([id]) => id !== params.item.id)) : state.liveText;
       return { ...state, activeThread, liveText };
     }
-    case 'item/agentMessage/delta': {
+    case 'item/agentMessage/delta':
+    case 'item/plan/delta':
+    case 'item/reasoning/summaryTextDelta':
+    case 'item/reasoning/textDelta':
+    case 'item/commandExecution/outputDelta':
+    case 'item/fileChange/outputDelta': {
       const params = notification.params;
       if (params.threadId !== state.activeThread?.id) return state;
-      return { ...state, liveText: { ...state.liveText, [params.itemId]: `${state.liveText[params.itemId] ?? ''}${params.delta}` } };
+      return appendLive(state, params.itemId, params.delta);
     }
-    case 'error':
-      return { ...state, notices: [...state.notices.slice(-9), notification.params.error.message] };
-    case 'warning':
-      return { ...state, notices: [...state.notices.slice(-9), notification.params.message] };
-    default:
-      return state;
+    case 'item/reasoning/summaryPartAdded': {
+      const params = notification.params;
+      if (params.threadId !== state.activeThread?.id) return state;
+      return appendLive(state, params.itemId, state.liveText[params.itemId] ? '\n' : '');
+    }
+    case 'item/commandExecution/terminalInteraction': {
+      const params = notification.params;
+      if (params.threadId !== state.activeThread?.id) return state;
+      return appendLive(state, params.itemId, params.stdin);
+    }
+    case 'item/fileChange/patchUpdated': {
+      const params = notification.params;
+      if (!state.activeThread || params.threadId !== state.activeThread.id) return state;
+      const turns = state.activeThread.turns.map((turn): Turn => turn.id !== params.turnId ? turn : {
+        ...turn,
+        items: turn.items.map((item): ThreadItem => item.id === params.itemId && item.type === 'fileChange' ? { ...item, changes: params.changes } : item),
+      });
+      return { ...state, activeThread: { ...state.activeThread, turns } };
+    }
+    case 'turn/diff/updated':
+      return notification.params.threadId === state.activeThread?.id ? { ...state, turnDiff: notification.params.diff } : state;
+    case 'turn/plan/updated':
+      return notification.params.threadId === state.activeThread?.id ? { ...state, turnPlan: { explanation: notification.params.explanation, plan: notification.params.plan } } : state;
+    case 'thread/tokenUsage/updated':
+      return notification.params.threadId === state.activeThread?.id ? { ...state, tokenUsage: notification.params.tokenUsage } : state;
+    case 'command/exec/outputDelta': {
+      const params = notification.params;
+      const current = state.processes[params.processId] ?? { stdout: '', stderr: '', exitCode: null };
+      return { ...state, processes: { ...state.processes, [params.processId]: { ...current, [params.stream]: `${current[params.stream]}${decodeBase64(params.deltaBase64)}` } } };
+    }
+    case 'process/outputDelta': {
+      const params = notification.params;
+      const current = state.processes[params.processHandle] ?? { stdout: '', stderr: '', exitCode: null };
+      return { ...state, processes: { ...state.processes, [params.processHandle]: { ...current, [params.stream]: `${current[params.stream]}${decodeBase64(params.deltaBase64)}` } } };
+    }
+    case 'process/exited': {
+      const params = notification.params;
+      const current = state.processes[params.processHandle] ?? { stdout: '', stderr: '', exitCode: null };
+      return { ...state, processes: { ...state.processes, [params.processHandle]: { stdout: current.stdout + params.stdout, stderr: current.stderr + params.stderr, exitCode: params.exitCode } } };
+    }
+    case 'error': return { ...state, notices: [...state.notices.slice(-9), notification.params.error.message] };
+    case 'warning': return { ...state, notices: [...state.notices.slice(-9), notification.params.message] };
+    default: return state;
   }
 }

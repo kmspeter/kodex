@@ -1,175 +1,132 @@
 # Kodex
 
-Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 직접 빌드하고 실행하는 개인용 애플리케이션입니다. UI, Local Server, Codex 소스, thread와 설정을 포함한 애플리케이션 상태는 로컬에 있습니다. 모델 호출과 사용자가 허용한 Web Search, Git, MCP, 패키지 설치 등의 도구는 정상적으로 네트워크를 사용할 수 있습니다.
+Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 실행하는 Windows 개인 앱입니다. UI, Local Server, 공식 Codex 전체 소스, 실행 파일, thread와 설정은 사용자의 컴퓨터에 있습니다. Kodex 전용 원격 백엔드·DB·thread 저장소·배포 서비스는 없습니다.
 
-Kodex Local Server는 에이전트 엔진이 아닙니다. 공식 App Server의 stdio JSONL RPC를 localhost HTTP/WebSocket UI에 연결하고, 로컬 프로젝트·UI 설정·자동화·로그와 프로세스 수명만 관리합니다. 모델 호출, reasoning, tool 선택, sandbox와 approval은 공식 Codex가 담당합니다.
+Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 모델을 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결하고 로컬 상태와 프로세스 수명만 관리합니다.
 
 ## 구조
 
 ```text
-apps/
-  ui/                 React + Vite SPA (브라우저)
-  local-server/       localhost 전용 Node.js 호스트
-packages/
-  codex-protocol/     로컬 Codex가 생성한 App Server 타입과 schema
-  kodex-api/          UI ↔ Local Server 공용 API 타입
-  shared/             JSONL, sequence, 비밀정보 마스킹 유틸리티
-vendor/
-  openai-codex/       고정 commit의 공식 전체 소스
-bin/
-  codex.exe           로컬 source build 결과(커밋하지 않음)
-scripts/              Windows 빌드·프로토콜 생성·프로세스 실행
-test/                 unit, fake/real App Server integration, opt-in live
+apps/ui                 React/Vite renderer
+apps/local-server       localhost API, 정적 UI, scheduler, Codex 수명 관리
+apps/desktop            Electron 창과 Local Server 수명 관리
+packages/codex-protocol 공식 바이너리에서 생성한 protocol/schema
+packages/kodex-api      UI ↔ Local Server 계약
+packages/shared         JSONL, sequence, 마스킹 유틸리티
+vendor/openai-codex     고정된 공식 전체 소스
+bin/codex.exe           위 소스에서 빌드한 공식 App Server 바이너리
 ```
 
-UI와 Local Server는 별도 패키지이며 별도 프로세스로 실행됩니다. Next.js API Route, React 의존 백엔드, `globalThis` singleton은 사용하지 않습니다.
+모든 production HTTP API, WebSocket과 정적 UI는 `127.0.0.1`의 같은 origin에서 제공됩니다. 개발 모드에서만 Vite dev server가 별도로 실행됩니다.
 
-## 고정된 공식 Codex
+## 공식 Codex 소스 고정과 무결성
 
-- Upstream: `https://github.com/openai/codex`
-- Commit: `f1433fc71f2062ae3c007a03d7ff549bc582d386`
-- Source: `vendor/openai-codex/`
-- License/notice: `vendor/openai-codex/LICENSE`, `vendor/openai-codex/NOTICE`
-- Build metadata: `bin/codex-build.json`
-- Protocol metadata: `packages/codex-protocol/codex-version.json`
+- upstream commit: `f1433fc71f2062ae3c007a03d7ff549bc582d386`
+- source: `vendor/openai-codex/`
+- SHA-256 manifest: `VENDOR_SOURCE_SHA256.json`
+- build metadata: `bin/codex-build.json`
+- protocol metadata: `packages/codex-protocol/codex-version.json`
 
-자세한 제3자 고지는 `THIRD_PARTY.md`에 있습니다. upstream 내부의 Codex 이름과 소스는 불필요하게 변경하지 않습니다.
+`npm run codex:verify-source`는 manifest의 commit이 `CODEX_UPSTREAM_COMMIT`과 일치하는지 확인한 뒤 vendored source의 모든 파일을 SHA-256으로 검증합니다. 파일이 추가·삭제·변경되면 명확한 목록과 함께 실패합니다. `.git`이 없어도 검사가 생략되지 않으며 `codex:build`도 Cargo를 실행하기 전에 이 검증을 반드시 거칩니다.
 
-## 준비와 로컬 Codex 빌드
+현재 바이너리가 보고하는 내부 문자열 `codex-cli 0.0.0`은 정식 릴리스 버전으로 표시하지 않습니다. UI와 metadata에는 `Codex source build f1433fc71f20`으로 표시됩니다. 다른 release/tag로 바꾸려면 source·protocol 차이를 검토하고 manifest, binary, generated protocol을 함께 갱신해야 합니다.
 
-Node.js 22.13 이상과 npm이 필요합니다.
-
-```powershell
-npm install
-```
-
-Windows에서 Rust가 없다면 저장소 내부 `.tools`에 upstream이 고정한 Rust toolchain을 설치할 수 있습니다.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-rust.ps1
-```
-
-MSVC linker가 없다면 Visual Studio 2022 Build Tools의 `Microsoft.VisualStudio.Workload.VCTools` workload가 필요합니다. `codex:build`는 설치된 VS 개발자 환경과 저장소 내부 Rust를 자동으로 찾고, 한글 사용자 TEMP 경로의 `protoc` 문제를 피하도록 `.codex-build/tmp`를 사용합니다.
+공식 Rust 소스를 실제로 바꾸거나 바이너리/프로토콜 불일치가 확인된 경우에만 다음을 실행합니다.
 
 ```powershell
 npm run codex:build
 npm run codex:generate-protocol
 ```
 
-첫 명령은 고정 commit을 검증한 뒤 공식 `codex-cli` release를 빌드해 `bin/codex.exe`에 둡니다. 두 번째 명령은 반드시 그 로컬 바이너리로 다음 산출물을 새로 생성합니다.
+## 실행
 
-- `packages/codex-protocol/src/generated/`
-- `packages/codex-protocol/schema/`
+Node.js 22.13 이상에서 의존성을 준비합니다.
 
-Kodex는 기본적으로 이 로컬 바이너리만 사용합니다. 개발 중 전역 Codex를 명시적으로 시험할 때만 `KODEX_ALLOW_GLOBAL_CODEX=1`과 `KODEX_CODEX_BIN`을 사용하십시오.
+```powershell
+npm install
+```
 
-## API 키와 실행
+### OpenAI 모드
 
-루트의 `.env.local`을 만들거나 Local Server 프로세스 환경에 키를 설정합니다.
+루트 `.env.local` 또는 Local Server 환경에 키만 설정합니다.
 
 ```dotenv
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-키가 없으면 UI는 설정 방법만 표시하고 App Server를 시작하지 않습니다. 키는 Local Server만 읽고 공식 App Server 자식 프로세스에 전달합니다. 브라우저 응답·번들, `localStorage`, IndexedDB, 설정 JSON, Git, 로그에는 넣지 않으며 Codex가 실행하는 shell 환경에서도 제외합니다. ChatGPT 로그인이나 기기 인증은 요구하지 않습니다.
-
-개발 실행:
-
 ```powershell
 npm run dev
+# 또는 production
+npm run build
+npm start
 ```
 
-- UI: `http://127.0.0.1:5173`
-- Local Server: `http://127.0.0.1:47831`
-- Ctrl+C: UI, Local Server, App Server 자식 프로세스 트리를 모두 종료
+OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_KEY`와 로컬 provider key를 제거하며, bootstrap·WebSocket·번들·브라우저 저장소·Kodex 로그에도 키를 보내지 않습니다. OpenAI key는 Local Server만 읽고 이 provider를 선택했을 때만 공식 App Server에 전달합니다.
 
-프로덕션 로컬 실행:
+### OpenAI Responses 호환 로컬 모델
+
+설정 창에서 provider를 `Local OpenAI-compatible`로 바꾸고 다음을 입력합니다.
+
+- Base URL: `http://127.0.0.1:<port>/v1` 또는 `http://localhost:<port>/v1`
+- Model: 로컬 서버가 노출하는 model 이름
+- 선택적 인증: Local Server 환경의 `KODEX_LOCAL_LLM_API_KEY`
+
+이 모드는 `OPENAI_API_KEY` 없이 시작합니다. 공식 Codex의 `model_providers`, `base_url`, `wire_api="responses"`, `requires_openai_auth=false` 설정을 사용하며 자체 추론 adapter는 두지 않습니다. 현재 고정 소스는 Responses wire API만 지원합니다. 로컬 서버가 Responses streaming, Codex tool call 왕복을 충분히 구현하지 않으면 호환성 오류가 표시됩니다. 로컬 모델 선택은 Web Search/원격 MCP 선택과 별개입니다.
+
+## 로컬 데이터와 안정성
+
+`.kodex-data/`에는 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log가 저장됩니다. JSON 없음과 손상·권한 오류를 구분하고, 손상 파일은 덮어쓰지 않습니다. atomic rename과 process 내 write 직렬화를 사용하며 `instance.lock`으로 동일 데이터 디렉터리를 여러 Kodex 인스턴스가 동시에 수정하지 못하게 합니다. App Server가 공식 thread 형식을 소유하며 Kodex가 별도 thread DB로 복제하지 않습니다.
+
+## 연결 복구, 승인, 자동화, 재시작
+
+- WebSocket event는 process epoch와 sequence를 가집니다. `hello`는 cursor를 전진시키지 않으며 reconnect replay는 중복 제거 후 reducer에 한 번만 적용됩니다.
+- buffer gap 또는 Local Server epoch 변경 시 streaming 임시 상태를 지우고 `thread/list`, active `thread/read`/`thread/resume`으로 재동기화합니다.
+- approval/user-input은 가장 최근 활동한 UI 하나에만 할당됩니다. request registry가 중복 응답, timeout, owner disconnect와 App Server restart를 처리하고 다른 UI는 읽기 전용으로 표시합니다.
+- scheduler는 명시적 project/cwd를 사용하며 UI active project를 바꾸지 않습니다. automation claim과 다음 실행 시각을 한 저장 작업으로 기록하고 automation별 in-flight lock으로 장기 실행 중복을 막습니다. 재시작 때 실행 중이던 작업은 `interrupted`로 보존하고 overdue 작업은 한 번만 다시 claim합니다.
+- App Server는 전체 restart 횟수와 연속 실패를 분리합니다. 안정 실행 시간이 지난 뒤에만 연속 실패를 초기화하며 exponential backoff와 최대 횟수 이후 `failed`를 유지합니다. UI에서 수동 재시작할 수 있습니다.
+
+지원하는 핵심 event는 agent/reasoning/plan delta, command/process 출력과 종료, file change/patch/turn diff, token usage, thread status, warning/error, approval/user input입니다. 알 수 없는 notification은 비밀값을 마스킹한 method/metadata만 진단 로그에 남깁니다. 별도 host dynamic tool registry가 없으므로 `item/tool/call`을 지원한다고 표시하지 않습니다.
+
+## 설정
+
+UI 설정은 실제 Codex 요청/설정에 연결된 항목만 노출합니다: provider/model, sandbox, approval, shell network, Web Search, sidebar/detail panel. Web Search 변경은 active thread를 다음 turn 전에 resume하여 반영합니다. Remote MCP는 가짜 boolean이 아니라 공식 config write/reload 경로로 추가합니다.
+
+## Windows desktop와 runtime bundle
+
+Electron은 기존 Node Local Server를 그대로 관리하면서 Windows 창과 수명 관리를 얇게 제공하기 때문에 사용합니다. renderer Node integration은 꺼져 있고 context isolation과 sandbox를 켭니다. privileged renderer에서 원격 페이지를 열지 않고 외부 링크는 OS 브라우저로 보냅니다. preload에는 파일/폴더 선택만 노출하며 API key를 전달하지 않습니다.
 
 ```powershell
 npm run build
-npm run start
+npm run runtime:bundle
+runtime\Kodex-win32-x64\Kodex.exe
 ```
 
-- UI preview: `http://127.0.0.1:4173`
-- Local Server: `http://127.0.0.1:47831`
+조직 Device Guard가 이름 변경된 executable을 차단하는 환경에서는 서명이 보존된 원본 Electron 이름을 사용하는 `runtime\Kodex-win32-x64\Kodex.cmd`를 실행합니다.
 
-경로의 공백과 한글을 shell 문자열 결합 없이 child-process argument로 전달합니다.
-
-## UI ↔ Local Server ↔ App Server
-
-- HTTP: bootstrap, health, 설정, 프로젝트, 자동화, Git 상태/diff
-- WebSocket: typed App Server RPC, notification stream, server approval/user-input request와 응답
-- App Server: Local Server 자식 프로세스, `stdio://` JSONL
-- Handshake: `initialize` 응답 후 `initialized`
-- 복구: 증가 sequence, 1,000개 replay buffer, 중복 sequence 제거, reconnect/backoff, replay gap 알림
-- 보호: `127.0.0.1` bind, Host/Origin 검사, HttpOnly SameSite cookie와 메모리 전용 session token, CSRF token, 1MiB 요청 제한, 4MiB WebSocket backpressure cutoff
-
-App Server RPC client와 UI reducer는 `ClientRequest`, `ServerNotification`, `ServerRequest` 등 생성 타입을 직접 import합니다. 생성 파일은 손으로 수정하지 않습니다. 프로토콜 변경은 compile-time fixture와 전체 TypeScript build에서 드러납니다.
-
-## 로컬 데이터
-
-추적되지 않는 `.kodex-data/`에 저장합니다.
-
-```text
-.kodex-data/
-  codex-home/          공식 CODEX_HOME: thread rollout/state/config/MCP/skills
-  projects.json        로컬 프로젝트 목록과 최근 프로젝트
-  settings.json        UI, sandbox, approval, network 선택
-  automations.json     Local Server가 공식 thread/turn으로 실행하는 일정
-  approvals.jsonl      마스킹된 승인 응답 기록
-  logs/                마스킹된 App Server stderr/프로토콜 오류
-```
-
-Thread를 별도 Kodex 데이터베이스로 복제하지 않습니다. 공식 App Server가 Kodex 전용 `CODEX_HOME`에 공식 형식으로 저장합니다.
-
-## 네트워크, sandbox, approval
-
-Kodex는 프로세스 수준 네트워크 봉쇄, URL/명령 정규식 차단, `networkAccess: false` 하드코딩을 사용하지 않습니다.
-
-설정 UI에서 다음을 별도로 선택합니다.
-
-- Shell network: 공식 turn `SandboxPolicy.networkAccess`
-- Web Search: 공식 Codex `web_search` 설정
-- Remote MCP: 공식 `config/value/write`와 `config/mcpServer/reload`
-- Sandbox: `read-only`, `workspace-write`, `danger-full-access`
-- Approval: `untrusted`, `on-request`, `never`
-
-따라서 OpenAI API, 공식 Web Search, 사용자가 설정한 원격 MCP, Git fetch/pull/push, 패키지 설치, 외부 문서 조회, Apps/Plugins가 공식 Codex 정책과 사용자 승인 범위에서 네트워크를 사용할 수 있습니다. Kodex 전용 원격 서버·DB·Thread 저장소·필수 SaaS 인증·원격 feature flag는 없습니다.
-
-## 연결된 공식 기능
-
-UI/Local Server가 공식 v2 method 및 notification을 통해 연결하는 주요 기능:
-
-- thread start/list/read/resume/fork/archive/unarchive/name
-- turn start/steer/interrupt
-- model list, streaming agent message, reasoning, token usage
-- command execution, stdout/stderr, file change/patch
-- command/file/permission approval, user input, MCP elicitation
-- MCP tool call, Web Search, Skills, Apps, Plugins
-- 공식 config read/write 및 MCP reload
-
-Apps/Plugins/일부 connector가 API-key 인증에서 사용 가능한지는 해당 고정 Codex commit과 서버 측 제품 지원 범위에 따릅니다. Kodex는 지원되지 않는 기능을 가짜 데이터나 자체 Responses API 호출로 흉내 내지 않습니다.
+portable runtime에는 Electron/Node/Chromium runtime, built UI/Local Server, 필요한 JS runtime dependency, `bin/codex.exe`, build/protocol metadata와 license notice가 들어갑니다. 실행 시 Rust, Cargo, MSVC, Vite 또는 TypeScript가 필요하지 않고 외부에서 코드나 바이너리를 내려받지 않습니다. 공식 전체 source는 runtime이 아니라 source repository/bundle에 계속 보존됩니다.
 
 ## 검증
 
 ```powershell
+npm run codex:verify-source
 npm run typecheck
 npm run lint
-npm run test
+npm test
 npm run build
+npm run smoke:production
+npm run runtime:bundle
+npm run runtime:smoke
+npm run test:local-provider
+npm run test:handshake
 ```
 
-`npm test`는 API 키나 외부 모델 호출 없이 unit test, fake App Server lifecycle/RPC/restart/approval, HTTP 보안·로컬 저장, 그리고 실제 로컬 `bin/codex.exe`의 handshake와 `thread/list`를 실행합니다.
+기본 `npm test`는 외부 모델을 호출하지 않습니다. local-provider 검증은 loopback fake Responses server만 사용하고, handshake는 fake key로 `initialize`와 `thread/list`까지만 수행합니다. 실제 API 비용, Web Search, 원격 MCP를 쓰는 `npm run test:live`는 명시적으로 요청받은 경우에만 실행합니다.
 
-실 API 비용과 tool 실행이 발생하는 테스트는 기본 스위트에서 완전히 제외되어 있습니다. 사용자가 명시적으로 실행할 때만 현재 `OPENAI_API_KEY`로 ephemeral thread와 승인된 sandbox tool을 검증합니다.
+## 실제 한계
 
-```powershell
-npm run test:live
-```
+- 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
+- local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
+- Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
+- SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 
-## 현재 한계
-
-- Kodex 자동화는 Local Server 프로세스가 실행 중일 때만 동작하는 로컬 scheduler입니다.
-- API-key 환경에서 Apps/Plugins/connector의 실제 제공 범위는 공식 App Server/계정 지원에 따릅니다.
-- 실 모델 호출, Web Search, 원격 MCP 인증은 유효한 사용자 키·설정·명시적 승인 없이는 기본 테스트에서 실행하지 않습니다.
-- SSR, cloud task 실행, Kodex 전용 cloud backend는 의도적으로 제공하지 않습니다.
+제3자 license와 notice는 `THIRD_PARTY.md` 및 각 dependency에 포함된 license 파일을 참조하십시오.

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ServerRequest } from '@kodex/codex-protocol';
+import type { ServerNotification, ServerRequest } from '@kodex/codex-protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AppServerClient } from '../../apps/local-server/src/process/app-server-client';
 
@@ -32,11 +32,13 @@ describe('AppServerClient', () => {
     });
     const protocolError = waitFor<Error>((resolve) => client.once('protocol-error', resolve));
     const serverRequest = waitFor<ServerRequest>((resolve) => client.once('server-request', resolve));
+    const warning = waitFor<ServerNotification>((resolve) => client.once('notification', resolve));
     await client.start();
     expect(client.status().state).toBe('ready');
     await expect(protocolError).resolves.toBeInstanceOf(Error);
     const approval = await serverRequest;
     expect(approval.method).toBe('item/commandExecution/requestApproval');
+    expect(JSON.stringify(await warning)).not.toContain(secret);
     client.respond(approval.id, { decision: 'accept' });
 
     const slow = client.requestRaw<{ token: string }>('test/correlation', { token: 'slow', delay: 40 }, 2_000);
@@ -71,5 +73,29 @@ describe('AppServerClient', () => {
     expect(client.status().state).toBe('ready');
     await client.stop();
     expect(client.status().pid).toBeNull();
+  });
+
+  it('stops automatic restart after repeated ready-then-crash cycles', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-crash-loop-'));
+    temporaryRoots.push(root);
+    const counter = path.join(root, 'starts.txt');
+    const client = new AppServerClient({
+      repositoryRoot,
+      codexHome: path.join(root, 'codex-home'),
+      apiKey: 'sk-test-crash-loop',
+      binary: { command: process.execPath, source: 'local' },
+      spawnArgs: [fakeServer, 'always-exit', counter],
+      stableRunMs: 10_000,
+      maxConsecutiveRestarts: 2,
+      restartDelaysMs: [5, 5],
+      log: async () => undefined,
+    });
+    await client.start();
+    const deadline = Date.now() + 4_000;
+    while (Date.now() < deadline && client.status().consecutiveFailures < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(Number(await readFile(counter, 'utf8'))).toBe(3);
+    expect(client.status()).toMatchObject({ state: 'failed', restartCount: 2, consecutiveFailures: 3 });
+    expect(client.status().message).toContain('Automatic restart stopped');
+    await client.stop();
   });
 });

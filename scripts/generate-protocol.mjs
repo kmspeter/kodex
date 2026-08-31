@@ -19,18 +19,19 @@ function run(args) {
 }
 
 try {
-  const version = run(['--version']);
+  const cliReportedVersion = run(['--version']);
   rmSync(generated, { recursive: true, force: true });
   rmSync(schema, { recursive: true, force: true });
   run(['app-server', 'generate-ts', '--out', generated]);
   run(['app-server', 'generate-json-schema', '--out', schema]);
   writeFileSync(path.join(repositoryRoot, 'packages', 'codex-protocol', 'codex-version.json'), `${JSON.stringify({
-    codexVersion: version,
+    sourceIdentity: `Codex source build ${commit.slice(0, 12)}`,
+    cliReportedVersion,
     codexCommit: commit,
     generatedAt: new Date().toISOString(),
     generatedWith: 'bin/codex',
   }, null, 2)}\n`, 'utf8');
-  process.stdout.write(`Generated Codex protocol from ${version} (${commit}).\n`);
+  process.stdout.write(`Generated Codex protocol from source commit ${commit} (CLI reports: ${cliReportedVersion}).\n`);
 } catch (error) {
   process.stderr.write(`Protocol generation failed: ${error.message}\nRun npm run codex:build first.\n`);
   process.exitCode = 1;

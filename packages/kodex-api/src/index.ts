@@ -29,16 +29,22 @@ export type ApprovalChoice = 'untrusted' | 'on-request' | 'never';
 export interface NetworkPreferences {
   shell: boolean;
   webSearch: boolean;
-  remoteMcp: boolean;
+}
+
+export type ProviderMode = 'openai' | 'local';
+
+export interface ProviderSettings {
+  mode: ProviderMode;
+  /** Loopback-only Responses API base URL, including /v1 when required by the server. */
+  baseUrl: string;
+  model: string;
 }
 
 export interface KodexSettings {
-  theme: 'light' | 'system';
-  density: 'compact' | 'comfortable';
-  notifications: boolean;
   sandbox: SandboxChoice;
   approvalPolicy: ApprovalChoice;
   network: NetworkPreferences;
+  provider: ProviderSettings;
   lastProjectId: string | null;
   sidebarOpen: boolean;
   detailPanelOpen: boolean;
@@ -63,9 +69,10 @@ export interface AutomationRecord {
   updatedAt: number;
   nextRunAt: number;
   lastRunAt: number | null;
-  lastStatus: 'never-run' | 'started' | 'failed';
+  lastStatus: 'never-run' | 'running' | 'succeeded' | 'failed' | 'interrupted';
   lastError: string | null;
   threadId: string | null;
+  runningSince: number | null;
 }
 
 export interface EngineStatus {
@@ -77,6 +84,9 @@ export interface EngineStatus {
   version: string | null;
   pid: number | null;
   restartCount: number;
+  consecutiveFailures: number;
+  providerMode: ProviderMode;
+  providerModel: string | null;
   transport: 'stdio JSONL';
 }
 
@@ -97,6 +107,7 @@ export interface BootstrapResponse {
     remoteMcp: boolean;
     apps: boolean;
     plugins: boolean;
+    hostDynamicTools: false;
   };
 }
 
@@ -148,17 +159,23 @@ export type ClientSocketMessage =
   | { type: 'rpc'; requestId: string; request: ClientRequest }
   | { type: 'server-response'; requestId: RequestId; result: unknown }
   | { type: 'server-error'; requestId: RequestId; code: number; message: string }
-  | { type: 'replay'; afterSequence: number }
+  | { type: 'replay'; epoch: string; afterSequence: number }
   | { type: 'ping' };
 
+export interface PendingServerRequest {
+  request: ServerRequest;
+  owned: boolean;
+}
+
 export type ServerSocketMessage =
-  | { type: 'hello'; sequence: number; engine: EngineStatus }
+  | { type: 'hello'; epoch: string; latestSequence: number; oldestSequence: number; engine: EngineStatus }
   | { type: 'rpc-result'; requestId: string; result: unknown }
   | { type: 'rpc-error'; requestId: string; code: number; message: string }
-  | { type: 'notification'; sequence: number; notification: ServerNotification }
-  | { type: 'server-request'; sequence: number; request: ServerRequest }
-  | { type: 'engine'; sequence: number; engine: EngineStatus }
-  | { type: 'replay-gap'; oldestAvailable: number; newestAvailable: number }
+  | { type: 'notification'; epoch: string; sequence: number; notification: ServerNotification }
+  | { type: 'server-request'; epoch: string; sequence: number; request: ServerRequest; owned: boolean }
+  | { type: 'server-request-resolved'; epoch: string; sequence: number; requestId: RequestId; reason: 'answered' | 'timeout' | 'disconnect' | 'app-server-restart' | 'unsupported' }
+  | { type: 'engine'; epoch: string; sequence: number; engine: EngineStatus }
+  | { type: 'resync-required'; reason: 'replay-gap' | 'server-restart'; epoch: string; oldestAvailable: number; newestAvailable: number }
   | { type: 'pong' };
 
 export interface ApiErrorBody {

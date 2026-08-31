@@ -21,8 +21,9 @@ function requestSummary(request: ServerRequest): { title: string; detail: string
   }
 }
 
-export function RequestCard({ request, onResolve, onError }: {
+export function RequestCard({ request, owned, onResolve, onError }: {
   request: ServerRequest;
+  owned: boolean;
   onResolve: (id: string | number, result: unknown) => void;
   onError: (id: string | number, message: string) => void;
 }) {
@@ -76,10 +77,10 @@ export function RequestCard({ request, onResolve, onError }: {
   }
 
   return <section className="approval-card">
-    <div className="approval-title"><AlertTriangle size={15} /><div><strong>{summary.title}</strong><span>{summary.detail}</span></div></div>
+    <div className="approval-title"><AlertTriangle size={15} /><div><strong>{summary.title}</strong><span>{owned ? summary.detail : `${summary.detail} Another active Kodex window owns this request.`}</span></div></div>
     {summary.command && <code>{summary.command}</code>}
-    {request.method === 'item/tool/requestUserInput' && request.params.questions.map((question) => <label className="request-input" key={question.id}><span>{question.header}</span>{question.options ? <select value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Select…</option>{question.options.map((option) => <option key={option.label} value={option.label}>{option.label}</option>)}</select> : <input type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}
-    {request.method === 'mcpServer/elicitation/request' && <label className="request-input"><span>Structured JSON response</span><textarea value={answers.content ?? '{}'} onChange={(event) => setAnswers({ content: event.target.value })} /></label>}
-    <div className="approval-actions"><button className="secondary-action" onClick={decline}>Decline</button><button className="primary-action" onClick={() => { try { accept(); } catch { onError(request.id, 'The response must be valid JSON.'); } }}>Approve once</button></div>
+    {request.method === 'item/tool/requestUserInput' && request.params.questions.map((question) => <label className="request-input" key={question.id}><span>{question.header}</span>{question.options ? <select disabled={!owned} value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Select…</option>{question.options.map((option) => <option key={option.label} value={option.label}>{option.label}</option>)}</select> : <input disabled={!owned} type={question.isSecret ? 'password' : 'text'} value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}
+    {request.method === 'mcpServer/elicitation/request' && <label className="request-input"><span>Structured JSON response</span><textarea disabled={!owned} value={answers.content ?? '{}'} onChange={(event) => setAnswers({ content: event.target.value })} /></label>}
+    <div className="approval-actions"><button className="secondary-action" disabled={!owned} onClick={decline}>Decline</button><button className="primary-action" disabled={!owned} onClick={() => { try { accept(); } catch { onError(request.id, 'The response must be valid JSON.'); } }}>{owned ? 'Approve once' : 'Read only'}</button></div>
   </section>;
 }

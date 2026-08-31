@@ -1,5 +1,5 @@
-# dependencies
-/node_modules
+# dependencies (at every workspace depth)
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -13,11 +13,16 @@
 
 # build outputs
 **/dist/
+**/.vite/
+**/.cache/
+**/.turbo/
+**/.eslintcache
 /.next/
 /.vinext/
 /out/
 /.codex-build/
 /.tools/
+/runtime/
 /bin/codex.exe
 /bin/codex
 
@@ -30,6 +35,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
 
 # local environment
 .env*

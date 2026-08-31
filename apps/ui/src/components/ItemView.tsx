@@ -17,19 +17,19 @@ export function ItemView({ item, liveText }: { item: ThreadItem; liveText?: stri
     case 'agentMessage':
       return <article className="message agent-message"><div className="message-avatar"><Bot size={14} /></div><div className="message-content"><p className="message-text">{liveText || item.text}</p></div></article>;
     case 'reasoning':
-      return <div className="activity-card reasoning-card"><Waypoints size={14} /><div><strong>Reasoning</strong><p>{[...item.summary, ...item.content].join('\n')}</p></div></div>;
+      return <div className="activity-card reasoning-card"><Waypoints size={14} /><div><strong>Reasoning</strong><p>{liveText || [...item.summary, ...item.content].join('\n')}</p></div></div>;
     case 'plan':
-      return <div className="activity-card reasoning-card"><Waypoints size={14} /><div><strong>Plan</strong><p>{item.text}</p></div></div>;
+      return <div className="activity-card reasoning-card"><Waypoints size={14} /><div><strong>Plan</strong><p>{liveText || item.text}</p></div></div>;
     case 'commandExecution':
-      return <div className="activity-card"><SquareTerminal size={14} /><div><strong>Command · {item.status}</strong><code>{item.command}</code>{item.aggregatedOutput && <pre>{item.aggregatedOutput}</pre>}<span className={item.exitCode === 0 ? 'item-status is-success' : 'item-status'}>{item.exitCode == null ? 'running' : `exit ${item.exitCode}`}</span></div></div>;
+      return <div className="activity-card"><SquareTerminal size={14} /><div><strong>Command · {item.status}</strong><code>{item.command}</code>{(liveText || item.aggregatedOutput) && <pre>{liveText || item.aggregatedOutput}</pre>}<span className={item.exitCode === 0 ? 'item-status is-success' : 'item-status'}>{item.exitCode == null ? 'running' : `exit ${item.exitCode}`}</span></div></div>;
     case 'fileChange':
-      return <div className="activity-card"><FileCode2 size={14} /><div><strong>File change · {item.status}</strong><pre>{pretty(item.changes)}</pre></div></div>;
+      return <div className="activity-card"><FileCode2 size={14} /><div><strong>File change · {item.status}</strong><pre>{liveText || pretty(item.changes)}</pre></div></div>;
     case 'webSearch':
       return <div className="activity-card"><Search size={14} /><div><strong>Web Search</strong><p>{pretty(item.action)}</p></div></div>;
     case 'mcpToolCall':
       return <div className="activity-card"><Network size={14} /><div><strong>MCP · {item.server}/{item.tool}</strong><code>{pretty(item.arguments)}</code>{item.result && <pre>{pretty(item.result)}</pre>}<span className="item-status">{item.status}</span></div></div>;
     case 'dynamicToolCall':
-      return <div className="activity-card"><Globe2 size={14} /><div><strong>Tool · {item.namespace ? `${item.namespace}/` : ''}{item.tool}</strong><code>{pretty(item.arguments)}</code><span className="item-status">{item.status}</span></div></div>;
+      return <div className="activity-card"><Globe2 size={14} /><div><strong>Host dynamic tool unavailable · {item.namespace ? `${item.namespace}/` : ''}{item.tool}</strong><code>{pretty(item.arguments)}</code><span className="item-status">{item.status}</span></div></div>;
     case 'collabAgentToolCall':
       return <div className="activity-card"><Waypoints size={14} /><div><strong>Agent coordination · {item.tool}</strong><p>{item.prompt ?? item.status}</p></div></div>;
     default:

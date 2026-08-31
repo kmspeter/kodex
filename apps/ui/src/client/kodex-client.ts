@@ -7,7 +7,7 @@ import type {
   ResponseFor,
   ServerSocketMessage,
 } from '@kodex/kodex-api';
-import { sequenceDecision } from '../state/sequence';
+import { helloDecision, sequenceDecision, type SequenceCursor } from '../state/sequence';
 
 interface PendingRpc {
   resolve: (value: unknown) => void;
@@ -22,13 +22,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 export class KodexClient {
-  readonly apiBase = import.meta.env.VITE_KODEX_API_URL || 'http://127.0.0.1:47831';
+  readonly apiBase = import.meta.env.DEV
+    ? (import.meta.env.VITE_KODEX_API_URL || 'http://127.0.0.1:47831')
+    : window.location.origin;
   #bootstrap: BootstrapResponse | null = null;
   #socket: WebSocket | null = null;
   #pending = new Map<string, PendingRpc>();
   #listeners = new Set<(message: ServerSocketMessage) => void>();
   #connectionListeners = new Set<(state: ConnectionState) => void>();
-  #lastSequence = 0;
+  #cursor: SequenceCursor = { epoch: null, lastSequence: 0 };
   #reconnectAttempt = 0;
   #closed = false;
   #generation = 0;
@@ -110,7 +112,6 @@ export class KodexClient {
       if (generation !== this.#generation) { socket.close(); return; }
       this.#reconnectAttempt = 0;
       this.#emitConnection('connected');
-      this.#send({ type: 'replay', afterSequence: this.#lastSequence });
     });
     socket.addEventListener('message', (event) => this.#handleMessage(String(event.data)));
     socket.addEventListener('close', () => {
@@ -126,9 +127,28 @@ export class KodexClient {
     const parsed = JSON.parse(raw) as unknown;
     if (!isObject(parsed) || typeof parsed.type !== 'string') return;
     const message = parsed as ServerSocketMessage;
-    const sequence = sequenceDecision(this.#lastSequence, message);
-    if (!sequence.accept) return;
-    this.#lastSequence = sequence.lastSequence;
+    if (message.type === 'hello') {
+      const decision = helloDecision(this.#cursor, message);
+      this.#cursor = decision.cursor;
+      if (decision.serverRestarted) {
+        const resync: ServerSocketMessage = {
+          type: 'resync-required', reason: 'server-restart', epoch: message.epoch,
+          oldestAvailable: message.oldestSequence, newestAvailable: message.latestSequence,
+        };
+        for (const listener of this.#listeners) listener(resync);
+      }
+      this.#send({ type: 'replay', epoch: message.epoch, afterSequence: decision.replayAfter });
+      for (const listener of this.#listeners) listener(message);
+      return;
+    }
+    if (message.type === 'resync-required') {
+      this.#cursor = { epoch: message.epoch, lastSequence: message.newestAvailable };
+      for (const listener of this.#listeners) listener(message);
+      return;
+    }
+    const decision = sequenceDecision(this.#cursor, message);
+    if (!decision.accept) return;
+    this.#cursor = decision.cursor;
     if (message.type === 'rpc-result' || message.type === 'rpc-error') {
       const pending = this.#pending.get(message.requestId);
       if (!pending) return;

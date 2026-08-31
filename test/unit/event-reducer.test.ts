@@ -1,7 +1,7 @@
 import type { ServerNotification, Thread } from '@kodex/codex-protocol';
 import { describe, expect, it } from 'vitest';
 import { eventReducer, initialEventState } from '../../apps/ui/src/state/events';
-import { sequenceDecision } from '../../apps/ui/src/state/sequence';
+import { helloDecision, sequenceDecision } from '../../apps/ui/src/state/sequence';
 
 function thread(): Thread {
   return {
@@ -18,11 +18,28 @@ function thread(): Thread {
 describe('typed notification reducer', () => {
   it('drops a replayed streaming delta with the same transport sequence', () => {
     const notification = { method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', delta: 'hello' } } satisfies ServerNotification;
-    const envelope = { type: 'notification', sequence: 42, notification } as const;
-    const first = sequenceDecision(41, envelope);
-    const replay = sequenceDecision(first.lastSequence, envelope);
+    const envelope = { type: 'notification', epoch: 'epoch-1', sequence: 42, notification } as const;
+    const first = sequenceDecision({ epoch: 'epoch-1', lastSequence: 41 }, envelope);
+    const replay = sequenceDecision(first.cursor, envelope);
     expect(first.accept).toBe(true);
-    expect(replay).toEqual({ accept: false, lastSequence: 42 });
+    expect(replay).toEqual({ accept: false, cursor: { epoch: 'epoch-1', lastSequence: 42 } });
+  });
+
+  it('does not advance the replay cursor from hello and resets it only for a new epoch', () => {
+    const hello = { type: 'hello', epoch: 'epoch-1', latestSequence: 99, oldestSequence: 80, engine: null as never } as Parameters<typeof helloDecision>[1];
+    expect(helloDecision({ epoch: 'epoch-1', lastSequence: 41 }, hello)).toMatchObject({ replayAfter: 41, serverRestarted: false });
+    const restarted = helloDecision({ epoch: 'epoch-1', lastSequence: 41 }, { ...hello, epoch: 'epoch-2' });
+    expect(restarted).toMatchObject({ cursor: { epoch: 'epoch-2', lastSequence: 0 }, replayAfter: 0, serverRestarted: true });
+  });
+
+  it('accepts a missed delta once and safely resets transient state on a replay gap', () => {
+    const notification = { method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', delta: 'during disconnect' } } satisfies ServerNotification;
+    expect(sequenceDecision({ epoch: 'epoch-1', lastSequence: 5 }, { type: 'notification', epoch: 'epoch-1', sequence: 6, notification }).accept).toBe(true);
+    let state = eventReducer(initialEventState, { type: 'thread-selected', thread: thread() });
+    state = eventReducer(state, { type: 'notification', notification });
+    state = eventReducer({ ...state, activeTurnId: 'turn-1' }, { type: 'resync-started' });
+    expect(state.liveText).toEqual({});
+    expect(state.activeTurnId).toBeNull();
   });
 
   it('deduplicates transport sequence externally and appends each streaming delta once', () => {

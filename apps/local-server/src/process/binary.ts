@@ -22,10 +22,17 @@ export function resolveCodexBinary(repositoryRoot: string, environment: NodeJS.P
   return null;
 }
 
-export function appServerEnvironment(codexHome: string, apiKey: string, environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const output: NodeJS.ProcessEnv = { ...environment, CODEX_HOME: codexHome, OPENAI_API_KEY: apiKey };
+export function appServerEnvironment(
+  codexHome: string,
+  credentials: { openAiApiKey?: string; localApiKey?: string },
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const output: NodeJS.ProcessEnv = { ...environment, CODEX_HOME: codexHome };
   for (const key of Object.keys(output)) {
-    if (/^(?:NEXT_PUBLIC_|VITE_)/u.test(key)) delete output[key];
+    const normalized = key.toLocaleUpperCase();
+    if (normalized === 'OPENAI_API_KEY' || normalized === 'KODEX_LOCAL_LLM_API_KEY' || /^(?:NEXT_PUBLIC_|VITE_)/u.test(normalized)) delete output[key];
   }
+  if (credentials.openAiApiKey) output.OPENAI_API_KEY = credentials.openAiApiKey;
+  if (credentials.localApiKey) output.KODEX_LOCAL_LLM_API_KEY = credentials.localApiKey;
   return output;
 }

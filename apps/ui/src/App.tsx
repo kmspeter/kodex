@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type {
   AppInfo,
   ConfigReadResponse,
@@ -49,6 +49,8 @@ export function App() {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogName>(null);
   const [toast, setToast] = useState('');
+  const activeThreadIdRef = useRef<string | null>(null);
+  useEffect(() => { activeThreadIdRef.current = events.activeThread?.id ?? null; }, [events.activeThread?.id]);
 
   const refreshGit = useCallback(async () => {
     try { setGit(await client.http<GitStatus>('/api/git/status')); } catch { setGit(EMPTY_GIT); }
@@ -80,17 +82,37 @@ export function App() {
     await refreshGit();
   }, [bootstrap?.activeProject.path, client, events.activeThread?.id, model, refreshGit]);
 
+  const resynchronize = useCallback(async () => {
+    dispatch({ type: 'resync-started' });
+    const listed = await client.rpc('thread/list', { limit: 200, archived: false });
+    dispatch({ type: 'threads-loaded', threads: listed.data });
+    const activeId = activeThreadIdRef.current;
+    if (activeId) {
+      try {
+        const read = await client.rpc('thread/read', { threadId: activeId, includeTurns: true });
+        dispatch({ type: 'thread-selected', thread: read.thread });
+        const resumed = await client.rpc('thread/resume', { threadId: activeId });
+        dispatch({ type: 'thread-selected', thread: resumed.thread });
+      } catch { dispatch({ type: 'thread-selected', thread: null }); }
+    }
+    await refreshGit();
+  }, [client, refreshGit]);
+
   useEffect(() => {
     let active = true;
     const offConnection = client.onConnection(setConnection);
     const offMessages = client.subscribe((message) => {
       if (message.type === 'engine') setBootstrap((current) => current ? { ...current, engine: message.engine } : current);
-      if (message.type === 'server-request') dispatch({ type: 'server-request', request: message.request });
+      if (message.type === 'server-request') dispatch({ type: 'server-request', request: { request: message.request, owned: message.owned } });
+      if (message.type === 'server-request-resolved') dispatch({ type: 'server-request-resolved', id: message.requestId });
       if (message.type === 'notification') {
         dispatch({ type: 'notification', notification: message.notification });
         if (message.notification.method === 'turn/completed' || message.notification.method.includes('fileChange')) void refreshGit();
       }
-      if (message.type === 'replay-gap') setToast('일부 오래된 이벤트가 만료되어 현재 thread 상태를 다시 읽습니다.');
+      if (message.type === 'resync-required') {
+        setToast(message.reason === 'server-restart' ? 'Local Server가 다시 시작되어 thread 상태를 재동기화합니다.' : 'Replay gap을 감지하여 thread 상태를 재동기화합니다.');
+        void resynchronize().catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)));
+      }
     });
     void client.start().then((result) => {
       if (!active) return;
@@ -100,7 +122,7 @@ export function App() {
       setDetailsOpen(result.settings.detailPanelOpen);
     }).catch((error: unknown) => { if (active) setFatalError(error instanceof Error ? error.message : String(error)); });
     return () => { active = false; offConnection(); offMessages(); client.close(); };
-  }, [client, refreshGit]);
+  }, [client, refreshGit, resynchronize]);
 
   useEffect(() => {
     if (connection === 'connected' && bootstrap?.engine.state === 'ready') void refreshData();
@@ -257,10 +279,10 @@ export function App() {
     <section className="workspace-shell">
       <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} networkEnabled={bootstrap.settings.network.shell} onOpenSidebar={() => { setSidebarOpen(true); void updateSettings({ sidebarOpen: true }); }} onToggleDetails={() => { const next = !detailsOpen; setDetailsOpen(next); void updateSettings({ detailPanelOpen: next }); }} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onToast={setToast} />
       <section className="workspace-body"><section className="conversation-pane"><div className="conversation-scroll"><div className="conversation-inner">
-        {!engineReady && <div className="setup-card"><ShieldCheck size={20} /><div><strong>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY 설정이 필요합니다' : '로컬 Codex 빌드가 필요합니다'}</strong><p>{bootstrap.engine.message}</p><code>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY=your_openai_api_key_here' : 'npm run codex:build'}</code><span>키는 Local Server와 App Server 자식 프로세스에만 존재하며 브라우저로 전달되지 않습니다.</span></div></div>}
+        {!engineReady && <div className="setup-card"><ShieldCheck size={20} /><div><strong>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY 설정이 필요합니다' : bootstrap.engine.state === 'missing-binary' ? '로컬 Codex 빌드가 필요합니다' : 'Codex App Server를 시작할 수 없습니다'}</strong><p>{bootstrap.engine.message}</p><code>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY=your_openai_api_key_here' : bootstrap.engine.state === 'missing-binary' ? 'npm run codex:build' : 'App Server failed locally'}</code><span>키는 Local Server와 선택된 provider를 실행하는 App Server 자식 프로세스에만 존재하며 브라우저로 전달되지 않습니다.</span>{bootstrap.engine.state === 'failed' && <button className="secondary-action" onClick={() => void client.http('/api/engine/restart', { method: 'POST', body: '{}' }).then((engine) => setBootstrap((current) => current ? { ...current, engine: engine as BootstrapResponse['engine'] } : current)).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)))}>Restart App Server</button>}</div></div>}
         {!events.activeThread && engineReady && <div className="empty-thread"><KodexMark compact /><h2>What would you like Kodex to build?</h2><p>{bootstrap.activeProject.path}</p><div className="suggestion-grid"><button onClick={() => setDraft('이 코드베이스의 구조와 핵심 흐름을 설명해줘')}><Code2 size={14} /> Explain this codebase</button><button onClick={() => setDraft('현재 로컬 변경 사항에서 버그와 회귀 가능성을 검토해줘')}><GitCommitHorizontal size={14} /> Review current changes</button><button onClick={() => setDraft('실패하는 테스트를 찾아 원인을 진단해줘')}><SquareTerminal size={14} /> Diagnose failing tests</button><button onClick={() => setDraft('필요하면 공식 Web Search와 허용된 네트워크 도구를 사용해 이 프로젝트를 개선해줘')}><ShieldCheck size={14} /> Improve with tools</button></div></div>}
         {items.map((item) => <ItemView key={item.id} item={item} liveText={events.liveText[item.id]} />)}
-        {events.pendingRequests.map((request) => <RequestCard key={`${request.method}:${String(request.id)}`} request={request} onResolve={resolveServerRequest} onError={rejectServerRequest} />)}
+        {events.pendingRequests.map((pending) => <RequestCard key={`${pending.request.method}:${String(pending.request.id)}`} request={pending.request} owned={pending.owned} onResolve={resolveServerRequest} onError={rejectServerRequest} />)}
         {events.notices.map((notice, index) => <div className="policy-event" key={`${index}:${notice}`}><ShieldCheck size={13} />{notice}</div>)}
       </div></div>
       <Composer draft={draft} busy={busy} connected={connection === 'connected'} engineReady={engineReady} activeTurnId={events.activeTurnId} models={models} model={model} effort={effort} settings={bootstrap.settings} git={git} onDraft={setDraft} onModel={(nextModel, nextEffort) => { setModel(nextModel); setEffort(nextEffort); }} onSend={() => void sendDraft()} onInterrupt={() => { if (events.activeThread && events.activeTurnId) void client.rpc('turn/interrupt', { threadId: events.activeThread.id, turnId: events.activeTurnId }).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error))); }} />

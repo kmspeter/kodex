@@ -76,7 +76,14 @@ export class LocalSecurity {
 
   verifyBootstrap(request: IncomingMessage): void {
     const origin = request.headers.origin;
-    if (!origin || !this.options.allowedOrigins.has(origin)) throw new Error('Kodex bootstrap requires an allowed UI Origin.');
+    if (origin && this.options.allowedOrigins.has(origin)) return;
+    const referer = request.headers.referer;
+    if (!origin && referer) {
+      try {
+        if (this.options.allowedOrigins.has(new URL(referer).origin)) return;
+      } catch { /* reject below */ }
+    }
+    throw new Error('Kodex bootstrap requires an allowed local UI Origin.');
   }
 
   setSessionCookie(response: ServerResponse): void {

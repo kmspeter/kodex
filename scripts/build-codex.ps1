@@ -4,6 +4,7 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceRoot = Join-Path $repositoryRoot 'vendor\openai-codex'
 $manifest = Join-Path $sourceRoot 'codex-rs\Cargo.toml'
 $commitFile = Join-Path $repositoryRoot 'CODEX_UPSTREAM_COMMIT'
+$sourceManifest = Join-Path $repositoryRoot 'VENDOR_SOURCE_SHA256.json'
 $targetRoot = Join-Path $repositoryRoot '.codex-build\target'
 $temporaryRoot = Join-Path $repositoryRoot '.codex-build\tmp'
 $binRoot = Join-Path $repositoryRoot 'bin'
@@ -40,20 +41,19 @@ if (-not (Get-Command link.exe -ErrorAction SilentlyContinue) -and ($IsWindows -
 if (-not (Test-Path -LiteralPath $manifest)) {
   throw "Official Codex source is missing at $sourceRoot"
 }
+$expectedCommit = (Get-Content -LiteralPath $commitFile -Raw).Trim()
+if (-not (Test-Path -LiteralPath $sourceManifest)) {
+  throw "Vendored source SHA-256 manifest is missing at $sourceManifest"
+}
+& node (Join-Path $repositoryRoot 'scripts\vendor-manifest.mjs')
+if ($LASTEXITCODE -ne 0) {
+  throw 'Vendored Codex source integrity verification failed. Refusing to build.'
+}
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   throw 'Rust/Cargo is not installed. Install the Rust toolchain declared by vendor/openai-codex/codex-rs/rust-toolchain.toml and rerun npm run codex:build.'
 }
 if (($IsWindows -or $env:OS -eq 'Windows_NT') -and -not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
   throw 'MSVC C++ Build Tools are required. Install Visual Studio Build Tools with the VCTools workload and rerun npm run codex:build.'
-}
-
-$expectedCommit = (Get-Content -LiteralPath $commitFile -Raw).Trim()
-$nestedGit = Join-Path $sourceRoot '.git'
-if (Test-Path -LiteralPath $nestedGit) {
-  $actualCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
-  if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $expectedCommit) {
-    throw "Codex source commit mismatch. Expected $expectedCommit, found $actualCommit"
-  }
 }
 
 New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
@@ -80,14 +80,17 @@ try {
 }
 
 Copy-Item -LiteralPath $builtBinary -Destination $destination -Force
-$version = (& $destination --version).Trim()
+$reportedVersion = (& $destination --version).Trim()
+$sourceIdentity = "Codex source build $($expectedCommit.Substring(0, 12))"
 $metadata = [ordered]@{
   upstream = 'https://github.com/openai/codex'
   commit = $expectedCommit
-  version = $version
+  kind = 'source-build'
+  displayVersion = $sourceIdentity
+  cliReportedVersion = $reportedVersion
   builtAt = [DateTime]::UtcNow.ToString('o')
   source = 'vendor/openai-codex'
 }
 $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binRoot 'codex-build.json') -Encoding utf8
 Write-Host "Built $destination"
-Write-Host "$version ($expectedCommit)"
+Write-Host "$sourceIdentity (CLI reports: $reportedVersion)"

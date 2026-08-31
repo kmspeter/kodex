@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { createServerEnvironment, createUiEnvironment } from './process-environment.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mode = process.argv[2] ?? 'dev';
@@ -21,29 +22,23 @@ if (mode === 'start' && (!existsSync(path.join(repositoryRoot, 'apps', 'local-se
 }
 
 const npmCli = process.env.npm_execpath || path.resolve(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-const environment = {
-  ...process.env,
-  KODEX_SERVER_PORT: process.env.KODEX_SERVER_PORT || '47831',
-  KODEX_UI_ORIGINS: mode === 'dev'
-    ? 'http://127.0.0.1:5173,http://localhost:5173'
-    : 'http://127.0.0.1:4173,http://localhost:4173',
-  VITE_KODEX_API_URL: `http://127.0.0.1:${process.env.KODEX_SERVER_PORT || '47831'}`,
-};
+const port = process.env.KODEX_SERVER_PORT || '47831';
+const serverEnvironment = createServerEnvironment(process.env, mode, port);
+const uiEnvironment = createUiEnvironment(process.env, port);
 
 const commands = mode === 'dev'
   ? [
-      { name: 'local-server', command: process.execPath, args: [npmCli, 'run', 'dev', '--workspace', '@kodex/local-server'] },
-      { name: 'ui', command: process.execPath, args: [npmCli, 'run', 'dev', '--workspace', '@kodex/ui'] },
+      { name: 'local-server', command: process.execPath, args: [npmCli, 'run', 'dev', '--workspace', '@kodex/local-server'], env: serverEnvironment },
+      { name: 'ui', command: process.execPath, args: [npmCli, 'run', 'dev', '--workspace', '@kodex/ui'], env: uiEnvironment },
     ]
   : [
-      { name: 'local-server', command: process.execPath, args: [path.join(repositoryRoot, 'apps', 'local-server', 'dist', 'main.js')] },
-      { name: 'ui', command: process.execPath, args: [npmCli, 'run', 'preview', '--workspace', '@kodex/ui'] },
+      { name: 'local-server', command: process.execPath, args: [path.join(repositoryRoot, 'apps', 'local-server', 'dist', 'main.js')], env: serverEnvironment },
     ];
 
 const children = commands.map((entry) => {
   const child = spawn(entry.command, entry.args, {
     cwd: repositoryRoot,
-    env: environment,
+    env: entry.env,
     shell: false,
     windowsHide: true,
     stdio: 'inherit',
@@ -75,5 +70,5 @@ for (const { name, child } of children) {
   });
 }
 
-process.stdout.write(`Kodex UI: http://127.0.0.1:${mode === 'dev' ? '5173' : '4173'}\n`);
-process.stdout.write(`Kodex Local Server: http://127.0.0.1:${environment.KODEX_SERVER_PORT}\n`);
+process.stdout.write(`Kodex UI: http://127.0.0.1:${mode === 'dev' ? '5173' : port}\n`);
+process.stdout.write(`Kodex Local Server: http://127.0.0.1:${port}\n`);
