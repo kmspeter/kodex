@@ -49,10 +49,16 @@ let stopping = false;
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) return;
   stopping = true;
-  await server?.close().catch(() => undefined);
-  await runtimeManager?.close().catch(() => undefined);
-  await database?.close().catch(() => undefined);
-  process.exitCode = exitCode;
+  try {
+    await server?.close().catch(() => undefined);
+    await runtimeManager?.close().catch(() => undefined);
+    await database?.close().catch(() => undefined);
+  } finally {
+    process.exitCode = exitCode;
+    if (process.connected) {
+      try { process.disconnect(); } catch { /* IPC may have disconnected concurrently */ }
+    }
+  }
 }
 
 try {
@@ -62,11 +68,12 @@ try {
   const history = new PostgresHistoryRepository(database);
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   const configuredDataRoot = process.env.KODEX_DATA_ROOT
-    ? path.resolve(process.env.KODEX_DATA_ROOT, 'tenants')
-    : undefined;
+    ? path.resolve(process.env.KODEX_DATA_ROOT)
+    : path.join(repositoryRoot, '.kodex-data');
   runtimeManager = new RuntimeManager({
     repositoryRoot,
-    tenantRoot: process.env.KODEX_TENANT_ROOT ? path.resolve(process.env.KODEX_TENANT_ROOT) : configuredDataRoot,
+    dataRoot: configuredDataRoot,
+    tenantRoot: process.env.KODEX_TENANT_ROOT ? path.resolve(process.env.KODEX_TENANT_ROOT) : undefined,
     apiKey: process.env.OPENAI_API_KEY,
     localApiKey: process.env.KODEX_LOCAL_LLM_API_KEY,
     historySink: history,
@@ -118,6 +125,12 @@ try {
   process.stdout.write(`Kodex runtime policy: max=${runtimeManager.maxActiveRuntimes}, idleMs=${runtimeManager.idleTimeoutMs}\n`);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => void stop());
+  process.on('message', (message: unknown) => {
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'kodex-shutdown') {
+      void stop();
+    }
+  });
+  process.once('disconnect', () => void stop());
   process.once('uncaughtException', () => {
     process.stderr.write('Kodex Local Server stopped after an uncaught internal error.\n');
     void stop(1);

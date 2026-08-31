@@ -37,6 +37,26 @@ function errorBody(code: string, message = 'Request failed.'): object {
 }
 
 describe('product auth browser contract', () => {
+  it('binds the browser global fetch receiver before storing it on the client', async () => {
+    const originalFetch = globalThis.fetch;
+    const receiver = vi.fn();
+    globalThis.fetch = async function (this: unknown) {
+      receiver(this);
+      return jsonResponse(authBody());
+    };
+    try {
+      const client = new ProductAuthClient({
+        apiBase: 'http://127.0.0.1:47832',
+        development: true,
+        pageUrl: 'http://127.0.0.1:5173/',
+      });
+      await client.me();
+      expect(receiver).toHaveBeenCalledWith(globalThis);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('strictly validates success JSON and rejects unknown or inconsistent fields', () => {
     expect(parseProductAuthResponse(authBody(), false).context.user.email)
       .toBe('person@example.com');
@@ -186,10 +206,40 @@ describe('product auth browser contract', () => {
       'http://127.0.0.1:5173/',
       true,
     )).toBe('http://127.0.0.1:47832');
-    expect(resolveProductApiBase(
+    expect(() => resolveProductApiBase(
       undefined,
       'http://127.0.0.1:47831/',
       false,
-    )).toBe('http://127.0.0.1:47832');
+    )).toThrow('runtime configuration is missing');
+    expect(() => resolveProductApiBase(
+      'http://localhost:49000',
+      'http://127.0.0.1:47831/',
+      false,
+    )).toThrow('same loopback hostname');
+    expect(() => resolveProductApiBase(
+      'https://auth.example.test',
+      'http://127.0.0.1:47831/',
+      false,
+    )).toThrow('UI protocol and hostname');
+    expect(() => resolveProductApiBase(
+      'https://127.0.0.1:49000',
+      'http://127.0.0.1:47831/',
+      false,
+    )).toThrow('UI protocol and hostname');
+    expect(resolveProductApiBase(
+      'http://127.0.0.1:49000',
+      'http://127.0.0.1:47831/',
+      false,
+    )).toBe('http://127.0.0.1:49000');
+    expect(() => resolveProductApiBase(
+      'https://api.example.test',
+      'https://app.example.test/',
+      false,
+    )).toThrow('must use the UI origin');
+    expect(resolveProductApiBase(
+      'https://app.example.test',
+      'https://app.example.test/',
+      false,
+    )).toBe('https://app.example.test');
   });
 });

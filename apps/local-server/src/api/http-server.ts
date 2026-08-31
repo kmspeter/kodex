@@ -95,6 +95,38 @@ function contentType(filename: string): string {
   }
 }
 
+export function injectProductApiOrigin(html: string, origin: string): string {
+  if (!html.includes('</head>')) throw new Error('UI index is missing its closing head element.');
+  const escaped = origin
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+  return html.replace(
+    '</head>',
+    `<meta name="kodex-product-api-origin" content="${escaped}"></head>`,
+  );
+}
+
+export function selectProductApiOrigin(
+  productApiOrigins: ReadonlySet<string>,
+  requestHost: string | undefined,
+): string {
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${requestHost ?? ''}`).hostname;
+  } catch {
+    throw new Error('Product API runtime origin could not be selected safely.');
+  }
+  const matches = [...productApiOrigins].filter(
+    (origin) => new URL(origin).hostname === hostname,
+  );
+  if (matches.length !== 1) {
+    throw new Error('Product API runtime origin could not be selected safely.');
+  }
+  return matches[0];
+}
+
 interface ClientConnection {
   authorization: ProductAuthorization;
   authorizationTimer: NodeJS.Timeout | null;
@@ -384,7 +416,12 @@ export class LocalHttpServer {
         return;
       }
       if (this.options.uiRoot && ['GET', 'HEAD'].includes(request.method ?? 'GET')) {
-        await this.#serveUi(url.pathname, request.method === 'HEAD', response);
+        await this.#serveUi(
+          url.pathname,
+          request.method === 'HEAD',
+          request.headers.host,
+          response,
+        );
         return;
       }
       json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
@@ -437,7 +474,12 @@ export class LocalHttpServer {
     json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
   }
 
-  async #serveUi(pathname: string, head: boolean, response: ServerResponse): Promise<void> {
+  async #serveUi(
+    pathname: string,
+    head: boolean,
+    requestHost: string | undefined,
+    response: ServerResponse,
+  ): Promise<void> {
     const root = path.resolve(this.options.uiRoot!);
     const requested = decodeURIComponent(pathname);
     let relative = requested === '/' ? 'index.html' : requested.replace(/^\/+/, '');
@@ -449,7 +491,11 @@ export class LocalHttpServer {
       relative = 'index.html';
       filename = path.join(root, relative);
     }
-    const contents = await readFile(filename);
+    let contents: Buffer | string = await readFile(filename);
+    if (relative === 'index.html') {
+      const productApiOrigin = selectProductApiOrigin(this.productApiOrigins, requestHost);
+      contents = injectProductApiOrigin(contents.toString('utf8'), productApiOrigin);
+    }
     response.statusCode = 200;
     response.setHeader('Content-Type', contentType(filename));
     response.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss: ${[...this.productApiOrigins].join(' ')}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`);

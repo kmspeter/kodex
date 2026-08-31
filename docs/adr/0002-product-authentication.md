@@ -50,12 +50,11 @@ unauthenticated, authenticated, API unavailable/retry로 구분한다. 정확한
 시작한다. 로그아웃은 이 runtime tree를 먼저 unmount하고 WebSocket, reconnect timer,
 pending RPC, bootstrap token과 React 상태를 제거한 뒤 CSRF 보호 logout을 완료한다.
 
-UI process의 브라우저 공개 환경 allowlist는 `VITE_KODEX_API_URL`과
+UI process의 브라우저 공개 환경 allowlist는 개발용 `VITE_KODEX_API_URL`과
 `VITE_PRODUCT_API_URL`뿐이다. 그 밖의 상속된 `VITE_*`는 제거한다. session bearer와 비밀번호는 React
-장기 상태, Web Storage, IndexedDB, URL, 로그에 저장하지 않는다. development에서는 UI와
-API가 `localhost`/`127.0.0.1`을 섞으면 명시적 설정 오류로 중단한다. 운영 기본 배치는
-HTTPS same-origin reverse proxy이며, 별도 origin은 동일-site cookie와 credentialed CORS가
-호환되는 경우만 허용한다.
+장기 상태, Web Storage, IndexedDB, URL, 로그에 저장하지 않는다. ADR 0006은 production
+renderer를 runtime meta로 전환하고, loopback은 동일 protocol/hostname, non-loopback은
+HTTPS exact same-origin으로 이 결정을 좁힌다. 별도 production origin은 허용하지 않는다.
 
 authenticated 상태는 session 만료 시각을 기준으로 최대 5분마다 `/me`를 재검증하고,
 document가 visible/focus 상태로 돌아올 때 throttle된 재검증을 수행한다. 성공 응답은 runtime

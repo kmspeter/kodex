@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { PRODUCT_SESSION_COOKIE_NAME, PRODUCT_WORKSPACE_HEADER_NAME } from '@kodex/product-contract';
@@ -19,6 +20,28 @@ const sessionB = '30000000-0000-4000-8000-000000000002';
 const tokenA = 'a'.repeat(43);
 const tokenB = 'b'.repeat(43);
 const roots: string[] = [];
+
+async function getWithHost(url: string, host: string): Promise<{ body: string; status: number }> {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      headers: { Host: host },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.once('end', () => resolve({
+        body: Buffer.concat(chunks).toString('utf8'),
+        status: response.statusCode ?? 0,
+      }));
+    });
+    request.once('error', reject);
+    request.end();
+  });
+}
 
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
@@ -55,7 +78,8 @@ async function fixture(options: { productApiOrigins?: ReadonlySet<string>; reval
   repository.set(tokenB, context(userB, sessionB, workspaceB));
   const manager = new RuntimeManager({
     repositoryRoot: root,
-    tenantRoot: path.join(root, 'tenant-data'),
+    dataRoot: path.join(root, 'data'),
+    tenantRoot: path.join(root, 'data', 'tenants'),
     runtimeOptions: { startAppServer: false },
     idleTimeoutMs: 60_000,
     sweepIntervalMs: 60_000,
@@ -188,17 +212,30 @@ describe('tenant-authorized Local Server', () => {
     roots.push(root);
     const uiRoot = path.join(root, 'ui');
     await mkdir(uiRoot, { recursive: true });
-    await writeFile(path.join(uiRoot, 'index.html'), '<!doctype html><title>Kodex local</title><div id="root"></div>', 'utf8');
+    await writeFile(path.join(uiRoot, 'index.html'), '<!doctype html><html><head><title>Kodex local</title></head><body><div id="root"></div></body></html>', 'utf8');
     const instance = await fixture({
       uiRoot,
-      productApiOrigins: new Set(['http://127.0.0.1:49000']),
+      productApiOrigins: new Set([
+        'http://127.0.0.1:49000',
+        'http://localhost:49000',
+      ]),
     });
     try {
       const page = await fetch(`${instance.baseUrl}/some/spa/route`);
       expect(page.status).toBe(200);
-      expect(await page.text()).toContain('Kodex local');
-      expect(page.headers.get('content-security-policy')).toContain('http://127.0.0.1:49000');
+      const html = await page.text();
+      expect(html).toContain('Kodex local');
+      expect(html).toContain('<meta name="kodex-product-api-origin" content="http://127.0.0.1:49000">');
+      expect(page.headers.get('content-security-policy')).toContain('http://127.0.0.1:49000 http://localhost:49000');
       expect(page.headers.get('content-security-policy')).not.toContain('47832');
+      const localhostPage = await getWithHost(
+        `${instance.baseUrl}/`,
+        `localhost:${instance.port}`,
+      );
+      expect(localhostPage.status).toBe(200);
+      expect(localhostPage.body).toContain(
+        '<meta name="kodex-product-api-origin" content="http://localhost:49000">',
+      );
       expect(instance.manager.inspect()).toHaveLength(0);
     } finally {
       await instance.server.close();

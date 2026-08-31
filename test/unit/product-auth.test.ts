@@ -190,6 +190,43 @@ describe('product API configuration and cookies', () => {
     })).not.toThrow();
   });
 
+  it('exposes minimal unauthenticated liveness and DB-backed readiness without internal errors', async () => {
+    const config: ProductApiConfig = {
+      host: '127.0.0.1',
+      port: 0,
+      allowedHosts: new Set(),
+      allowedOrigins: new Set(['http://127.0.0.1:5173']),
+      cookieSecret: Buffer.alloc(32, 7),
+      secureCookies: false,
+      sessionTtlMs: 60_000,
+      maxBodyBytes: 65_536,
+    };
+    const check = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('postgresql://user:secret@database/private-schema'));
+    const server = new ProductApiServer({
+      authenticate: vi.fn(), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
+    }, config, undefined, undefined, { check });
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const live = await fetch(`${base}/api/health/live`);
+      expect(live.status).toBe(200);
+      expect(live.headers.get('cache-control')).toContain('no-store');
+      expect(await live.json()).toEqual({ ok: true });
+
+      const ready = await fetch(`${base}/api/health/ready`);
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ ok: true });
+      const unavailable = await fetch(`${base}/api/health/ready`);
+      expect(unavailable.status).toBe(503);
+      expect(JSON.stringify(await unavailable.json())).toBe('{"ok":false}');
+      expect(check).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('sets bounded session/CSRF cookies and validates an HMAC double submit token', () => {
     const secret = randomBytes(32);
     const expiresAt = new Date(Date.now() + 60_000);

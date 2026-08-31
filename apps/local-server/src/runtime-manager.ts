@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { canUseWorkspaceRuntime, isUuid } from '@kodex/product-contract';
 import type { HistoryEventSink, KnowledgeService, RagConfig } from '@kodex/product-db';
 import {
@@ -20,6 +21,7 @@ export interface RuntimeManagerOptions {
   apiKey?: string;
   clock?: () => number;
   createRuntime?: (scope: RuntimeScope, dataRoot: string) => KodexRuntime | Promise<KodexRuntime>;
+  dataRoot?: string;
   idleTimeoutMs?: number;
   historyLog?: (event: HistoryRecorderLogEvent & { userId: string; workspaceId: string }) => void;
   historyOptions?: Pick<
@@ -76,6 +78,7 @@ export class RuntimeManager {
   readonly repositoryRoot: string;
   readonly sweepIntervalMs: number;
   readonly tenantRoot: string;
+  readonly dataRoot: string;
   #clock: () => number;
   #closed = false;
   #entries = new Map<string, RuntimeEntry>();
@@ -88,11 +91,9 @@ export class RuntimeManager {
 
   constructor(options: RuntimeManagerOptions) {
     this.repositoryRoot = path.resolve(options.repositoryRoot);
-    this.tenantRoot = path.resolve(options.tenantRoot ?? path.join(this.repositoryRoot, '.kodex-data', 'tenants'));
-    const relativeTenantRoot = path.relative(this.repositoryRoot, this.tenantRoot);
-    if (relativeTenantRoot.startsWith('..') || path.isAbsolute(relativeTenantRoot)) {
-      throw new Error('KODEX_TENANT_ROOT must remain inside the repository root.');
-    }
+    this.dataRoot = path.resolve(options.dataRoot ?? path.join(this.repositoryRoot, '.kodex-data'));
+    this.tenantRoot = path.resolve(options.tenantRoot ?? path.join(this.dataRoot, 'tenants'));
+    this.#validateDataRoots();
     this.maxActiveRuntimes = positiveInteger(options.maxActiveRuntimes, 8, 'maxActiveRuntimes');
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs, 15 * 60_000, 'idleTimeoutMs');
     this.sweepIntervalMs = positiveInteger(options.sweepIntervalMs, 60_000, 'sweepIntervalMs');
@@ -212,6 +213,28 @@ export class RuntimeManager {
     const relative = path.relative(this.tenantRoot, root);
     if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Tenant runtime path escaped its root.');
     return root;
+  }
+
+  #validateDataRoots(): void {
+    const filesystemRoot = path.parse(this.dataRoot).root;
+    const home = path.resolve(os.homedir());
+    const repositoryInsideDataRoot = path.relative(this.dataRoot, this.repositoryRoot);
+    if (
+      this.dataRoot === filesystemRoot
+      || this.dataRoot === home
+      || this.dataRoot === this.repositoryRoot
+      || (!repositoryInsideDataRoot.startsWith('..') && !path.isAbsolute(repositoryInsideDataRoot))
+    ) {
+      throw new Error('KODEX_DATA_ROOT must be a dedicated writable data directory, not a drive root, home, or repository/source root.');
+    }
+    const relativeTenantRoot = path.relative(this.dataRoot, this.tenantRoot);
+    if (
+      !relativeTenantRoot
+      || relativeTenantRoot.startsWith('..')
+      || path.isAbsolute(relativeTenantRoot)
+    ) {
+      throw new Error('KODEX_TENANT_ROOT must remain inside the trusted KODEX_DATA_ROOT.');
+    }
   }
 
   async evictIdle(now = this.#clock()): Promise<number> {

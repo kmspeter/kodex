@@ -105,9 +105,10 @@ function parseCookieSecret(value: string | undefined): Buffer {
 export function productApiConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): ProductApiConfig {
-  const production = env.NODE_ENV === 'production';
-  if (env.NODE_ENV && !['development', 'test', 'production'].includes(env.NODE_ENV)) {
-    return configurationError('NODE_ENV must be development, test, or production');
+  const nodeEnvironment = env.PRODUCT_API_NODE_ENV ?? env.NODE_ENV;
+  const production = nodeEnvironment === 'production';
+  if (nodeEnvironment && !['development', 'test', 'production'].includes(nodeEnvironment)) {
+    return configurationError('PRODUCT_API_NODE_ENV must be development, test, or production');
   }
 
   const host = env.PRODUCT_API_HOST?.trim() || '127.0.0.1';

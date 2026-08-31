@@ -36,8 +36,9 @@ UI ownership과 lease는 모든 close/rejection/shutdown 경로에서 한 번만
 
 ## RuntimeManager와 저장 경계
 
-`RuntimeManager` key는 서버가 인증한 `${userUuid}:${workspaceUuid}`다. 기본 data root 예시는
-다음과 같으며 UUID 이외 segment를 tenant 입력으로 사용하지 않는다.
+`RuntimeManager` key는 서버가 인증한 `${userUuid}:${workspaceUuid}`다. source 기본 data root
+예시는 다음과 같으며 UUID 이외 segment를 tenant 입력으로 사용하지 않는다. desktop의 외부
+userData 경계와 child lifecycle은 ADR 0006에서 확장한다.
 
 ```text
 .kodex-data/tenants/
@@ -82,8 +83,10 @@ UI `127.0.0.1:5173`, Local Server `127.0.0.1:47831`, Product API
 `127.0.0.1:47832`이며 built UI는 `47831`을 사용한다.
 Local Server의 built UI CSP는 검증된 exact HTTP(S) Product API origin 집합에서만
 `connect-src`를 만들며 custom `PRODUCT_API_PORT` 또는 `KODEX_PRODUCT_API_ORIGINS`와 맞춘다.
+ADR 0006에 따라 built UI의 runtime meta는 요청 Host와 동일 hostname인 Product API
+origin이 정확히 하나일 때만 선택한다.
 
-기존 Electron/portable runtime은 Product API process와 PostgreSQL lifecycle, repository
-내 tenant root를 아직 통합하지 않았으므로 이 단계의 지원 배포 경로가 아니다. 제품 DB
-thread/event projection, RAG, 비밀번호/이메일 복구와 shared raw runtime은 이 결정 범위에
-포함하지 않는다. `0001`/`0002` migration과 vendored Codex/protocol은 변경하지 않는다.
+Electron/portable runtime의 Product API process, 외부 PostgreSQL dependency와 writable
+tenant data base 통합은 ADR 0006에서 결정한다. 제품 DB thread/event projection, RAG,
+비밀번호/이메일 복구와 shared raw runtime은 이 결정 범위에 포함하지 않는다.
+`0001`/`0002` migration과 vendored Codex/protocol은 변경하지 않는다.

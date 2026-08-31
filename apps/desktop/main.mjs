@@ -1,95 +1,178 @@
-import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import net from 'node:net';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
+import dotenv from 'dotenv';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import {
+  assertOwnedChildPath,
+  DesktopStartupError,
+  publicDesktopStartupMessage,
+  startRuntimeChild,
+  stopRuntimeChildren,
+  unusedLoopbackPort,
+  validateDesktopDependencies,
+  waitForReady,
+} from './runtime-processes.mjs';
+
+app.setName('Kodex');
 
 const desktopRoot = path.dirname(fileURLToPath(import.meta.url));
 const bundledCandidate = path.resolve(desktopRoot, '..');
-const bundledRuntime = existsSync(path.join(bundledCandidate, 'server', 'main.js')) && existsSync(path.join(bundledCandidate, 'ui', 'index.html'));
+const bundledRuntime = existsSync(path.join(bundledCandidate, 'server', 'main.js'))
+  && existsSync(path.join(bundledCandidate, 'product-api', 'main.js'))
+  && existsSync(path.join(bundledCandidate, 'ui', 'index.html'));
 const sourceRoot = bundledRuntime ? bundledCandidate : path.resolve(desktopRoot, '..', '..');
-const smoke = process.argv.includes('--smoke');
-let localServer = null;
+const fakeSmoke = process.argv.includes('--smoke');
+const smoke = fakeSmoke || process.argv.includes('--smoke-real');
+const children = [];
+let mainWindow = null;
 let quitting = false;
+let launchComplete = false;
 let smokeDataRoot = null;
 let smokeStage = 'waiting for Electron ready';
+
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
-  process.stderr.write(`Kodex desktop smoke timed out while ${smokeStage}.\n`);
-  void stopLocalServer().finally(() => app.exit(1));
-}, 20_000) : null;
+  void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
+}, 30_000) : null;
 
 function runtimeRoot() {
-  return bundledRuntime ? sourceRoot : app.isPackaged ? path.join(process.resourcesPath, 'app') : sourceRoot;
+  return bundledRuntime || app.isPackaged ? sourceRoot : path.resolve(desktopRoot, '..', '..');
 }
 
-function serverEntry(root) {
-  return bundledRuntime || app.isPackaged ? path.join(root, 'server', 'main.js') : path.join(root, 'apps', 'local-server', 'dist', 'main.js');
+function entries(root) {
+  if (fakeSmoke) {
+    const fixture = path.join(desktopRoot, 'smoke-service.mjs');
+    return { productApi: fixture, localServer: fixture };
+  }
+  return bundledRuntime || app.isPackaged
+    ? {
+        productApi: path.join(root, 'product-api', 'main.js'),
+        localServer: path.join(root, 'server', 'main.js'),
+      }
+    : {
+        productApi: path.join(root, 'apps', 'api', 'dist', 'main.js'),
+        localServer: path.join(root, 'apps', 'local-server', 'dist', 'main.js'),
+      };
 }
 
 function uiRoot(root) {
   return bundledRuntime || app.isPackaged ? path.join(root, 'ui') : path.join(root, 'apps', 'ui', 'dist');
 }
 
-async function unusedLoopbackPort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
+function positivePort(value, fallback) {
+  const port = value?.trim() ? Number(value) : fallback;
+  if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+    throw new DesktopStartupError('CONFIG_INVALID');
+  }
+  return port;
 }
 
-async function waitForLocalServer(url, child) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Kodex Local Server exited with code ${child.exitCode}.`);
+async function loadDesktopConfiguration() {
+  const configuredPath = process.env.KODEX_CONFIG_FILE?.trim();
+  const configPath = configuredPath
+    ? path.resolve(configuredPath)
+    : path.join(app.getPath('userData'), 'kodex.env');
+  if (!fakeSmoke && existsSync(configPath)) {
+    let parsed;
     try {
-      const response = await globalThis.fetch(`${url}/api/health`, { cache: 'no-store' });
-      if (response.ok) return;
-    } catch { /* retry while the local process starts */ }
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+      parsed = dotenv.parse(await readFile(configPath, 'utf8'));
+    } catch {
+      throw new DesktopStartupError('CONFIG_FILE_INVALID', { configPath });
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+      if (process.env[key] === undefined) process.env[key] = value;
+    }
   }
-  throw new Error('Timed out waiting for the Kodex Local Server.');
+  if (!fakeSmoke) validateDesktopDependencies(process.env, configPath);
+  return configPath;
 }
 
-async function startLocalServer() {
-  smokeStage = 'starting the Local Server';
-  const root = runtimeRoot();
-  const entry = serverEntry(root);
-  if (!existsSync(entry) || !existsSync(uiRoot(root))) throw new Error('Built Local Server/UI files are missing. Run npm run build first.');
-  const port = smoke ? await unusedLoopbackPort() : Math.max(1, Math.min(65_535, Number(process.env.KODEX_SERVER_PORT) || 47_831));
-  const origin = `http://127.0.0.1:${port}`;
-  if (smoke) smokeDataRoot = await mkdtemp(path.join(app.getPath('temp'), 'kodex-desktop-smoke-'));
-  const environment = {
-    ...process.env,
-    KODEX_RUNTIME_ROOT: root,
-    KODEX_DATA_ROOT: smoke ? smokeDataRoot : bundledRuntime || app.isPackaged ? path.join(app.getPath('userData'), '.kodex-data') : path.join(root, '.kodex-data'),
-    KODEX_SERVER_PORT: String(port),
-    KODEX_SERVE_UI: '1',
-    KODEX_UI_ROOT: uiRoot(root),
-    KODEX_UI_ORIGINS: `${origin},http://localhost:${port}`,
-  };
-  for (const key of Object.keys(environment)) if (/^(?:VITE_|NEXT_PUBLIC_)/u.test(key)) delete environment[key];
-  if (smoke) {
-    environment.KODEX_DISABLE_ENV_FILE = '1';
-    delete environment.OPENAI_API_KEY;
-    delete environment.KODEX_LOCAL_LLM_API_KEY;
+function childEnvironment(overrides) {
+  const environment = { ...process.env, ...overrides };
+  for (const key of Object.keys(environment)) {
+    if (/^(?:VITE_|NEXT_PUBLIC_)/iu.test(key) || environment[key] === undefined) delete environment[key];
   }
-  localServer = spawn(process.execPath, [entry], {
-    cwd: root, env: { ...environment, ELECTRON_RUN_AS_NODE: '1' }, shell: false, windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  if (fakeSmoke) {
+    for (const key of [
+      'AUTH_COOKIE_SECRET',
+      'DATABASE_URL',
+      'KODEX_LOCAL_LLM_API_KEY',
+      'OPENAI_API_KEY',
+      'PRODUCT_DB_PASSWORD',
+    ]) delete environment[key];
+  }
+  return environment;
+}
+
+function watchChild(name, child) {
+  child.once('exit', () => {
+    if (quitting || !launchComplete) return;
+    void fatalShutdown(new DesktopStartupError('CHILD_EARLY_EXIT', { serviceName: name }));
   });
-  localServer.stdout.on('data', (chunk) => process.stdout.write(chunk));
-  localServer.stderr.on('data', (chunk) => process.stderr.write(chunk));
-  await waitForLocalServer(origin, localServer);
-  smokeStage = 'loading the localhost renderer';
-  return origin;
+}
+
+async function startChild(name, entry, environment, readyUrl, root) {
+  if (!existsSync(entry)) throw new DesktopStartupError('RUNTIME_FILES_MISSING', { serviceName: name });
+  const child = startRuntimeChild(name, process.execPath, entry, { cwd: root, env: environment });
+  children.push(child);
+  watchChild(name, child);
+  await waitForReady(child, readyUrl, name);
+  return child;
+}
+
+async function startServices() {
+  const root = runtimeRoot();
+  const serviceEntries = entries(root);
+  const rendererRoot = uiRoot(root);
+  if (!existsSync(rendererRoot)) throw new DesktopStartupError('RUNTIME_FILES_MISSING');
+
+  const localPort = smoke
+    ? await unusedLoopbackPort()
+    : positivePort(process.env.KODEX_SERVER_PORT, 47_831);
+  const productPort = smoke
+    ? await unusedLoopbackPort()
+    : positivePort(process.env.PRODUCT_API_PORT, 47_832);
+  if (localPort === productPort) throw new DesktopStartupError('CONFIG_INVALID');
+  const localOrigin = `http://127.0.0.1:${localPort}`;
+  const productOrigin = `http://127.0.0.1:${productPort}`;
+  const dataRoot = smoke
+    ? (smokeDataRoot = await mkdtemp(path.join(app.getPath('temp'), 'kodex-desktop-smoke-')))
+    : path.join(app.getPath('userData'), 'data');
+
+  smokeStage = 'waiting for Product API readiness';
+  await startChild('Kodex Product API', serviceEntries.productApi, childEnvironment({
+    KODEX_RUNTIME_ROOT: root,
+    KODEX_DISABLE_ENV_FILE: '1',
+    KODEX_SMOKE_SERVICE: fakeSmoke ? 'product-api' : undefined,
+    PRODUCT_API_NODE_ENV: 'development',
+    PRODUCT_API_HOST: '127.0.0.1',
+    PRODUCT_API_PORT: String(productPort),
+    PRODUCT_API_ALLOWED_HOSTS: `127.0.0.1:${productPort}`,
+    AUTH_ALLOWED_ORIGINS: localOrigin,
+    AUTH_COOKIE_SECURE: 'false',
+    KODEX_UI_ORIGINS: localOrigin,
+  }), `${productOrigin}/api/health/ready`, root);
+
+  smokeStage = 'waiting for Local Server readiness';
+  await startChild('Kodex Local Server', serviceEntries.localServer, childEnvironment({
+    KODEX_RUNTIME_ROOT: root,
+    KODEX_DISABLE_ENV_FILE: '1',
+    KODEX_SMOKE_SERVICE: fakeSmoke ? 'local-server' : undefined,
+    KODEX_DATA_ROOT: dataRoot,
+    KODEX_TENANT_ROOT: path.join(dataRoot, 'tenants'),
+    KODEX_SERVER_PORT: String(localPort),
+    PRODUCT_API_PORT: String(productPort),
+    KODEX_SERVE_UI: '1',
+    KODEX_UI_ROOT: rendererRoot,
+    KODEX_UI_ORIGINS: localOrigin,
+    KODEX_PRODUCT_API_ORIGINS: productOrigin,
+  }), `${localOrigin}/api/health`, root);
+  const exited = children.find((child) => child.exitCode !== null || child.signalCode !== null);
+  if (exited) throw new DesktopStartupError('CHILD_EARLY_EXIT', { serviceName: exited.kodexName });
+  launchComplete = true;
+  return { localOrigin, productOrigin };
 }
 
 function safeExternalUrl(value) {
@@ -116,87 +199,111 @@ function registerDesktopIpc() {
   });
 }
 
-async function stopLocalServer() {
-  const child = localServer;
-  localServer = null;
-  if (child && child.exitCode === null) {
-    child.kill('SIGTERM');
-    await Promise.race([
-      new Promise((resolve) => child.once('exit', resolve)),
-      new Promise((resolve) => globalThis.setTimeout(resolve, 5_000)),
-    ]);
-    if (child.exitCode === null && process.platform === 'win32' && child.pid) {
-      spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' });
-      await new Promise((resolve) => child.once('exit', resolve));
-    }
-  }
+async function stopServices() {
+  await stopRuntimeChildren(children.splice(0));
   if (smokeDataRoot) {
     const target = smokeDataRoot;
     smokeDataRoot = null;
-    await rm(target, { recursive: true, force: true });
+    await rm(assertOwnedChildPath(app.getPath('temp'), target, 'kodex-desktop-smoke-'), {
+      recursive: true,
+      force: true,
+    });
   }
+}
+
+async function fatalShutdown(error) {
+  if (quitting) return;
+  quitting = true;
+  launchComplete = false;
+  if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+  const publicMessage = publicDesktopStartupMessage(error);
+  process.stderr.write(`Kodex desktop failed: ${publicMessage.replaceAll('\n', ' ')}\n`);
+  mainWindow?.destroy();
+  mainWindow = null;
+  if (!smoke) {
+    try { dialog.showErrorBox('Kodex could not start', publicMessage); } catch { /* exit below */ }
+  }
+  await stopServices().catch(() => undefined);
+  app.exit(1);
 }
 
 async function launch() {
   if (smoke) process.stdout.write('Kodex desktop smoke: Electron ready.\n');
+  await loadDesktopConfiguration();
   registerDesktopIpc();
-  const origin = await startLocalServer();
-  const window = new BrowserWindow({
-    width: 1440, height: 920, minWidth: 980, minHeight: 680, show: !smoke,
+  const { localOrigin, productOrigin } = await startServices();
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 980,
+    minHeight: 680,
+    show: !smoke,
     webPreferences: {
       preload: path.join(runtimeRoot(), bundledRuntime || app.isPackaged ? 'desktop/preload.mjs' : 'apps/desktop/preload.mjs'),
-      nodeIntegration: false, contextIsolation: true, sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
     },
   });
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     const target = safeExternalUrl(url);
     if (target) void shell.openExternal(target);
     return { action: 'deny' };
   });
-  window.webContents.on('will-navigate', (event, target) => {
-    if (new URL(target).origin !== origin) {
-      event.preventDefault();
-      const external = safeExternalUrl(target);
-      if (external) void shell.openExternal(external);
-    }
+  mainWindow.webContents.on('will-navigate', (event, target) => {
+    try {
+      if (new URL(target).origin === localOrigin) return;
+    } catch { /* block malformed navigation below */ }
+    event.preventDefault();
+    const external = safeExternalUrl(target);
+    if (external) void shell.openExternal(external);
   });
-  await window.loadURL(origin);
-  if (smoke) {
-    smokeStage = 'checking the rendered application state';
-    const title = await window.webContents.executeJavaScript('document.title');
-    if (!String(title).toLocaleLowerCase().includes('kodex')) throw new Error(`Unexpected desktop document title: ${title}`);
-    const rendered = await window.webContents.executeJavaScript(`new Promise((resolve) => {
-      const deadline = Date.now() + 10_000;
-      const inspect = () => {
-        const text = document.body.innerText;
-        const connection = document.querySelector('.local-status')?.textContent?.trim();
-        if (text.includes('Kodex Local Server에 연결할 수 없습니다')) { resolve({ ok: false, text, connection }); return; }
-        if (text.includes('OPENAI_API_KEY 설정이 필요합니다') && connection === 'connected') { resolve({ ok: true, text, connection }); return; }
-        if (Date.now() >= deadline) { resolve({ ok: false, text, connection }); return; }
-        setTimeout(inspect, 50);
-      };
-      inspect();
-    })`);
-    if (!rendered.ok) throw new Error(`Desktop renderer did not bootstrap successfully (connection=${rendered.connection ?? 'missing'}): ${String(rendered.text).slice(0, 500)}`);
-    process.stdout.write('Kodex desktop smoke test passed.\n');
-    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
-    window.destroy();
-    await stopLocalServer();
-    app.quit();
+  smokeStage = 'loading the localhost renderer';
+  await mainWindow.loadURL(localOrigin);
+  if (!smoke) return;
+
+  smokeStage = 'checking Product API runtime configuration and login UI';
+  const rendered = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+    const deadline = Date.now() + 10_000;
+    let retried = false;
+    const inspect = () => {
+      const text = document.body.innerText;
+      const configured = document.querySelector('meta[name="kodex-product-api-origin"]')?.content;
+      if (text.includes('Kodex에 로그인')) { resolve({ ok: configured === ${JSON.stringify(productOrigin)}, text, configured }); return; }
+      if (!retried && text.includes('인증 서비스를 확인할 수 없습니다')) {
+        retried = true;
+        document.querySelector('#auth-unavailable-title')?.parentElement?.querySelector('button')?.click();
+      }
+      if (Date.now() >= deadline) {
+        void fetch(configured + '/api/auth/me', { credentials: 'include', cache: 'no-store' })
+          .then((response) => resolve({ ok: false, text, configured, probe: { status: response.status } }))
+          .catch((error) => resolve({ ok: false, text, configured, probe: { error: String(error) } }));
+        return;
+      }
+      setTimeout(inspect, 50);
+    };
+    inspect();
+  })`);
+  if (!rendered.ok) {
+    throw new Error(`Renderer did not reach the login screen with the expected Product API origin (${rendered.configured ?? 'missing'}); probe=${JSON.stringify(rendered.probe)}, text=${String(rendered.text).slice(0, 300)}.`);
   }
+  process.stdout.write('Kodex desktop smoke test passed: Product API ready -> Local Server ready -> login UI.\n');
+  if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+  quitting = true;
+  launchComplete = false;
+  mainWindow.destroy();
+  mainWindow = null;
+  await stopServices();
+  app.quit();
 }
 
 app.on('before-quit', (event) => {
-  if (quitting || !localServer) return;
+  if (quitting || children.length === 0) return;
   event.preventDefault();
   quitting = true;
-  void stopLocalServer().finally(() => app.quit());
+  launchComplete = false;
+  void stopServices().finally(() => app.quit());
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (!quitting) app.quit(); });
 
-app.whenReady().then(() => launch()).catch(async (error) => {
-  if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
-  process.stderr.write(`Kodex desktop failed: ${error instanceof Error ? error.message : String(error)}\n`);
-  await stopLocalServer();
-  app.exit(1);
-});
+app.whenReady().then(() => launch()).catch((error) => fatalShutdown(error));

@@ -129,7 +129,8 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'kodex-pg-tenant-'));
     manager = new RuntimeManager({
       repositoryRoot: root,
-      tenantRoot: path.join(root, 'tenants'),
+      dataRoot: path.join(root, 'data'),
+      tenantRoot: path.join(root, 'data', 'tenants'),
       maxActiveRuntimes: 8,
       idleTimeoutMs: 50,
       sweepIntervalMs: 60_000,
@@ -279,7 +280,8 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     let now = 10_000;
     const limited = new RuntimeManager({
       repositoryRoot: root,
-      tenantRoot: path.join(root, 'limited-tenants'),
+      dataRoot: path.join(root, 'limited-data'),
+      tenantRoot: path.join(root, 'limited-data', 'tenants'),
       maxActiveRuntimes: 1,
       idleTimeoutMs: 10,
       sweepIntervalMs: 60_000,

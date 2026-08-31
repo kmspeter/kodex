@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { authorizationRevalidationDelay } from '../../apps/local-server/src/api/http-server';
+import {
+  authorizationRevalidationDelay,
+  injectProductApiOrigin,
+  selectProductApiOrigin,
+} from '../../apps/local-server/src/api/http-server';
 import { parseProductApiOrigins } from '../../apps/local-server/src/api/security';
 
 describe('Local Server tenant security configuration', () => {
@@ -24,5 +28,27 @@ describe('Local Server tenant security configuration', () => {
     ]) {
       expect(() => parseProductApiOrigins(invalid)).toThrow('exact HTTP(S) origins');
     }
+  });
+
+  it('injects only the validated runtime Product API origin into the served HTML head', () => {
+    expect(injectProductApiOrigin('<html><head></head><body></body></html>', 'http://127.0.0.1:49000'))
+      .toContain('<meta name="kodex-product-api-origin" content="http://127.0.0.1:49000">');
+    expect(() => injectProductApiOrigin('<html></html>', 'http://127.0.0.1:49000'))
+      .toThrow('closing head');
+  });
+
+  it('selects exactly one Product API origin matching the validated UI request hostname', () => {
+    const origins = new Set([
+      'http://127.0.0.1:49000',
+      'http://localhost:49000',
+    ]);
+    expect(selectProductApiOrigin(origins, '127.0.0.1:47831')).toBe('http://127.0.0.1:49000');
+    expect(selectProductApiOrigin(origins, 'localhost:47831')).toBe('http://localhost:49000');
+    expect(() => selectProductApiOrigin(origins, 'other.example:47831'))
+      .toThrow('could not be selected safely');
+    expect(() => selectProductApiOrigin(new Set([
+      'http://127.0.0.1:49000',
+      'http://127.0.0.1:49001',
+    ]), '127.0.0.1:47831')).toThrow('could not be selected safely');
   });
 });

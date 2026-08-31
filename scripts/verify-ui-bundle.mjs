@@ -45,5 +45,8 @@ for (const forbidden of [
 for (const required of ['X-Kodex-Workspace-Id', 'workspace_id']) {
   if (!source.includes(required)) throw new Error(`UI bundle is missing tenant scope marker: ${required}`);
 }
+if (!source.includes('kodex-product-api-origin')) {
+  throw new Error('UI bundle is missing the runtime Product API origin marker.');
+}
 
-process.stdout.write('Verified browser bundle excludes product DB, password hashing, cookie bearer, and server secrets.\n');
+process.stdout.write('Verified browser bundle excludes product DB, password hashing, cookie bearer, and server secrets and requires runtime Product API configuration.\n');

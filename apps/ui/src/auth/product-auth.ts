@@ -192,6 +192,15 @@ function loopbackAlias(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1';
 }
 
+function runtimeProductApiBase(): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const entries = document.querySelectorAll<HTMLMetaElement>('meta[name="kodex-product-api-origin"]');
+  if (entries.length > 1) {
+    throw new ProductAuthConfigurationError('Product API runtime configuration is ambiguous.');
+  }
+  return entries[0]?.content.trim() || undefined;
+}
+
 export function resolveProductApiBase(
   configuredBase: string | undefined,
   pageUrl: string,
@@ -201,13 +210,16 @@ export function resolveProductApiBase(
   const candidate = configuredBase?.trim() || (development
     ? 'http://127.0.0.1:47832'
     : loopbackAlias(page.hostname)
-      ? `${page.protocol}//${page.hostname}:47832`
+      ? undefined
       : page.origin);
+  if (!candidate) {
+    throw new ProductAuthConfigurationError('Product API runtime configuration is missing.');
+  }
   let url: URL;
   try {
     url = new URL(candidate);
   } catch {
-    throw new ProductAuthConfigurationError('VITE_PRODUCT_API_URL must be an absolute HTTP(S) origin.');
+    throw new ProductAuthConfigurationError('Product API URL must be an absolute HTTP(S) origin.');
   }
   if (
     !['http:', 'https:'].includes(url.protocol)
@@ -215,17 +227,32 @@ export function resolveProductApiBase(
     || url.username
     || url.password
   ) {
-    throw new ProductAuthConfigurationError('VITE_PRODUCT_API_URL must be an exact HTTP(S) origin.');
+    throw new ProductAuthConfigurationError('Product API URL must be an exact HTTP(S) origin.');
   }
   if (
-    development
-    && loopbackAlias(page.hostname)
+    loopbackAlias(page.hostname)
     && loopbackAlias(url.hostname)
     && page.hostname !== url.hostname
   ) {
     throw new ProductAuthConfigurationError(
       'The UI and product API must use the same loopback hostname; do not mix localhost and 127.0.0.1.',
     );
+  }
+  if (
+    !development
+    && loopbackAlias(page.hostname)
+    && (
+      !loopbackAlias(url.hostname)
+      || url.hostname !== page.hostname
+      || url.protocol !== page.protocol
+    )
+  ) {
+    throw new ProductAuthConfigurationError(
+      'Production loopback Product API runtime configuration must use the UI protocol and hostname.',
+    );
+  }
+  if (!development && !loopbackAlias(page.hostname) && url.origin !== page.origin) {
+    throw new ProductAuthConfigurationError('Production Product API runtime configuration must use the UI origin.');
   }
   return url.origin;
 }
@@ -238,13 +265,16 @@ export class ProductAuthClient {
 
   constructor(options: ProductAuthClientOptions = {}) {
     const pageUrl = options.pageUrl ?? window.location.href;
-    const development = options.development ?? import.meta.env.DEV;
+    const bundledDevelopment = import.meta.env.DEV;
+    const development = options.development ?? bundledDevelopment;
+    const configuredBase = options.apiBase
+      ?? (bundledDevelopment ? import.meta.env.VITE_PRODUCT_API_URL : runtimeProductApiBase());
     this.apiBase = resolveProductApiBase(
-      options.apiBase ?? import.meta.env.VITE_PRODUCT_API_URL,
+      configuredBase,
       pageUrl,
       development,
     );
-    this.#fetch = options.fetch ?? globalThis.fetch;
+    this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   async me(options: { signal?: AbortSignal } = {}): Promise<ProductAuthContext> {

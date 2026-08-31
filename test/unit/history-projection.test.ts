@@ -299,7 +299,8 @@ describe('durable history outbox', () => {
     let now = 1_000;
     const manager = new RuntimeManager({
       repositoryRoot: root,
-      tenantRoot: path.join(root, 'tenants'),
+      dataRoot: path.join(root, 'data'),
+      tenantRoot: path.join(root, 'data', 'tenants'),
       runtimeOptions: { startAppServer: false },
       idleTimeoutMs: 1,
       sweepIntervalMs: 60_000,

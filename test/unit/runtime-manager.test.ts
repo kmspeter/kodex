@@ -49,7 +49,8 @@ describe('tenant RuntimeManager', () => {
     };
     const manager = new RuntimeManager({
       repositoryRoot,
-      tenantRoot: path.join(repositoryRoot, 'tenants'),
+      dataRoot: path.join(repositoryRoot, 'data'),
+      tenantRoot: path.join(repositoryRoot, 'data', 'tenants'),
       knowledgeService: { retrieve } as unknown as KnowledgeService,
       ragConfig,
       runtimeOptions: { startAppServer: false, ragAugmenter: injectedAugmenter },
@@ -71,7 +72,8 @@ describe('tenant RuntimeManager', () => {
     let creations = 0;
     const manager = new RuntimeManager({
       repositoryRoot,
-      tenantRoot: path.join(repositoryRoot, 'tenants'),
+      dataRoot: path.join(repositoryRoot, 'data'),
+      tenantRoot: path.join(repositoryRoot, 'data', 'tenants'),
       createRuntime: (_scope, dataRoot) => {
         creations += 1;
         return new KodexRuntime(repositoryRoot, undefined, { dataRoot, startAppServer: false });
@@ -88,7 +90,7 @@ describe('tenant RuntimeManager', () => {
         sessionId: '30000000-0000-4000-8000-000000000001',
         workspaceRole: 'owner',
       });
-      expect(first.runtime.store.root).toBe(path.join(repositoryRoot, 'tenants', 'users', userA, 'workspaces', workspaceA));
+      expect(first.runtime.store.root).toBe(path.join(repositoryRoot, 'data', 'tenants', 'users', userA, 'workspaces', workspaceA));
       await expect(stat(first.runtime.store.codexHome)).resolves.toMatchObject({});
       first.release();
       second.release();
@@ -131,7 +133,8 @@ describe('tenant RuntimeManager', () => {
     const runtimes: KodexRuntime[] = [];
     const manager = new RuntimeManager({
       repositoryRoot,
-      tenantRoot: path.join(repositoryRoot, 'tenants'),
+      dataRoot: path.join(repositoryRoot, 'data'),
+      tenantRoot: path.join(repositoryRoot, 'data', 'tenants'),
       maxActiveRuntimes: 1,
       idleTimeoutMs: 100,
       sweepIntervalMs: 60_000,
@@ -165,7 +168,11 @@ describe('tenant RuntimeManager', () => {
 
   it('rejects traversal-shaped or non-UUID tenant keys before creating directories', async () => {
     const repositoryRoot = await root();
-    const manager = new RuntimeManager({ repositoryRoot, tenantRoot: path.join(repositoryRoot, 'tenants') });
+    const manager = new RuntimeManager({
+      repositoryRoot,
+      dataRoot: path.join(repositoryRoot, 'data'),
+      tenantRoot: path.join(repositoryRoot, 'data', 'tenants'),
+    });
     try {
       await expect(manager.acquire(scope('../escape', workspaceA))).rejects.toThrow('invalid UUID');
       await expect(manager.acquire({ ...scope(userA, workspaceA), workspaceRole: 'viewer' }))
@@ -174,5 +181,37 @@ describe('tenant RuntimeManager', () => {
     } finally {
       await manager.close();
     }
+  });
+
+  it('allows an external dedicated data base but rejects broad or escaping tenant roots', async () => {
+    const repositoryRoot = await root();
+    const dataRoot = await root();
+    const tenantRoot = path.join(dataRoot, 'tenants');
+    const manager = new RuntimeManager({ repositoryRoot, dataRoot, tenantRoot });
+    try {
+      expect(manager.dataRootFor(scope(userA, workspaceA))).toBe(path.join(
+        tenantRoot,
+        'users',
+        userA,
+        'workspaces',
+        workspaceA,
+      ));
+    } finally {
+      await manager.close();
+    }
+
+    expect(() => new RuntimeManager({ repositoryRoot, dataRoot: repositoryRoot }))
+      .toThrow('dedicated writable data directory');
+    expect(() => new RuntimeManager({ repositoryRoot, dataRoot: os.homedir() }))
+      .toThrow('dedicated writable data directory');
+    expect(() => new RuntimeManager({ repositoryRoot, dataRoot: path.parse(repositoryRoot).root }))
+      .toThrow('dedicated writable data directory');
+    expect(() => new RuntimeManager({
+      repositoryRoot,
+      dataRoot,
+      tenantRoot: path.join(dataRoot, '..', 'escaped-tenants'),
+    })).toThrow('trusted KODEX_DATA_ROOT');
+    expect(() => new RuntimeManager({ repositoryRoot, dataRoot, tenantRoot: dataRoot }))
+      .toThrow('trusted KODEX_DATA_ROOT');
   });
 });

@@ -51,6 +51,10 @@ export interface KnowledgeApplication {
   retrieve(scope: KnowledgeScope, query: string, options?: { threshold?: number; topK?: number }): Promise<RetrievalResult>;
 }
 
+export interface ProductApiReadiness {
+  check(): Promise<void>;
+}
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -217,6 +221,7 @@ export class ProductApiServer {
     private readonly config: ProductApiConfig,
     private readonly history?: HistoryReader,
     private readonly knowledge?: KnowledgeApplication,
+    private readonly readiness?: ProductApiReadiness,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -274,6 +279,20 @@ export class ProductApiServer {
       }
 
       const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
+      if (url.pathname === '/api/health/live' && request.method === 'GET') {
+        json(response, 200, { ok: true });
+        return;
+      }
+      if (url.pathname === '/api/health/ready' && request.method === 'GET') {
+        try {
+          if (!this.readiness) throw new Error('readiness dependency is unavailable');
+          await this.readiness.check();
+          json(response, 200, { ok: true });
+        } catch {
+          json(response, 503, { ok: false });
+        }
+        return;
+      }
       if (url.pathname === '/api/auth/register' && request.method === 'POST') {
         verifyOrigin(request, this.config.allowedOrigins);
         requireJson(request);

@@ -10,7 +10,7 @@ Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원�
 apps/ui                 React/Vite renderer와 제품 인증 게이트
 apps/local-server       localhost API, 정적 UI, scheduler, Codex 수명 관리
 apps/api                독립 제품 인증·사용자별 history HTTP API
-apps/desktop            Electron 창과 Local Server 수명 관리
+apps/desktop            Electron 창과 Product API/Local Server 수명 관리
 packages/codex-protocol 공식 바이너리에서 생성한 protocol/schema
 packages/kodex-api      UI ↔ Local Server 계약
 packages/product-contract 브라우저-safe auth/workspace 공개 계약
@@ -79,11 +79,11 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 ## 로컬 데이터와 안정성
 
-`.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`가 따로 저장됩니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
+source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`, desktop은 `%APPDATA%\Kodex\data\tenants\...`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`를 따로 저장합니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. immutable source/runtime root와 writable data base는 별도 신뢰 경계이며, data base로 drive root, 사용자 home, repository/source root를 지정하거나 tenant root를 data base 밖으로 탈출시킬 수 없습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
 ## 제품 PostgreSQL, tenant runtime, 내구성 history와 private RAG (6단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`, `docs/adr/0002-product-authentication.md`, `docs/adr/0003-tenant-runtime-isolation.md`, `docs/adr/0004-app-server-history-projection.md`, `docs/adr/0005-private-pgvector-rag.md`에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0006-desktop-product-runtime.md`까지에 있습니다.
 
 `0001_initial_product_schema.sql`, `0002_password_credentials.sql`, `0003_agent_history_projection.sql`은 변경하지 않습니다. 새 `0004_user_scoped_rag.sql`은 knowledge/retrieval 계층 전체에 사용자 composite FK와 검색 index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG 설계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`에 있습니다.
 
@@ -107,6 +107,8 @@ docker compose --env-file .env.local -f infra/compose.yaml --profile product-api
 
 API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`이고, 상태 변경 요청은 정확히 허용한 `Origin`을 요구합니다.
 
+- `GET /api/health/live`: process liveness만 최소 `{ "ok": true }`로 반환합니다.
+- `GET /api/health/ready`: DB에 실제 `SELECT 1`이 성공할 때만 `200`; 실패는 credential/schema 내부 정보 없이 `503 { "ok": false }`입니다. migration은 listen 전에 완료됩니다.
 - `POST /api/auth/register`: `{ "email", "password", "displayName"? }`, 성공 `201`. 비밀번호는 UTF-8 12~1,024 bytes입니다.
 - `POST /api/auth/login`: `{ "email", "password" }`, 성공 `200`. 존재하지 않는 이메일과 잘못된 비밀번호는 같은 `401 invalid_credentials`입니다.
 - `GET /api/auth/me`: session cookie로 사용자, session 만료, workspace membership을 조회합니다.
@@ -134,7 +136,7 @@ repository/source tree, clipboard, 전체 Codex thread/history는 자동 scan하
 
 register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csrfToken`이 포함됩니다. 이 값은 session bearer가 아니라 `kodex_product_csrf` cookie와 같은 HMAC double-submit 증명이며 프론트 메모리에만 유지됩니다. logout 때도 서버는 허용 Origin, session HttpOnly cookie, CSRF cookie/header, HMAC을 모두 검증합니다.
 
-session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. UI는 모든 auth fetch에 `credentials: include`와 `no-store`를 사용하고 session 원문·비밀번호·CSRF token을 Web Storage, IndexedDB, URL 또는 로그에 기록하지 않습니다. 비밀번호 input은 요청을 시작한 직후 지웁니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 `NODE_ENV=production`에서는 HTTPS Origin과 `Secure`를 강제합니다. UI process의 공개 환경 allowlist는 `VITE_KODEX_API_URL`과 `VITE_PRODUCT_API_URL`뿐이며 그 밖의 상속된 `VITE_*`도 제거합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin, OpenAI/provider key는 서버 환경에만 두며 `VITE_` 접두사를 붙이지 않습니다.
+session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. UI는 모든 auth fetch에 `credentials: include`와 `no-store`를 사용하고 session 원문·비밀번호·CSRF token을 Web Storage, IndexedDB, URL 또는 로그에 기록하지 않습니다. 비밀번호 input은 요청을 시작한 직후 지웁니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 server production profile에서는 HTTPS Origin과 `Secure`를 강제합니다. Desktop은 원격 production 배치가 아니라 exact `127.0.0.1` HTTP cookie profile이므로 `PRODUCT_API_NODE_ENV=development`를 강제하지만 Host/Origin/CSP allowlist와 renderer의 protocol/hostname 검사는 그대로 유지합니다. UI process의 공개 환경 allowlist는 개발용 `VITE_KODEX_API_URL`과 `VITE_PRODUCT_API_URL`뿐이며 그 밖의 상속된 `VITE_*`도 제거합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin, OpenAI/provider key는 서버 환경에만 두며 `VITE_` 접두사를 붙이지 않습니다.
 
 앱 시작 상태는 `session 확인 중 → 로그인 필요 | 인증됨 | API 확인 불가/재시도`로 나뉩니다. runtime 실행 역할은 `owner`, `admin`, `member`이며 `viewer`는 읽기 전용 제품 membership이므로 Local Server HTTP/WS에서 `403 workspace_forbidden`입니다. 실행 가능한 membership이 없으면 명확한 권한 화면을 표시하고 `KodexClient`나 runtime을 만들지 않습니다. 선택은 실행 가능한 default membership 또는 첫 membership으로 고정하며 workspace 전환 API는 제공하지 않습니다. UI는 모든 Local Server HTTP 요청에 `X-Kodex-Workspace-Id`, WebSocket URL에는 비밀이 아닌 `workspace_id`를 보냅니다. session bearer는 계속 HttpOnly cookie에만 있습니다.
 
@@ -149,9 +151,9 @@ WebSocket upgrade도 같은 순서를 사용합니다. 연결 후에는 session 
 
 ### 개발 hostname과 운영 cookie 배치
 
-개발 기본 조합은 UI `http://127.0.0.1:5173`, Local Server `http://127.0.0.1:47831`, 제품 API `http://127.0.0.1:47832`입니다. built UI는 `47831`, 제품 API는 `47832`를 사용합니다. `npm run dev`와 `npm start`가 세 process의 정확한 allowlist를 함께 설정합니다. `PRODUCT_API_PORT`를 바꾸면 Local Server는 해당 포트의 `127.0.0.1`/`localhost` origin을 CSP `connect-src`에 사용하며, 명시적 배치는 `KODEX_PRODUCT_API_ORIGINS`에 comma-separated exact HTTP(S) origin만 허용합니다. path, credential, 중복 또는 CSP directive 형태 문자열은 시작 시 거부됩니다. built UI의 `VITE_PRODUCT_API_URL`도 같은 origin으로 build해야 합니다. 포트는 달라도 hostname은 정확히 같아야 하며 `localhost`와 `127.0.0.1`을 섞지 않습니다.
+`npm run dev`의 기본 조합은 Vite UI `http://127.0.0.1:5173`, Local Server `http://127.0.0.1:47831`, Product API `http://127.0.0.1:47832`이며 이 개발 경로에서만 `VITE_PRODUCT_API_URL`을 사용합니다. source `npm start`는 built UI를 Local Server `47831`에서 제공하고, 요청 Host가 `127.0.0.1`이면 `127.0.0.1` Product origin을, `localhost`이면 `localhost` Product origin을 검증된 runtime meta로 선택합니다. CSP에는 전체 exact allowlist를 유지합니다. Desktop/portable은 두 포트를 launcher가 정하되 hostname을 exact `127.0.0.1`로 고정하고 같은 runtime meta 계약을 사용합니다. `KODEX_PRODUCT_API_ORIGINS`는 unique exact HTTP(S) origin만 허용하며 path, credential, 중복 또는 CSP directive 형태 문자열은 시작 시 거부됩니다. production loopback renderer는 Product API도 동일 protocol과 동일 hostname이어야 하고 port만 달라질 수 있습니다.
 
-운영은 HTTPS same-origin reverse proxy가 UI와 `/api/auth/*`를 함께 제공하는 구성이 기본입니다. 제품 API를 별도 origin으로 둘 때는 동일-site HTTPS hostname, credentialed CORS allowlist, `Secure`/`SameSite=Strict` cookie가 모두 호환되어야 합니다. cross-site 배치는 현재 cookie 정책과 호환되지 않습니다. production Vite build에서 `VITE_PRODUCT_API_URL`을 생략하면 UI origin을 사용합니다.
+non-loopback 운영은 HTTPS reverse proxy가 UI와 Product API를 exact same-origin으로 제공해야 합니다. 별도 origin과 cross-site 배치는 renderer 및 cookie 정책에서 거부됩니다. production Vite build는 `VITE_PRODUCT_API_URL`을 컴파일하지 않으며 Local Server가 제공한 runtime meta가 없으면 안전하게 실패합니다.
 
 `RuntimeManager`의 기본 정책은 최대 active runtime 8개, idle timeout 15분, sweep 1분입니다. `KODEX_MAX_ACTIVE_RUNTIMES`, `KODEX_RUNTIME_IDLE_MS`, `KODEX_RUNTIME_SWEEP_MS`로 조정합니다. 동시 생성은 하나로 합치고 active WebSocket/HTTP lease가 있는 runtime은 eviction하지 않습니다. 최대치에서 모든 runtime이 leased 상태면 `503`을 반환합니다. tenant runtime마다 UI WebSocket 수와 무관한 history subscriber를 정확히 하나 설치한 뒤 App Server를 시작하며, 종료·eviction은 subscriber, retry timer, scheduler, pending approval/automation, App Server process와 data lock을 정리합니다.
 
@@ -173,9 +175,19 @@ UI 설정은 실제 Codex 요청/설정에 연결된 항목만 노출합니다: 
 
 ## Windows desktop와 runtime bundle
 
-Electron은 기존 Node Local Server를 그대로 관리하면서 Windows 창과 수명 관리를 얇게 제공하기 때문에 사용합니다. renderer Node integration은 꺼져 있고 context isolation과 sandbox를 켭니다. privileged renderer에서 원격 페이지를 열지 않고 외부 링크는 OS 브라우저로 보냅니다. preload에는 파일/폴더 선택만 노출하며 API key를 전달하지 않습니다.
+Electron은 Product API를 먼저 시작해 DB-backed readiness를 확인하고, 그 다음 Local Server를 시작해 health를 확인한 뒤 renderer를 엽니다. 어느 child든 예기치 않게 종료하면 창과 다른 child를 함께 정리합니다. 정상 종료는 각 child에 graceful 종료 시간을 준 뒤 Windows process tree를 bounded 강제 정리합니다. child stdout/stderr는 desktop으로 전달하지 않아 DB URL/provider key가 launcher log로 유출되지 않습니다. renderer Node integration은 꺼져 있고 context isolation과 sandbox를 켭니다. privileged renderer에서 원격 페이지를 열지 않고 외부 링크는 OS 브라우저로 보냅니다. preload에는 파일/폴더 선택만 노출하며 key나 runtime origin을 전달하지 않습니다.
 
-현재 source의 `npm run dev`/`npm start` 경로는 Product API, Local Server와 UI를 함께 관리합니다. 기존 Electron/portable runtime launcher는 Product API process와 PostgreSQL lifecycle을 아직 함께 관리하지 않으며, 기존 `KODEX_DATA_ROOT`가 repository 밖을 가리키는 배치도 새 tenant-root 제약과 호환되지 않습니다. 따라서 이 단계에서는 `runtime:bundle` 결과를 tenant 인증이 통합된 배포물로 간주하지 않습니다. desktop 통합은 별도 후속 작업입니다.
+PostgreSQL 자체는 앱에 포함하지 않고 Docker도 자동으로 시작하지 않습니다. desktop/portable 실행 전 `%APPDATA%\Kodex\kodex.env`에 최소 `DATABASE_URL`과 `AUTH_COOKIE_SECRET`을 설정하거나 process environment로 주입해야 합니다. environment가 같은 key의 파일 값보다 우선합니다. 이 파일은 로그인한 사용자만 읽을 수 있도록 Windows ACL을 제한하고 백업·지원 로그·공유 폴더에 넣지 마세요. `DATABASE_URL`이 없거나 잘못됐거나 DB가 접속 불가하면 renderer를 열기 전에 실패합니다. writable tenant 데이터는 `%APPDATA%\Kodex\data`에 있고 portable 실행 파일 옆에는 쓰지 않습니다.
+
+built UI는 Product API port를 build-time `VITE_*` 값으로 고정하지 않습니다. 검증된 Local Server가 UI 요청 Host와 같은 hostname의 exact Product API origin 하나를 HTML meta에 주입하고 전체 allowlist를 CSP `connect-src`에 유지합니다. renderer는 loopback에서 동일 protocol/hostname 또는 non-loopback exact same-origin만 허용합니다.
+
+```powershell
+npm run build
+npm run runtime:bundle
+# runtime\Kodex-win32-x64\Kodex.exe 실행
+```
+
+bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0004, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
 
 ## 검증
 
@@ -187,8 +199,11 @@ npm test
 npm run build
 npm run verify:ui-bundle
 npm run smoke:production
+npm run desktop:smoke
 npm run runtime:bundle
 npm run runtime:smoke
+# 주입한 DATABASE_URL로 실제 두 서버와 Electron login 화면 검증
+npm run desktop:smoke:postgres
 npm run test:local-provider
 npm run test:handshake
 # DATABASE_URL을 명시한 opt-in 제품 DB 검증
@@ -205,7 +220,7 @@ npm run test:rag-postgres
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`는 외부 모델이나 DB를 호출하지 않으며 embedding도 deterministic fake provider를 사용합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`는 전용 `pgvector/pgvector:0.8.6-pg17` `--rm` 컨테이너를 생성해 nearest-neighbor, model/dimension filter, 멱등/원자 교체, 사용자/workspace 격리, run/citation, cascade, session/membership 폐기를 검증하고 `finally`에서 container를 중지·제거합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`는 전용 `pgvector/pgvector:0.8.6-pg17` `--rm` 컨테이너를 생성해 검증하고 `finally`에서 container를 중지·제거합니다.
 
 ## 실제 한계
 
@@ -214,7 +229,7 @@ $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:emb
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
 - RAG는 현재 수동 text 문서 등록, 명시적 미리보기/turn 질의와 exact cosine sequential scan만 지원합니다. repository connector, shared knowledge, retention과 ANN index는 후속 작업입니다.
-- Electron/portable runtime은 Product API lifecycle과 tenant data root를 아직 통합하지 않았습니다. 현재 지원 실행 경로는 source의 `npm run dev`/`npm start`입니다.
+- Portable runtime은 외부 PostgreSQL의 설치·기동·백업·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 
 제3자 license와 notice는 `THIRD_PARTY.md` 및 각 dependency에 포함된 license 파일을 참조하십시오.

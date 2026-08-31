@@ -35,6 +35,7 @@
     "codex:generate-protocol": "node scripts/generate-protocol.mjs",
     "codex:verify-source": "node scripts/vendor-manifest.mjs",
     "desktop:smoke": "electron apps/desktop/main.mjs --smoke",
+    "desktop:smoke:postgres": "electron apps/desktop/main.mjs --smoke-real",
     "runtime:bundle": "node scripts/build-runtime.mjs",
     "runtime:smoke": "runtime\\Kodex-win32-x64\\electron.exe runtime\\Kodex-win32-x64\\resources\\app --smoke",
     "smoke:production": "node scripts/production-smoke.mjs"

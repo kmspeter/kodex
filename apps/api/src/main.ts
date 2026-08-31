@@ -33,9 +33,15 @@ async function stop(exitCode = 0): Promise<void> {
     return;
   }
   stopping = true;
-  await server?.close().catch(() => undefined);
-  await database?.close().catch(() => undefined);
-  process.exitCode = exitCode;
+  try {
+    await server?.close().catch(() => undefined);
+    await database?.close().catch(() => undefined);
+  } finally {
+    process.exitCode = exitCode;
+    if (process.connected) {
+      try { process.disconnect(); } catch { /* IPC may have disconnected concurrently */ }
+    }
+  }
 }
 
 try {
@@ -53,6 +59,7 @@ try {
     config,
     new PostgresHistoryRepository(database),
     knowledgeRuntime.service,
+    { check: async () => { await database!.query('SELECT 1'); } },
   );
   const port = await server.listen();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
@@ -60,6 +67,12 @@ try {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void stop());
   }
+  process.on('message', (message: unknown) => {
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'kodex-shutdown') {
+      void stop();
+    }
+  });
+  process.once('disconnect', () => void stop());
   process.once('uncaughtException', () => {
     process.stderr.write('Kodex Product API stopped after an uncaught internal error.\n');
     void stop(1);
