@@ -41,6 +41,8 @@ button { -webkit-tap-highlight-color: transparent; }
   position: relative;
   z-index: 20;
   display: flex;
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
   height: 100dvh;
   flex-direction: column;
@@ -604,12 +606,13 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 /* Vite application composition */
 .sidebar-top { display: flex; height: 51px; flex: 0 0 51px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 0 4px; }
 .sidebar-bottom { margin-top: auto; }
-.workspace-shell { position: relative; display: grid; min-width: 0; height: 100dvh; grid-template-rows: 52px minmax(0,1fr); background: var(--panel); }
+.workspace-shell { position: relative; display: grid; min-width: 0; height: 100dvh; grid-column: 2; grid-row: 1; grid-template-rows: 52px minmax(0,1fr); background: var(--panel); }
 .workspace-body { position: relative; min-height: 0; overflow: hidden; }
 .conversation-pane { position: relative; min-width: 0; height: 100%; transition: margin-right 180ms ease; }
 .conversation-pane .conversation-scroll { height: 100%; }
 .conversation-inner { width: min(790px, calc(100% - 72px)); margin: 0 auto; padding: 38px 0 220px; }
 .details-visible .conversation-pane { margin-right: 372px; }
+.details-visible .popover { display: none; }
 .workspace-body > .detail-panel { top: 0; }
 
 .message { display: grid; grid-template-columns: 27px minmax(0,1fr); gap: 10px; margin-top: 24px; }
@@ -644,6 +647,7 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 
 @media (max-width: 720px) {
   .details-visible { grid-template-columns: minmax(0,1fr); }
+  .workspace-shell { grid-column: 1; }
   .conversation-inner { width: calc(100% - 28px); padding-top: 24px; }
   .details-visible .conversation-pane { margin-right: 0; visibility: hidden; }
   .details-visible .detail-panel { width: 100%; }
