@@ -217,6 +217,71 @@ describe('product authentication UI', () => {
     expect(container.textContent).toContain('다시 시도');
   });
 
+  it('immediately unmounts runtime on a Knowledge 401 without treating 503 as logout', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const cleanup = vi.fn();
+    const unauthorizedClient = new ProductAuthClient({
+      apiBase: 'http://localhost:47832',
+      development: true,
+      pageUrl: 'http://localhost:5173/',
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse(responseContext))
+        .mockResolvedValueOnce(jsonResponse({
+          ok: false,
+          error: { code: 'unauthenticated', message: 'Authentication is required.' },
+        }, 401)),
+    });
+
+    function KnowledgeProbe(props: { client: ProductAuthClient; label: string }) {
+      useEffect(() => cleanup, []);
+      return <button type="button" onClick={() => void props.client.knowledge(
+        '/api/knowledge/query',
+        workspaceId,
+        { method: 'POST', body: JSON.stringify({ query: props.label }) },
+      ).catch(() => undefined)}>{props.label}</button>;
+    }
+
+    await act(async () => {
+      root.render(<ProductAuthGate client={unauthorizedClient}>{(_account, _logout, _loggingOut, client) => <KnowledgeProbe client={client} label="knowledge 401" />}</ProductAuthGate>);
+      await flush();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button')?.click();
+      await flush();
+    });
+    expect(container.textContent).toContain('Kodex에 로그인');
+    expect(cleanup).toHaveBeenCalledOnce();
+
+    await act(async () => root.unmount());
+    container.remove();
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    cleanup.mockClear();
+    const unavailableClient = new ProductAuthClient({
+      apiBase: 'http://localhost:47832',
+      development: true,
+      pageUrl: 'http://localhost:5173/',
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse(responseContext))
+        .mockResolvedValueOnce(jsonResponse({
+          ok: false,
+          error: { code: 'knowledge_unavailable', message: 'Knowledge is disabled.' },
+        }, 503)),
+    });
+    await act(async () => {
+      root.render(<ProductAuthGate client={unavailableClient}>{(_account, _logout, _loggingOut, client) => <KnowledgeProbe client={client} label="knowledge 503" />}</ProductAuthGate>);
+      await flush();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button')?.click();
+      await flush();
+    });
+    expect(container.textContent).toContain('knowledge 503');
+    expect(container.textContent).not.toContain('Kodex에 로그인');
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
   it('bounds session revalidation by expiry without a zero-delay loop', () => {
     const now = Date.parse('2026-08-31T00:00:00.000Z');
     expect(sessionRevalidationDelay('2026-08-31T12:00:00.000Z', now))

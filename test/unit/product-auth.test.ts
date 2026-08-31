@@ -1,6 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { productApiConfigFromEnv, type ProductApiConfig } from '../../apps/api/src/config.js';
+import {
+  productApiConfigFromEnv,
+  validateKnowledgeBodyCapacity,
+  type ProductApiConfig,
+} from '../../apps/api/src/config.js';
 import {
   createCsrfToken,
   createSessionCookies,
@@ -152,6 +156,7 @@ describe('product API configuration and cookies', () => {
       port: 47_832,
       secureCookies: false,
       sessionTtlMs: 43_200_000,
+      maxBodyBytes: 262_144,
     });
     expect(config.allowedOrigins).toEqual(new Set([
       'http://127.0.0.1:5173',
@@ -167,6 +172,22 @@ describe('product API configuration and cookies', () => {
       AUTH_ALLOWED_ORIGINS: 'http://app.example.com',
       PRODUCT_API_ALLOWED_HOSTS: 'api.example.com',
     })).toThrow('must use HTTPS');
+  });
+
+  it('reserves UTF-8 JSON capacity for the configured RAG document limit', () => {
+    const config = productApiConfigFromEnv({ AUTH_COOKIE_SECRET: 'A'.repeat(43) });
+    expect(() => validateKnowledgeBodyCapacity(config, {
+      enabled: true,
+      maxDocumentCharacters: 60_000,
+    })).not.toThrow();
+    expect(() => validateKnowledgeBodyCapacity(config, {
+      enabled: true,
+      maxDocumentCharacters: 100_000,
+    })).toThrow('PRODUCT_API_MAX_BODY_BYTES must be at least 408192');
+    expect(() => validateKnowledgeBodyCapacity({ maxBodyBytes: 1 }, {
+      enabled: false,
+      maxDocumentCharacters: 1_000_000,
+    })).not.toThrow();
   });
 
   it('sets bounded session/CSRF cookies and validates an HMAC double submit token', () => {

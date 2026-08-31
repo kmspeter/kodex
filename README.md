@@ -2,7 +2,7 @@
 
 Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 실행하는 Windows 앱입니다. UI, Local Server, 공식 Codex 전체 소스, 실행 파일, thread와 설정은 사용자의 컴퓨터에 있습니다. PostgreSQL 제품 session과 workspace membership은 필수이며, 인증되기 전에는 UI뿐 아니라 Local Server 자체가 HTTP/WebSocket/Codex runtime 접근을 거부합니다.
 
-Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 모델을 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결하고 로컬 상태와 프로세스 수명만 관리합니다.
+Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 생성 모델을 직접 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결합니다. 예외적으로 private RAG를 명시적으로 켜면 등록 문서 chunk, Knowledge 검색 미리보기 질의, 일반 turn의 첫 text 질의 embedding을 공식 Embeddings API에 직접 요청합니다. 자동화 prompt는 별도 opt-in일 때만 포함됩니다.
 
 ## 구조
 
@@ -15,7 +15,7 @@ packages/codex-protocol 공식 바이너리에서 생성한 protocol/schema
 packages/kodex-api      UI ↔ Local Server 계약
 packages/product-contract 브라우저-safe auth/workspace 공개 계약
 packages/shared         JSONL, sequence, 마스킹 유틸리티
-packages/product-db     PostgreSQL pool, migration, 제품 schema, auth/history repository
+packages/product-db     PostgreSQL pool, migration, auth/history와 private pgvector RAG
 infra/compose.yaml      개발용 PostgreSQL 17 + pgvector, 선택적 제품 API profile
 vendor/openai-codex     고정된 공식 전체 소스
 bin/codex.exe           위 소스에서 빌드한 공식 App Server 바이너리
@@ -81,11 +81,11 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`가 따로 저장됩니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, tenant runtime과 내구성 history (5단계, 필수)
+## 제품 PostgreSQL, tenant runtime, 내구성 history와 private RAG (6단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증 service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history read를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`, `docs/adr/0002-product-authentication.md`, `docs/adr/0003-tenant-runtime-isolation.md`, `docs/adr/0004-app-server-history-projection.md`에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`, `docs/adr/0002-product-authentication.md`, `docs/adr/0003-tenant-runtime-isolation.md`, `docs/adr/0004-app-server-history-projection.md`, `docs/adr/0005-private-pgvector-rag.md`에 있습니다.
 
-`0001_initial_product_schema.sql`과 `0002_password_credentials.sql`은 변경하지 않습니다. 새 `0003_agent_history_projection.sql`은 사용자별 project/thread identity, 하위 history row의 `created_by_user_id` FK, source-derived sort/lifecycle 필드와 read index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다.
+`0001_initial_product_schema.sql`, `0002_password_credentials.sql`, `0003_agent_history_projection.sql`은 변경하지 않습니다. 새 `0004_user_scoped_rag.sql`은 knowledge/retrieval 계층 전체에 사용자 composite FK와 검색 index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG 설계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`에 있습니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -113,6 +113,24 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
 - `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다.
 - `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다.
+- `POST /api/knowledge/documents?workspace_id=<uuid>`: `{ "documentId"?, "sourceId"?, "title", "content" }` text를 사용자 private source에 생성/갱신하고 chunk/embedding을 원자 교체합니다.
+- `GET /api/knowledge/documents?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 현재 사용자의 문서 metadata만 반환합니다. content checksum과 raw vector는 반환하지 않습니다.
+- `DELETE /api/knowledge/documents/<uuid>?workspace_id=<uuid>`: 현재 사용자 소유 문서만 삭제하며 추측한 다른 사용자 ID는 `404`입니다.
+- `POST /api/knowledge/query?workspace_id=<uuid>`: `{ "query", "topK"?, "threshold"? }`로 cosine 검색 preview와 document/chunk citation, score를 반환합니다. raw query/document embedding은 반환하지 않습니다.
+
+Knowledge mutation과 POST query는 auth와 별도로 정확한 Origin, session/CSRF cookie, `X-CSRF-Token`, URL/header workspace 일치를 모두 요구합니다. read도 매 요청 session과 membership을 다시 확인합니다. 동일 workspace owner/admin도 다른 사용자의 knowledge에는 접근하지 못합니다.
+
+### Knowledge/RAG 개인정보 및 실행 정책
+
+RAG는 기본 비활성입니다. `KODEX_RAG_ENABLED=true`와 서버 전용 `OPENAI_API_KEY`를 함께 설정해야 활성화됩니다. 활성화하면 (1) 등록 문서를 나눈 chunk, (2) Knowledge 화면에서 사용자가 명시적으로 실행한 검색 미리보기 질의, (3) 일반 agent `turn/start` 입력의 첫 text 질의가 OpenAI Embeddings API로 전송됩니다. `KODEX_RAG_AUTOMATIONS_ENABLED=true`도 설정한 경우에만 자동화 prompt의 첫 text 질의가 추가로 전송됩니다.
+
+repository/source tree, clipboard, 전체 Codex thread/history는 자동 scan하거나 전송하지 않습니다. 개인정보·소스·사내 문서를 넣거나 질의하기 전에 조직의 외부 전송 정책을 확인하세요. Codex 생성 provider를 UI에서 Local로 바꿔도 RAG provider는 현재 OpenAI Embeddings API이므로, local model만 쓴다고 생각한 상태에서 `KODEX_RAG_ENABLED`를 켜지 않도록 주의해야 합니다. `OPENAI_API_KEY`와 Authorization header는 Product API/Local Server 메모리에만 있고 browser, DB, 로그, API JSON에 포함되지 않습니다.
+
+활성화 시 기본 설정은 `text-embedding-3-small`, 1,536 dimensions, Unicode 1,600자 chunk/200자 overlap, cosine top-5, threshold 0.25, context 6,000자, 문서 60,000 code points입니다. Product API 본문 한도 기본값은 262,144 bytes로 4-byte Unicode 문서와 JSON 여유 공간을 수용합니다. `KODEX_RAG_DOCUMENT_MAX_CHARACTERS`를 늘리면 `PRODUCT_API_MAX_BODY_BYTES`도 늘려야 하며, 안전하지 않은 조합은 시작 시 설정 오류가 됩니다(본문 hard maximum 1,048,576 bytes). `.env.example`의 `OPENAI_EMBEDDING_*`, `KODEX_RAG_*`로 제한 안에서 조정합니다. 429·일시 5xx·네트워크 오류·timeout만 제한된 횟수로 재시도하고, 영구 provider 거부와 malformed 응답은 재시도하지 않습니다. 어떤 embedding/DB 오류도 agent turn 자체를 막지 않습니다.
+
+일반 `turn/start`는 첫 text query를 검색합니다. 결과는 document/chunk ID가 있는 bounded JSON block으로 원래 user input 뒤에 추가되며, block 자체가 untrusted reference이고 지시가 아니라는 경계를 포함합니다. 문서 속 prompt injection은 system/developer 권한으로 승격되지 않습니다. 결과 없음/실패는 원래 turn을 그대로 실행합니다. `turn/steer`에는 적용하지 않고 automation도 기본 미적용이며 `KODEX_RAG_AUTOMATIONS_ENABLED=true`에서만 사용합니다.
+
+현재 dimensionless vector schema는 model+dimension을 행별 지원하는 대신 하나의 안전한 고정-dimension HNSW/IVFFlat index를 두지 못합니다. 사용자/model/dimension B-tree prefilter 뒤 exact cosine sequential scan이므로 대규모 corpus는 느려질 수 있습니다. typed partition/ANN index, retention/expiry, workspace 공유 지식과 immutable citation 보존은 후속 작업입니다.
 
 register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csrfToken`이 포함됩니다. 이 값은 session bearer가 아니라 `kodex_product_csrf` cookie와 같은 HMAC double-submit 증명이며 프론트 메모리에만 유지됩니다. logout 때도 서버는 허용 Origin, session HttpOnly cookie, CSRF cookie/header, HMAC을 모두 검증합니다.
 
@@ -181,9 +199,13 @@ npm run test:product-auth
 npm run test:tenant-auth
 # DATABASE_URL을 명시한 실제 history projection/outbox/API 검증
 npm run test:history-postgres
+# 독립 --rm pgvector 컨테이너를 만들고 항상 정리하는 실제 RAG 검증
+npm run test:rag-postgres
+# 실제 OpenAI 호출은 key만으로 실행되지 않으며 두 값을 모두 명시해야 함
+$env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`는 외부 모델이나 DB를 호출하지 않으며 dependency-injected session/history sink로 tenant 공격 경로와 outbox replay를 검증합니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. History 검증은 duplicate/out-of-order idempotency, DB outage retry, restart replay, stable cursor, cross-user/workspace 차단, revoked session/membership, recursive redaction과 size bound를 포함합니다.
+기본 `npm test`는 외부 모델이나 DB를 호출하지 않으며 embedding도 deterministic fake provider를 사용합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`는 전용 `pgvector/pgvector:0.8.6-pg17` `--rm` 컨테이너를 생성해 nearest-neighbor, model/dimension filter, 멱등/원자 교체, 사용자/workspace 격리, run/citation, cascade, session/membership 폐기를 검증하고 `finally`에서 container를 중지·제거합니다.
 
 ## 실제 한계
 
@@ -191,7 +213,7 @@ npm run test:history-postgres
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
-- 이 단계는 history projection만 구현하며 RAG/embedding 생성·검색은 연결하지 않습니다.
+- RAG는 현재 수동 text 문서 등록, 명시적 미리보기/turn 질의와 exact cosine sequential scan만 지원합니다. repository connector, shared knowledge, retention과 ANN index는 후속 작업입니다.
 - Electron/portable runtime은 Product API lifecycle과 tenant data root를 아직 통합하지 않았습니다. 현재 지원 실행 경로는 source의 `npm run dev`/`npm start`입니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 

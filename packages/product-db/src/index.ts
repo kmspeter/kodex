@@ -77,3 +77,48 @@ export {
   type HistoryTurnSnapshot,
   type HistoryTurnStatus,
 } from './history-types.js';
+export {
+  CHUNKER_VERSION,
+  chunkText,
+  contentChecksum,
+  indexConfigurationChecksum,
+  validateChunkingConfig,
+  type ChunkingConfig,
+  type TextChunk,
+} from './chunking.js';
+export {
+  OpenAIEmbeddingProvider,
+  openAIEmbeddingConfigFromEnv,
+  type OpenAIEmbeddingConfig,
+  type OpenAIEmbeddingProviderOptions,
+} from './embedding-provider.js';
+export {
+  PostgresKnowledgeRepository,
+  type ReplacementChunk,
+  type ReplaceDocumentInput,
+  type StoredDocument,
+} from './knowledge-repository.js';
+export {
+  KnowledgeService,
+  type IndexTextDocumentInput,
+  type IndexTextDocumentResult,
+} from './knowledge-service.js';
+export {
+  createKnowledgeRuntimeFromEnv,
+  type KnowledgeRuntime,
+  type KnowledgeRuntimeOptions,
+} from './knowledge-runtime.js';
+export {
+  KnowledgeNotFoundError,
+  KnowledgeCursorError,
+  KnowledgeOperationError,
+  type EmbeddingProvider,
+  type KnowledgeDocumentPage,
+  type KnowledgeDocumentRecord,
+  type KnowledgeScope,
+  type KnowledgeSourceRecord,
+  type RagFailureCode,
+  type RetrievalCitation,
+  type RetrievalResult,
+} from './knowledge-types.js';
+export { ragConfigFromEnv, type RagConfig } from './rag-config.js';

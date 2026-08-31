@@ -64,15 +64,18 @@ describe('runtime ownership and automation coordination', () => {
     const first = await runtime.createAutomation({ name: 'First', prompt: 'one', intervalMinutes: 1, projectId: firstProject.id }) as { id: string };
     const second = await runtime.createAutomation({ name: 'Second', prompt: 'two', intervalMinutes: 1, projectId: secondProject.id }) as { id: string };
     const contexts: string[] = [];
+    const ragFlags: Array<boolean | undefined> = [];
     let counter = 0;
     vi.spyOn(runtime, 'handleRpc').mockImplementation(async (request: ClientRequest, context = {}) => {
       contexts.push(context.projectId ?? 'active');
+      ragFlags.push(context.rag);
       if (request.method === 'thread/start') return { thread: { id: `thread-${++counter}` } };
       if (request.method === 'turn/start') return { turn: { id: `turn-${counter}` } };
       return {};
     });
     await Promise.all([runtime.runAutomation(first.id), runtime.runAutomation(second.id)]);
     expect(new Set(contexts)).toEqual(new Set([firstProject.id, secondProject.id]));
+    expect(new Set(ragFlags)).toEqual(new Set([false]));
     expect((await runtime.projects.active()).id).toBe(firstProject.id);
     const threadStartsBefore = contexts.length;
     await runtime.runDueAutomations(Date.now() + 61_000);

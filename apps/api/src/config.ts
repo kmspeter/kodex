@@ -16,6 +16,8 @@ export class ProductApiConfigurationError extends Error {
   }
 }
 
+const KNOWLEDGE_JSON_OVERHEAD_BYTES = 8_192;
+
 function configurationError(message: string): never {
   throw new ProductApiConfigurationError(message);
 }
@@ -151,8 +153,21 @@ export function productApiConfigFromEnv(
     maxBodyBytes: positiveInteger(
       env.PRODUCT_API_MAX_BODY_BYTES,
       'PRODUCT_API_MAX_BODY_BYTES',
-      65_536,
+      262_144,
       1_048_576,
     ),
   };
+}
+
+export function validateKnowledgeBodyCapacity(
+  config: Pick<ProductApiConfig, 'maxBodyBytes'>,
+  ragConfig: { enabled: boolean; maxDocumentCharacters: number },
+): void {
+  if (!ragConfig.enabled) return;
+  const requiredBytes = ragConfig.maxDocumentCharacters * 4 + KNOWLEDGE_JSON_OVERHEAD_BYTES;
+  if (!Number.isSafeInteger(requiredBytes) || config.maxBodyBytes < requiredBytes) {
+    return configurationError(
+      `PRODUCT_API_MAX_BODY_BYTES must be at least ${requiredBytes} when KODEX_RAG_DOCUMENT_MAX_CHARACTERS is ${ragConfig.maxDocumentCharacters}`,
+    );
+  }
 }

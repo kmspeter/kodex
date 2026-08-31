@@ -59,6 +59,7 @@ interface ProductAuthGateProps {
     context: ProductAuthContext,
     logout: () => Promise<void>,
     loggingOut: boolean,
+    client: ProductAuthClient,
   ) => ReactNode;
   client?: ProductAuthClient;
 }
@@ -98,6 +99,16 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
   const [loggingOut, setLoggingOut] = useState(false);
   const [revalidationControl] = useState(() => new RevalidationControl());
   const authenticatedContext = state.status === 'authenticated' ? state.context : null;
+
+  useEffect(() => {
+    if (!client) return;
+    return client.onUnauthenticated(() => {
+      revalidationControl.stop();
+      client.clearMemory();
+      setLoggingOut(false);
+      setState({ status: 'unauthenticated' });
+    });
+  }, [client, revalidationControl]);
 
   useEffect(() => {
     if (!client) return;
@@ -250,7 +261,7 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
   if (state.status === 'unauthenticated') {
     return <AuthForm client={client} onAuthenticated={(context) => setState({ status: 'authenticated', context })} />;
   }
-  return children(state.context, logout, loggingOut);
+  return children(state.context, logout, loggingOut, client);
 }
 
 type AuthMode = 'login' | 'register';

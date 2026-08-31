@@ -4,6 +4,7 @@ import {
   PostgresAuthRepository,
   PostgresHistoryRepository,
   ProductDatabaseConfigurationError,
+  createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
 } from '@kodex/product-db';
 import dotenv from 'dotenv';
@@ -59,6 +60,7 @@ try {
   await database.migrate();
   const authorizer = new DatabaseProductAuthorizer(new PostgresAuthRepository(database));
   const history = new PostgresHistoryRepository(database);
+  const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   const configuredDataRoot = process.env.KODEX_DATA_ROOT
     ? path.resolve(process.env.KODEX_DATA_ROOT, 'tenants')
     : undefined;
@@ -68,6 +70,11 @@ try {
     apiKey: process.env.OPENAI_API_KEY,
     localApiKey: process.env.KODEX_LOCAL_LLM_API_KEY,
     historySink: history,
+    knowledgeService: knowledgeRuntime.service,
+    ragConfig: knowledgeRuntime.config,
+    ragLog: (event) => process.stderr.write(
+      `Kodex Local Server RAG state: ${JSON.stringify(event)}\n`,
+    ),
     historyOptions: {
       maxEventBytes: positiveInteger(
         process.env.KODEX_HISTORY_EVENT_MAX_BYTES, 65_536, 1_048_576,

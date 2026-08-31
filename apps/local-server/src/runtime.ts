@@ -9,6 +9,7 @@ import { validateServerRequestResult } from './api/validation.js';
 import { AppServerClient, type AppServerClientOptions } from './process/app-server-client.js';
 import { ProjectStore } from './projects/project-store.js';
 import { LocalStore } from './storage/local-store.js';
+import type { TurnRagAugmenter } from './rag/augmenter.js';
 
 export type ServerRequestResolution = 'answered' | 'timeout' | 'disconnect' | 'app-server-restart' | 'unsupported';
 
@@ -67,11 +68,14 @@ const KNOWN_UI_NOTIFICATIONS = new Set<string>([
 export interface RpcProjectContext {
   projectId?: string;
   cwd?: string;
+  rag?: boolean;
 }
 
 export interface KodexRuntimeOptions {
   dataRoot?: string;
   localApiKey?: string;
+  ragAugmenter?: TurnRagAugmenter;
+  ragAutomationsEnabled?: boolean;
   serverRequestTimeoutMs?: number;
   schedulerIntervalMs?: number;
   startAppServer?: boolean;
@@ -270,8 +274,11 @@ export class KodexRuntime {
           modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : null,
           excludeTurns: true,
         });
+        const input = this.options.ragAugmenter && context.rag !== false
+          ? await this.options.ragAugmenter.augment(request.params.input)
+          : request.params.input;
         const params: TurnStartParams = {
-          ...request.params, cwd: project.path, approvalPolicy: settings.approvalPolicy,
+          ...request.params, input, cwd: project.path, approvalPolicy: settings.approvalPolicy,
           approvalsReviewer: 'user', sandboxPolicy: sandboxPolicy(settings, project.path),
           model: selectedModel(settings, request.params.model),
         };
@@ -401,7 +408,10 @@ export class KodexRuntime {
     if (existing) return { threadId: existing.threadId, turnId: existing.turnId };
     const claim = await this.store.claimAutomation(id, Date.now(), force);
     if (!claim) throw new Error('Automation is already running or is not due.');
-    const context = { projectId: claim.automation.projectId };
+    const context: RpcProjectContext = {
+      projectId: claim.automation.projectId,
+      rag: this.options.ragAutomationsEnabled === true,
+    };
     try {
       const started = await this.handleRpc({ method: 'thread/start', id: 0, params: {} }, context);
       const threadId = (started as { thread: { id: string } }).thread.id;

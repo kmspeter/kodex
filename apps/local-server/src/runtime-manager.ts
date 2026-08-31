@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { canUseWorkspaceRuntime, isUuid } from '@kodex/product-contract';
-import type { HistoryEventSink } from '@kodex/product-db';
+import type { HistoryEventSink, KnowledgeService, RagConfig } from '@kodex/product-db';
 import {
   RuntimeHistoryRecorder,
   type HistoryRecorderLogEvent,
@@ -8,6 +8,7 @@ import {
 } from './history/recorder.js';
 import { KodexRuntime, type KodexRuntimeOptions } from './runtime.js';
 import type { RuntimeScope } from './auth/product-authorization.js';
+import { RagAugmenter, type RagLogEvent } from './rag/augmenter.js';
 
 export interface RuntimeLease {
   readonly runtime: KodexRuntime;
@@ -26,6 +27,9 @@ export interface RuntimeManagerOptions {
     'maxEventBytes' | 'maxOutboxBytes' | 'maxOutboxRecords' | 'retryInitialMs' | 'retryMaximumMs'
   >;
   historySink?: HistoryEventSink;
+  knowledgeService?: KnowledgeService;
+  ragConfig?: RagConfig;
+  ragLog?: (event: RagLogEvent & { userId: string; workspaceId: string }) => void;
   localApiKey?: string;
   maxActiveRuntimes?: number;
   repositoryRoot: string;
@@ -96,11 +100,32 @@ export class RuntimeManager {
     this.#historyLog = options.historyLog;
     this.#historyOptions = options.historyOptions;
     this.#historySink = options.historySink;
-    this.#createRuntime = options.createRuntime ?? ((scope, dataRoot) => new KodexRuntime(
-      this.repositoryRoot,
-      options.apiKey,
-      { ...options.runtimeOptions, localApiKey: options.localApiKey, dataRoot },
-    ));
+    this.#createRuntime = options.createRuntime ?? ((scope, dataRoot) => {
+      const ragAugmenter = options.knowledgeService && options.ragConfig?.enabled
+        ? new RagAugmenter(options.knowledgeService, {
+          userId: scope.userId,
+          workspaceId: scope.workspaceId,
+        }, options.ragConfig, (event) => options.ragLog?.({
+          ...event,
+          userId: scope.userId,
+          workspaceId: scope.workspaceId,
+        }))
+        : options.ragConfig?.enabled === false
+          ? undefined
+          : options.runtimeOptions?.ragAugmenter;
+      return new KodexRuntime(
+        this.repositoryRoot,
+        options.apiKey,
+        {
+          ...options.runtimeOptions,
+          localApiKey: options.localApiKey,
+          dataRoot,
+          ragAugmenter,
+          ragAutomationsEnabled: options.ragConfig?.enabled === true
+            && options.ragConfig.automationsEnabled,
+        },
+      );
+    });
     this.#sweepTimer = setInterval(() => void this.evictIdle(), this.sweepIntervalMs);
     this.#sweepTimer.unref?.();
   }

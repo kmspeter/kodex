@@ -1,5 +1,8 @@
 import {
   canUseWorkspaceRuntime,
+  isUuid,
+  PRODUCT_WORKSPACE_HEADER_NAME,
+  PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthContextDto,
   type ProductUserDto,
@@ -230,6 +233,7 @@ export function resolveProductApiBase(
 export class ProductAuthClient {
   readonly apiBase: string;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #unauthenticatedListeners = new Set<() => void>();
   #csrfToken: string | null = null;
 
   constructor(options: ProductAuthClientOptions = {}) {
@@ -280,8 +284,39 @@ export class ProductAuthClient {
     this.#csrfToken = null;
   }
 
+  async knowledge<T>(
+    pathname: string,
+    workspaceId: string,
+    init: RequestInit = {},
+  ): Promise<T> {
+    if (!isUuid(workspaceId) || !pathname.startsWith('/api/knowledge/')) {
+      throw new ProductAuthError('rejected', 'Knowledge request scope is invalid.');
+    }
+    const url = new URL(pathname, this.apiBase);
+    if (url.origin !== this.apiBase || url.pathname !== pathname.split('?', 1)[0]) {
+      throw new ProductAuthError('rejected', 'Knowledge request path is invalid.');
+    }
+    url.searchParams.append(PRODUCT_WORKSPACE_QUERY_PARAM, workspaceId);
+    const headers = new Headers(init.headers);
+    headers.set(PRODUCT_WORKSPACE_HEADER_NAME, workspaceId);
+    const mutation = !['GET', 'HEAD'].includes(init.method ?? 'GET');
+    if (mutation) {
+      if (!this.#csrfToken) throw new ProductAuthError('unauthenticated', 'Authentication is required.');
+      headers.set('X-CSRF-Token', this.#csrfToken);
+      if (init.body) headers.set('Content-Type', 'application/json');
+    }
+    const response = await this.#request(`${url.pathname}${url.search}`, { ...init, headers });
+    if (response.status === 204) return undefined as T;
+    return this.#json(response) as Promise<T>;
+  }
+
   clearMemory(): void {
     this.#csrfToken = null;
+  }
+
+  onUnauthenticated(listener: () => void): () => void {
+    this.#unauthenticatedListeners.add(listener);
+    return () => this.#unauthenticatedListeners.delete(listener);
   }
 
   async #establish(
@@ -319,6 +354,7 @@ export class ProductAuthClient {
     const error = parseErrorResponse(await this.#json(response));
     if (response.status === 401 && error.code === 'unauthenticated') {
       this.#csrfToken = null;
+      for (const listener of this.#unauthenticatedListeners) listener();
       throw new ProductAuthError('unauthenticated', error.message, response.status, error.code);
     }
     if (response.status >= 500) {

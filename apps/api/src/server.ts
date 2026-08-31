@@ -6,8 +6,25 @@ import {
   PRODUCT_WORKSPACE_QUERY_PARAM,
   type ProductAuthResponseDto,
 } from '@kodex/product-contract';
-import type { AuthContext, AuthSessionResult, HistoryReader, HistoryScope } from '@kodex/product-db';
-import { AuthServiceError, HistoryCursorError } from '@kodex/product-db';
+import type {
+  AuthContext,
+  AuthSessionResult,
+  HistoryReader,
+  HistoryScope,
+  IndexTextDocumentInput,
+  IndexTextDocumentResult,
+  KnowledgeDocumentPage,
+  KnowledgeScope,
+  RagConfig,
+  RetrievalResult,
+} from '@kodex/product-db';
+import {
+  AuthServiceError,
+  HistoryCursorError,
+  KnowledgeCursorError,
+  KnowledgeNotFoundError,
+  KnowledgeOperationError,
+} from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
 import {
   clearSessionCookies,
@@ -24,6 +41,14 @@ export interface AuthApplication {
   login(value: unknown): Promise<AuthSessionResult>;
   logout(token: string | undefined): Promise<void>;
   register(value: unknown): Promise<AuthSessionResult>;
+}
+
+export interface KnowledgeApplication {
+  readonly config: Pick<RagConfig, 'maxDocumentCharacters' | 'maxQueryCharacters' | 'maxTopK'>;
+  deleteDocument(scope: KnowledgeScope, documentId: string): Promise<void>;
+  indexTextDocument(scope: KnowledgeScope, input: IndexTextDocumentInput): Promise<IndexTextDocumentResult>;
+  listDocuments(scope: KnowledgeScope, options: { cursor?: string; limit: number }): Promise<KnowledgeDocumentPage>;
+  retrieve(scope: KnowledgeScope, query: string, options?: { threshold?: number; topK?: number }): Promise<RetrievalResult>;
 }
 
 class HttpError extends Error {
@@ -158,6 +183,24 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     });
     return;
   }
+  if (error instanceof KnowledgeCursorError) {
+    json(response, 400, {
+      ok: false,
+      error: { code: 'invalid_cursor', message: 'Knowledge cursor is invalid.' },
+    });
+    return;
+  }
+  if (error instanceof KnowledgeNotFoundError) {
+    json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
+    return;
+  }
+  if (error instanceof KnowledgeOperationError) {
+    json(response, 503, {
+      ok: false,
+      error: { code: 'knowledge_unavailable', message: 'Knowledge retrieval is temporarily unavailable.' },
+    });
+    return;
+  }
   process.stderr.write('Product API request failed without exposing internal details.\n');
   json(response, 500, {
     ok: false,
@@ -173,6 +216,7 @@ export class ProductApiServer {
     private readonly auth: AuthApplication,
     private readonly config: ProductApiConfig,
     private readonly history?: HistoryReader,
+    private readonly knowledge?: KnowledgeApplication,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -219,7 +263,7 @@ export class ProductApiServer {
       if (request.method === 'OPTIONS') {
         verifyOrigin(request, this.config.allowedOrigins);
         response.statusCode = 204;
-        response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+        response.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
         response.setHeader(
           'Access-Control-Allow-Headers',
           `Content-Type,X-CSRF-Token,${PRODUCT_WORKSPACE_HEADER_NAME}`,
@@ -308,6 +352,54 @@ export class ProductApiServer {
         json(response, 200, await this.history.listThreads(scope, options));
         return;
       }
+      if (url.pathname === '/api/knowledge/documents' && request.method === 'GET') {
+        const scope = await this.#knowledgeScope(request, url, false);
+        const knowledge = this.#requireKnowledge();
+        const page = await knowledge.listDocuments(scope, knowledgePageOptions(url));
+        json(response, 200, {
+          data: page.data.map(publicKnowledgeDocument),
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        });
+        return;
+      }
+      if (url.pathname === '/api/knowledge/documents' && request.method === 'POST') {
+        const scope = await this.#knowledgeScope(request, url, true);
+        const knowledge = this.#requireKnowledge();
+        requireJson(request);
+        const input = validateKnowledgeDocument(
+          await readJsonBody(request, this.config.maxBodyBytes),
+          knowledge.config.maxDocumentCharacters,
+        );
+        const result = await knowledge.indexTextDocument(scope, input);
+        json(response, 200, {
+          document: publicKnowledgeDocument(result.document),
+          chunkCount: result.chunkCount,
+          skipped: result.skipped,
+        });
+        return;
+      }
+      const knowledgeDocumentMatch = /^\/api\/knowledge\/documents\/([^/]+)$/u.exec(url.pathname);
+      if (knowledgeDocumentMatch && request.method === 'DELETE') {
+        const scope = await this.#knowledgeScope(request, url, true);
+        const knowledge = this.#requireKnowledge();
+        const documentId = decodeUuidPath(knowledgeDocumentMatch[1]);
+        await knowledge.deleteDocument(scope, documentId);
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (url.pathname === '/api/knowledge/query' && request.method === 'POST') {
+        const scope = await this.#knowledgeScope(request, url, true);
+        const knowledge = this.#requireKnowledge();
+        requireJson(request);
+        const input = validateKnowledgeQuery(
+          await readJsonBody(request, this.config.maxBodyBytes),
+          knowledge.config.maxQueryCharacters,
+          knowledge.config.maxTopK,
+        );
+        json(response, 200, await knowledge.retrieve(scope, input.query, input.options));
+        return;
+      }
       const historyThreadMatch = /^\/api\/history\/threads\/([^/]+)$/u.exec(url.pathname);
       if (historyThreadMatch && request.method === 'GET' && this.history) {
         const scope = await this.#historyScope(request, url);
@@ -335,6 +427,43 @@ export class ProductApiServer {
   }
 
   async #historyScope(request: IncomingMessage, url: URL): Promise<HistoryScope> {
+    return this.#authenticatedWorkspaceScope(request, url);
+  }
+
+  #requireKnowledge(): KnowledgeApplication {
+    if (!this.knowledge) {
+      throw new HttpError(503, 'knowledge_unavailable', 'Knowledge retrieval is disabled.');
+    }
+    return this.knowledge;
+  }
+
+  async #knowledgeScope(
+    request: IncomingMessage,
+    url: URL,
+    mutation: boolean,
+  ): Promise<KnowledgeScope> {
+    if (mutation) {
+      verifyOrigin(request, this.config.allowedOrigins);
+      const cookies = parseCookies(request.headers.cookie);
+      const sessionToken = cookies.get(sessionCookieName);
+      const csrfHeader = request.headers['x-csrf-token'];
+      if (
+        !sessionToken
+        || typeof csrfHeader !== 'string'
+        || !verifyCsrfToken(
+          sessionToken,
+          cookies.get(csrfCookieName),
+          csrfHeader,
+          this.config.cookieSecret,
+        )
+      ) {
+        throw new HttpError(403, 'csrf_failed', 'CSRF validation failed.');
+      }
+    }
+    return this.#authenticatedWorkspaceScope(request, url);
+  }
+
+  async #authenticatedWorkspaceScope(request: IncomingMessage, url: URL): Promise<HistoryScope> {
     const queryWorkspaces = url.searchParams.getAll(PRODUCT_WORKSPACE_QUERY_PARAM);
     const headerWorkspace = request.headers[PRODUCT_WORKSPACE_HEADER_NAME.toLowerCase()];
     if (
@@ -354,6 +483,120 @@ export class ProductApiServer {
     }
     return { userId: context.user.id, workspaceId: headerWorkspace };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function publicKnowledgeDocument(document: {
+  createdAt: Date;
+  id: string;
+  sourceId: string;
+  title: string | null;
+  updatedAt: Date;
+}): Record<string, unknown> {
+  return {
+    id: document.id,
+    sourceId: document.sourceId,
+    title: document.title,
+    createdAt: document.createdAt.toISOString(),
+    updatedAt: document.updatedAt.toISOString(),
+  };
+}
+
+function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key))
+    && Object.keys(value).every((key) => allowed.has(key));
+}
+
+function decodeUuidPath(value: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    throw new HttpError(404, 'not_found', 'Not found.');
+  }
+  if (!isUuid(decoded)) throw new HttpError(404, 'not_found', 'Not found.');
+  return decoded;
+}
+
+function hasInvalidKnowledgeCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) as number;
+    if (codePoint < 32 && codePoint !== 9 && codePoint !== 10 && codePoint !== 13) return true;
+    if (codePoint >= 0xD800 && codePoint <= 0xDFFF) return true;
+  }
+  return false;
+}
+
+function validateKnowledgeDocument(value: unknown, maximumCharacters: number): IndexTextDocumentInput {
+  if (!isRecord(value) || !exactKeys(value, ['title', 'content'], ['documentId', 'sourceId'])) {
+    throw new HttpError(400, 'invalid_request', 'Knowledge document input is invalid.');
+  }
+  if (
+    typeof value.title !== 'string'
+    || value.title !== value.title.trim()
+    || Array.from(value.title).length < 1
+    || Array.from(value.title).length > 200
+    || hasInvalidKnowledgeCharacter(value.title)
+    || typeof value.content !== 'string'
+    || value.content.trim().length === 0
+    || Array.from(value.content).length > maximumCharacters
+    || hasInvalidKnowledgeCharacter(value.content)
+    || (value.documentId !== undefined && !isUuid(value.documentId))
+    || (value.sourceId !== undefined && !isUuid(value.sourceId))
+  ) {
+    throw new HttpError(400, 'invalid_request', 'Knowledge document input is invalid.');
+  }
+  return {
+    title: value.title,
+    content: value.content,
+    ...(typeof value.documentId === 'string' ? { documentId: value.documentId } : {}),
+    ...(typeof value.sourceId === 'string' ? { sourceId: value.sourceId } : {}),
+  };
+}
+
+function validateKnowledgeQuery(
+  value: unknown,
+  maximumCharacters: number,
+  maximumTopK: number,
+): { options: { threshold?: number; topK?: number }; query: string } {
+  if (!isRecord(value) || !exactKeys(value, ['query'], ['threshold', 'topK'])) {
+    throw new HttpError(400, 'invalid_request', 'Knowledge query input is invalid.');
+  }
+  if (
+    typeof value.query !== 'string'
+    || value.query !== value.query.trim()
+    || Array.from(value.query).length < 1
+    || Array.from(value.query).length > maximumCharacters
+    || value.query.includes('\0')
+    || (value.topK !== undefined && (!Number.isSafeInteger(value.topK) || (value.topK as number) < 1 || (value.topK as number) > maximumTopK))
+    || (value.threshold !== undefined && (typeof value.threshold !== 'number' || !Number.isFinite(value.threshold) || value.threshold < -1 || value.threshold > 1))
+  ) {
+    throw new HttpError(400, 'invalid_request', 'Knowledge query input is invalid.');
+  }
+  return {
+    query: value.query,
+    options: {
+      ...(typeof value.topK === 'number' ? { topK: value.topK } : {}),
+      ...(typeof value.threshold === 'number' ? { threshold: value.threshold } : {}),
+    },
+  };
+}
+
+function knowledgePageOptions(url: URL): { cursor?: string; limit: number } {
+  const rawLimit = url.searchParams.get('limit');
+  const limit = rawLimit === null ? 25 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpError(400, 'invalid_request', 'Knowledge page limit must be between 1 and 100.');
+  }
+  const cursors = url.searchParams.getAll('cursor');
+  if (cursors.length > 1 || (cursors[0]?.length ?? 0) > 512 || (cursors[0] && !/^[A-Za-z0-9_-]+$/u.test(cursors[0]))) {
+    throw new HttpError(400, 'invalid_cursor', 'Knowledge cursor is invalid.');
+  }
+  return { limit, ...(cursors[0] ? { cursor: cursors[0] } : {}) };
 }
 
 function historyPageOptions(url: URL): { cursor?: string; limit: number } {

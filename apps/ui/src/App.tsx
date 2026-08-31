@@ -12,7 +12,7 @@ import type {
 import type { AutomationRecord, BootstrapResponse, GitStatus, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
 import { Code2, GitCommitHorizontal, LoaderCircle, ShieldCheck, SquareTerminal } from 'lucide-react';
 import { ProductAuthGate } from './auth/AuthGate';
-import { selectProductRuntimeWorkspace, type ProductAuthContext } from './auth/product-auth';
+import { selectProductRuntimeWorkspace, type ProductAuthClient, type ProductAuthContext } from './auth/product-auth';
 import { KodexClient, type ConnectionState } from './client/kodex-client';
 import { KodexMark } from './components/Brand';
 import { ChangesPanel } from './components/ChangesPanel';
@@ -28,8 +28,9 @@ const EMPTY_GIT: GitStatus = { isRepository: false, branch: '', files: [], total
 type ActivePopover = 'header-account' | 'header-open' | 'header-more' | 'composer-model' | null;
 
 export function App() {
-  return <ProductAuthGate>{(account, logout, loggingOut) => <ProductWorkspaceApp
+  return <ProductAuthGate>{(account, logout, loggingOut, authClient) => <ProductWorkspaceApp
     account={account}
+    authClient={authClient}
     loggingOut={loggingOut}
     onLogout={logout}
   />}</ProductAuthGate>;
@@ -37,6 +38,7 @@ export function App() {
 
 function ProductWorkspaceApp(props: {
   account: ProductAuthContext;
+  authClient: ProductAuthClient;
   loggingOut: boolean;
   onLogout: () => Promise<void>;
 }) {
@@ -61,6 +63,7 @@ function ProductWorkspaceApp(props: {
 
 function AuthenticatedApp(props: {
   account: ProductAuthContext;
+  authClient: ProductAuthClient;
   loggingOut: boolean;
   onLogout: () => Promise<void>;
   workspaceId: string;
@@ -98,6 +101,10 @@ function AuthenticatedApp(props: {
   const detailsOpenRef = useRef(false);
   const settingsSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => { activeThreadIdRef.current = events.activeThread?.id ?? null; }, [events.activeThread?.id]);
+
+  const knowledgeRequest = useCallback(<T,>(pathname: string, init?: RequestInit): Promise<T> => (
+    props.authClient.knowledge<T>(pathname, props.workspaceId, init)
+  ), [props.authClient, props.workspaceId]);
 
   const refreshGit = useCallback(async () => {
     try { setGit(await client.http<GitStatus>('/api/git/status')); } catch { setGit(EMPTY_GIT); }
@@ -399,7 +406,7 @@ function AuthenticatedApp(props: {
       {detailsOpen && <ChangesPanel git={git} selectedFile={selectedFile} diff={selectedDiff} onSelect={setSelectedFile} onClose={toggleDetailsPanel} onRefresh={() => void refreshGit()} />}
       </section>
     </section>
-    <Dialogs dialog={dialog} bootstrap={bootstrap} automations={automations} skills={skills} apps={apps} plugins={plugins} mcpServers={mcpServers} archivedThreads={archivedThreads} codexConfig={codexConfig} onClose={closeDialog} onError={(error) => setToast(error instanceof Error ? error.message : String(error))} onCreateAutomation={async (input) => { await client.http('/api/automations', { method: 'POST', body: JSON.stringify(input) }); await refreshAutomations(); }} onRunAutomation={async (id) => { await client.http('/api/automations/run', { method: 'POST', body: JSON.stringify({ id }) }); await refreshAutomations(); setToast('자동화를 공식 Codex turn으로 시작했습니다.'); }} onDeleteAutomation={async (id) => { await client.http('/api/automations', { method: 'DELETE', body: JSON.stringify({ id }) }); await refreshAutomations(); }} onSettings={updateSettings} onAddProject={addProject} onRemoveProject={removeProject} onUnarchive={unarchiveThread} onAddMcp={async (name, url) => { if (!/^[A-Za-z0-9_-]+$/u.test(name)) throw new Error('MCP name may only contain letters, numbers, _ and -.'); await client.rpc('config/value/write', { keyPath: `mcp_servers.${name}`, value: { url }, mergeStrategy: 'upsert' }); await client.rpc('config/mcpServer/reload', undefined); setToast('Remote MCP configuration saved locally.'); await refreshData(); }} />
+    <Dialogs dialog={dialog} bootstrap={bootstrap} automations={automations} skills={skills} apps={apps} plugins={plugins} mcpServers={mcpServers} archivedThreads={archivedThreads} codexConfig={codexConfig} onClose={closeDialog} onError={(error) => setToast(error instanceof Error ? error.message : String(error))} onCreateAutomation={async (input) => { await client.http('/api/automations', { method: 'POST', body: JSON.stringify(input) }); await refreshAutomations(); }} onRunAutomation={async (id) => { await client.http('/api/automations/run', { method: 'POST', body: JSON.stringify({ id }) }); await refreshAutomations(); setToast('자동화를 공식 Codex turn으로 시작했습니다.'); }} onDeleteAutomation={async (id) => { await client.http('/api/automations', { method: 'DELETE', body: JSON.stringify({ id }) }); await refreshAutomations(); }} onSettings={updateSettings} onAddProject={addProject} onRemoveProject={removeProject} onUnarchive={unarchiveThread} onKnowledgeRequest={knowledgeRequest} onAddMcp={async (name, url) => { if (!/^[A-Za-z0-9_-]+$/u.test(name)) throw new Error('MCP name may only contain letters, numbers, _ and -.'); await client.rpc('config/value/write', { keyPath: `mcp_servers.${name}`, value: { url }, mergeStrategy: 'upsert' }); await client.rpc('config/mcpServer/reload', undefined); setToast('Remote MCP configuration saved locally.'); await refreshData(); }} />
     {toast && <div className="toast" role="status">{toast}</div>}
   </main>;
 }

@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(3);
+    expect(migrations).toHaveLength(4);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -150,5 +150,15 @@ describe('product database migration SQL', () => {
     expect(historySql).toContain('created_by_user_id uuid REFERENCES users(id) ON DELETE RESTRICT');
     expect(historySql).toContain('source_sort_key text');
     expect(historySql).toContain('agent_events_owner_time_idx');
+
+    const ragSql = migrations[3].sql;
+    expect(migrations[3].version).toBe(4);
+    expect(ragSql).toContain('knowledge_sources_user_scope_uq');
+    expect(ragSql).toContain('documents_source_user_scope_fk');
+    expect(ragSql).toContain('document_chunks_document_user_scope_fk');
+    expect(ragSql).toContain('retrieval_citations_run_user_scope_fk');
+    expect(ragSql).toContain('retrieval_citations_chunk_user_scope_fk');
+    expect(ragSql).toContain('created_by_user_id');
+    expect(ragSql).toContain('embedding_model, embedding_dimensions');
   });
 });

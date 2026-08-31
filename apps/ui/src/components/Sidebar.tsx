@@ -1,6 +1,6 @@
 import type { ProjectRecord } from '@kodex/kodex-api';
 import type { Thread } from '@kodex/codex-protocol';
-import { Archive, Box, CircleDot, Clock3, PanelLeftClose, Plus, Search, Settings, WandSparkles, X } from 'lucide-react';
+import { Archive, BookOpenText, Box, CircleDot, Clock3, PanelLeftClose, Plus, Search, Settings, WandSparkles, X } from 'lucide-react';
 import type { ConnectionState } from '../client/kodex-client';
 import { KodexMark } from './Brand';
 
@@ -28,7 +28,7 @@ export function Sidebar(props: {
   onNew: () => void;
   onSelectThread: (thread: Thread) => void;
   onSelectProject: (project: ProjectRecord) => void;
-  onDialog: (dialog: 'automations' | 'skills' | 'archived' | 'settings') => void;
+  onDialog: (dialog: 'automations' | 'skills' | 'archived' | 'knowledge' | 'settings') => void;
 }) {
   const [searchOpen, setSearchOpen] = useSidebarSearch();
   const filtered = props.threads.filter((thread) => threadTitle(thread).toLocaleLowerCase().includes(searchOpen.query.toLocaleLowerCase()));
@@ -39,6 +39,7 @@ export function Sidebar(props: {
       <button className="sidebar-item" onClick={props.onNew}><span className="sidebar-icon"><Plus size={14} /></span><span>New thread</span></button>
       <button className="sidebar-item" onClick={() => props.onDialog('automations')}><span className="sidebar-icon"><Clock3 size={14} /></span><span>Automations</span></button>
       <button className="sidebar-item" onClick={() => props.onDialog('skills')}><span className="sidebar-icon"><WandSparkles size={14} /></span><span>Skills & tools</span></button>
+      <button className="sidebar-item" onClick={() => props.onDialog('knowledge')}><span className="sidebar-icon"><BookOpenText size={14} /></span><span>Knowledge / RAG</span></button>
       <button className="sidebar-item" onClick={() => props.onDialog('archived')}><span className="sidebar-icon"><Archive size={14} /></span><span>Archived</span></button>
     </nav>
     <section className="sidebar-section thread-section"><div className="section-heading"><span>Threads</span><button className="icon-button tiny" aria-label="Search threads" onClick={() => setSearchOpen({ ...searchOpen, visible: !searchOpen.visible })}><Search size={13} /></button></div>

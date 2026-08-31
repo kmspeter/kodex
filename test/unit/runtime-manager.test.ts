@@ -1,6 +1,7 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import type { KnowledgeService, RagConfig } from '@kodex/product-db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeScope } from '../../apps/local-server/src/auth/product-authorization';
 import { KodexRuntime } from '../../apps/local-server/src/runtime';
@@ -31,6 +32,40 @@ async function root(): Promise<string> {
 }
 
 describe('tenant RuntimeManager', () => {
+  it('does not install any retrieval path when RAG is disabled', async () => {
+    const repositoryRoot = await root();
+    const retrieve = vi.fn();
+    const injectedAugmenter = { augment: vi.fn() };
+    const ragConfig: RagConfig = {
+      enabled: false,
+      automationsEnabled: true,
+      chunking: { chunkCharacters: 1_600, overlapCharacters: 200 },
+      contextMaxCharacters: 6_000,
+      defaultThreshold: 0.25,
+      defaultTopK: 5,
+      maxTopK: 20,
+      maxDocumentCharacters: 60_000,
+      maxQueryCharacters: 4_000,
+    };
+    const manager = new RuntimeManager({
+      repositoryRoot,
+      tenantRoot: path.join(repositoryRoot, 'tenants'),
+      knowledgeService: { retrieve } as unknown as KnowledgeService,
+      ragConfig,
+      runtimeOptions: { startAppServer: false, ragAugmenter: injectedAugmenter },
+    });
+    try {
+      const lease = await manager.acquire(scope(userA, workspaceA));
+      expect(lease.runtime.options.ragAugmenter).toBeUndefined();
+      expect(lease.runtime.options.ragAutomationsEnabled).toBe(false);
+      expect(retrieve).not.toHaveBeenCalled();
+      expect(injectedAugmenter.augment).not.toHaveBeenCalled();
+      lease.release();
+    } finally {
+      await manager.close();
+    }
+  });
+
   it('deduplicates concurrent creation and physically separates user/workspace CODEX_HOME roots', async () => {
     const repositoryRoot = await root();
     let creations = 0;

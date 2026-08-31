@@ -142,6 +142,39 @@ describe('product auth browser contract', () => {
     }
   });
 
+  it('signals session invalidation for Knowledge 401 but not Knowledge 503', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const unauthorizedFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse(errorBody('unauthenticated'), 401));
+    const unauthorizedClient = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: unauthorizedFetch, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const invalidated = vi.fn();
+    unauthorizedClient.onUnauthenticated(invalidated);
+    await unauthorizedClient.me();
+    await expect(unauthorizedClient.knowledge('/api/knowledge/query', workspaceId, {
+      method: 'POST', body: JSON.stringify({ query: 'expired' }),
+    })).rejects.toMatchObject({ kind: 'unauthenticated', status: 401 });
+    expect(invalidated).toHaveBeenCalledOnce();
+
+    const unavailableFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse(errorBody('knowledge_unavailable'), 503));
+    const unavailableClient = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: unavailableFetch, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const notInvalidated = vi.fn();
+    unavailableClient.onUnauthenticated(notInvalidated);
+    await unavailableClient.me();
+    await expect(unavailableClient.knowledge('/api/knowledge/query', workspaceId, {
+      method: 'POST', body: JSON.stringify({ query: 'temporarily unavailable' }),
+    })).rejects.toMatchObject({ kind: 'unavailable', status: 503 });
+    expect(notInvalidated).not.toHaveBeenCalled();
+  });
+
   it('does not quietly mix localhost and 127.0.0.1 cookie hosts in development', () => {
     expect(() => resolveProductApiBase(
       'http://localhost:47832',

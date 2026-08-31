@@ -1,10 +1,10 @@
 import type { AppInfo, ConfigReadResponse, McpServerStatus, PluginListResponse, SkillsListEntry, Thread } from '@kodex/codex-protocol';
 import type { AutomationRecord, BootstrapResponse, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
-import { ArchiveRestore, Box, Clock3, Network, Play, Plus, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ArchiveRestore, BookOpenText, Box, Clock3, LoaderCircle, Network, Play, Plus, Search, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { KodexMark } from './Brand';
 
-export type DialogName = 'automations' | 'skills' | 'archived' | 'settings' | null;
+export type DialogName = 'automations' | 'skills' | 'archived' | 'knowledge' | 'settings' | null;
 
 interface AsyncActionProps {
   pendingAction: string | null;
@@ -31,6 +31,7 @@ export function Dialogs(props: {
   onAddProject: (path: string, name?: string) => Promise<void>;
   onRemoveProject: (project: ProjectRecord) => Promise<void>;
   onUnarchive: (thread: Thread) => Promise<void>;
+  onKnowledgeRequest: <T>(pathname: string, init?: RequestInit) => Promise<T>;
 }) {
   const { dialog, onClose } = props;
   const dialogRef = useRef<HTMLElement>(null);
@@ -88,12 +89,130 @@ export function Dialogs(props: {
   const titleId = `kodex-dialog-title-${props.dialog}`;
   const requestClose = () => { if (!pendingActionRef.current) props.onClose(); };
   return <div className="dialog-backdrop" onMouseDown={requestClose}><section ref={dialogRef} className={`app-dialog ${props.dialog === 'settings' ? 'settings-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={pendingAction !== null} onMouseDown={(event) => event.stopPropagation()}>
-    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>Local Kodex workspace</span><h2 id={titleId}>{props.dialog === 'automations' ? 'Automations' : props.dialog === 'skills' ? 'Skills & tools' : props.dialog === 'archived' ? 'Archived threads' : 'Settings'}</h2></div></div><button ref={closeButtonRef} className="icon-button" aria-label="Close" disabled={pendingAction !== null} onClick={requestClose}><X size={16} /></button></header>
+    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>Local Kodex workspace</span><h2 id={titleId}>{props.dialog === 'automations' ? 'Automations' : props.dialog === 'skills' ? 'Skills & tools' : props.dialog === 'archived' ? 'Archived threads' : props.dialog === 'knowledge' ? 'Knowledge / RAG' : 'Settings'}</h2></div></div><button ref={closeButtonRef} className="icon-button" aria-label="Close" disabled={pendingAction !== null} onClick={requestClose}><X size={16} /></button></header>
     {props.dialog === 'automations' && <AutomationDialog {...props} pendingAction={pendingAction} runAction={runAction} />}
     {props.dialog === 'skills' && <SkillsDialog skills={props.skills} apps={props.apps} plugins={props.plugins} mcpServers={props.mcpServers} />}
     {props.dialog === 'archived' && <ArchivedDialog threads={props.archivedThreads} onUnarchive={props.onUnarchive} pendingAction={pendingAction} runAction={runAction} />}
+    {props.dialog === 'knowledge' && <KnowledgeDialog request={props.onKnowledgeRequest} />}
     {props.dialog === 'settings' && <SettingsDialog {...props} pendingAction={pendingAction} runAction={runAction} />}
   </section></div>;
+}
+
+interface KnowledgeDocumentDto {
+  createdAt: string;
+  id: string;
+  sourceId: string;
+  title: string | null;
+  updatedAt: string;
+}
+
+interface KnowledgeCitationDto {
+  chunkId: string;
+  content: string;
+  documentId: string;
+  documentTitle: string | null;
+  rank: number;
+  score: number;
+}
+
+function KnowledgeDialog(props: {
+  request: <T>(pathname: string, init?: RequestInit) => Promise<T>;
+}) {
+  const { request } = props;
+  const [documents, setDocuments] = useState<KnowledgeDocumentDto[]>([]);
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [query, setQuery] = useState('');
+  const [citations, setCitations] = useState<KnowledgeCitationDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const result = await request<{ data: KnowledgeDocumentDto[] }>('/api/knowledge/documents?limit=100');
+    setDocuments(result.data);
+  }, [request]);
+
+  useEffect(() => {
+    let active = true;
+    void refresh().catch((reason: unknown) => {
+      if (active) setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [refresh]);
+
+  async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (saving || !title.trim() || !content.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await request('/api/knowledge/documents', {
+        method: 'POST',
+        body: JSON.stringify({ documentId: crypto.randomUUID(), title: title.trim(), content }),
+      });
+      setTitle('');
+      setContent('');
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(document: KnowledgeDocumentDto): Promise<void> {
+    if (deletingId) return;
+    setDeletingId(document.id);
+    setError('');
+    try {
+      await request(`/api/knowledge/documents/${encodeURIComponent(document.id)}`, { method: 'DELETE' });
+      setDocuments((current) => current.filter((entry) => entry.id !== document.id));
+      setCitations((current) => current.filter((entry) => entry.documentId !== document.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function search(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (searching || !query.trim()) return;
+    setSearching(true);
+    setHasSearched(false);
+    setError('');
+    try {
+      const result = await request<{ citations: KnowledgeCitationDto[] }>('/api/knowledge/query', {
+        method: 'POST',
+        body: JSON.stringify({ query: query.trim(), topK: 5 }),
+      });
+      setCitations(result.citations);
+      setHasSearched(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  return <div className="dialog-body knowledge-dialog">
+    <div className="dialog-intro"><div className="dialog-icon"><BookOpenText size={20} /></div><div><h3>Private user knowledge</h3><p>RAG를 켜면 등록 문서 chunk, 이 화면의 검색 미리보기 질의, 일반 agent turn의 첫 text 질의가 OpenAI Embeddings API로 전송됩니다. 자동화 prompt는 별도 opt-in일 때만 전송됩니다. Codex 생성 provider를 Local로 바꿔도 RAG provider는 OpenAI이며, repository/source tree·clipboard·전체 Codex history는 자동 전송하지 않습니다. 문서는 같은 workspace의 다른 사용자와 공유되지 않습니다.</p></div></div>
+    {error && <p className="knowledge-error" role="alert">{error}</p>}
+    <form className="knowledge-form" onSubmit={(event) => void save(event)}>
+      <label>문서 제목<input maxLength={200} required disabled={saving} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <label>텍스트 원문<textarea required disabled={saving} value={content} onChange={(event) => setContent(event.target.value)} placeholder="검색에 사용할 텍스트를 붙여 넣으세요." /></label>
+      <button className="primary-action" type="submit" disabled={saving || !title.trim() || !content.trim()}>{saving && <LoaderCircle className="spin" size={12} />} {saving ? '임베딩 중…' : '문서 등록'}</button>
+    </form>
+    <h4 className="dialog-section-title">내 문서</h4>
+    <div className="knowledge-list" aria-busy={loading}>{loading && <p className="dialog-empty"><LoaderCircle className="spin" size={13} /> 문서를 불러오는 중…</p>}{!loading && documents.map((document) => <div className="knowledge-row" key={document.id}><div><strong>{document.title ?? '제목 없음'}</strong><span>{new Date(document.updatedAt).toLocaleString('ko-KR')}</span></div><button className="icon-button" aria-label={`${document.title ?? '문서'} 삭제`} disabled={deletingId !== null} onClick={() => void remove(document)}>{deletingId === document.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}</button></div>)}{!loading && documents.length === 0 && <p className="dialog-empty">등록된 문서가 없습니다.</p>}</div>
+    <h4 className="dialog-section-title">검색 미리보기</h4>
+    <form className="knowledge-search" onSubmit={(event) => void search(event)}><input aria-label="Knowledge 검색어" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="문서에서 찾을 내용을 입력하세요." disabled={searching} /><button className="secondary-action" type="submit" disabled={searching || !query.trim()}>{searching ? <LoaderCircle className="spin" size={12} /> : <Search size={12} />} 검색</button></form>
+    <div className="citation-list" aria-live="polite">{citations.map((citation) => <article className="citation-row" key={citation.chunkId}><header><strong>{citation.documentTitle ?? citation.documentId}</strong><span>#{citation.rank} · {citation.score.toFixed(4)}</span></header><p>{citation.content}</p><code>document:{citation.documentId} · chunk:{citation.chunkId}</code></article>)}{!searching && hasSearched && citations.length === 0 && <p className="dialog-empty">기준 점수 이상의 검색 결과가 없습니다.</p>}</div>
+  </div>;
 }
 
 function ArchivedDialog({ threads, onUnarchive, pendingAction, runAction }: { threads: Thread[]; onUnarchive: (thread: Thread) => Promise<void> } & AsyncActionProps) {

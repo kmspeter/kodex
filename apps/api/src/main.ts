@@ -6,12 +6,14 @@ import {
   PostgresAuthRepository,
   PostgresHistoryRepository,
   ProductDatabaseConfigurationError,
+  createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
 } from '@kodex/product-db';
 import dotenv from 'dotenv';
 import {
   ProductApiConfigurationError,
   productApiConfigFromEnv,
+  validateKnowledgeBodyCapacity,
 } from './config.js';
 import { ProductApiServer } from './server.js';
 
@@ -44,7 +46,14 @@ try {
   const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
     sessionTtlMs: config.sessionTtlMs,
   });
-  server = new ProductApiServer(auth, config, new PostgresHistoryRepository(database));
+  const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
+  validateKnowledgeBodyCapacity(config, knowledgeRuntime.config);
+  server = new ProductApiServer(
+    auth,
+    config,
+    new PostgresHistoryRepository(database),
+    knowledgeRuntime.service,
+  );
   const port = await server.listen();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
 

@@ -42,6 +42,18 @@ export class ProductDatabase {
   async transaction<Result>(operation: (client: PoolClient) => Promise<Result>): Promise<Result> {
     this.#assertOpen();
     const client = await this.pool.connect();
+    try {
+      return await this.transactionWithClient(client, operation);
+    } finally {
+      client.release();
+    }
+  }
+
+  async transactionWithClient<Result>(
+    client: PoolClient,
+    operation: (client: PoolClient) => Promise<Result>,
+  ): Promise<Result> {
+    this.#assertOpen();
     let transactionStarted = false;
 
     try {
@@ -60,8 +72,6 @@ export class ProductDatabase {
         }
       }
       throw error;
-    } finally {
-      client.release();
     }
   }
 

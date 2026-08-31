@@ -190,10 +190,11 @@ describe('product database migrations', () => {
     const result = await database.query<{ checksum: string; version: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version',
     );
-    expect(result.rows).toHaveLength(3);
+    expect(result.rows).toHaveLength(4);
     expect(result.rows[0]).toMatchObject({ version: '1' });
     expect(result.rows[1]).toMatchObject({ version: '2' });
     expect(result.rows[2]).toMatchObject({ version: '3' });
+    expect(result.rows[3]).toMatchObject({ version: '4' });
     expect(result.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -331,16 +332,16 @@ describe('product database migrations', () => {
       );
       await expectPostgresError(
         client,
-        `INSERT INTO retrieval_runs (workspace_id, thread_id, turn_id, query)
-         VALUES ($1, $2, $3, 'cross-thread retrieval')`,
-        [fixture.workspaceId, fixture.threadBId, fixture.turnAId],
+        `INSERT INTO retrieval_runs (workspace_id, created_by_user_id, thread_id, turn_id, query)
+         VALUES ($1, $2, $3, $4, 'cross-thread retrieval')`,
+        [fixture.workspaceId, fixture.userId, fixture.threadBId, fixture.turnAId],
         '23503',
       );
       await expectPostgresError(
         client,
-        `INSERT INTO retrieval_runs (workspace_id, turn_id, query)
-         VALUES ($1, $2, 'turn without thread')`,
-        [fixture.workspaceId, fixture.turnAId],
+        `INSERT INTO retrieval_runs (workspace_id, created_by_user_id, turn_id, query)
+         VALUES ($1, $2, $3, 'turn without thread')`,
+        [fixture.workspaceId, fixture.userId, fixture.turnAId],
         '23514',
       );
     });
@@ -352,27 +353,27 @@ describe('product database migrations', () => {
       const sourceId = randomUUID();
       const documentId = randomUUID();
       await client.query(
-        `INSERT INTO knowledge_sources (id, workspace_id, project_id, source_type, name)
-         VALUES ($1, $2, $3, 'test', 'Test Source')`,
-        [sourceId, fixture.workspaceId, fixture.projectId],
+        `INSERT INTO knowledge_sources (id, workspace_id, created_by_user_id, project_id, source_type, name)
+         VALUES ($1, $2, $3, $4, 'test', 'Test Source')`,
+        [sourceId, fixture.workspaceId, fixture.userId, fixture.projectId],
       );
       await client.query(
-        `INSERT INTO documents (id, workspace_id, source_id, source_document_id)
-         VALUES ($1, $2, $3, $4)`,
-        [documentId, fixture.workspaceId, sourceId, `document-${randomUUID()}`],
+        `INSERT INTO documents (id, workspace_id, created_by_user_id, source_id, source_document_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [documentId, fixture.workspaceId, fixture.userId, sourceId, `document-${randomUUID()}`],
       );
       await client.query(
         `INSERT INTO document_chunks
-          (workspace_id, document_id, chunk_index, content, embedding, embedding_model, embedding_dimensions)
-         VALUES ($1, $2, 0, 'valid', '[1,2,3]', 'test-model', 3)`,
-        [fixture.workspaceId, documentId],
+          (workspace_id, created_by_user_id, document_id, chunk_index, content, embedding, embedding_model, embedding_dimensions)
+         VALUES ($1, $2, $3, 0, 'valid', '[1,2,3]', 'test-model', 3)`,
+        [fixture.workspaceId, fixture.userId, documentId],
       );
       await expectPostgresError(
         client,
         `INSERT INTO document_chunks
-          (workspace_id, document_id, chunk_index, content, embedding, embedding_model, embedding_dimensions)
-         VALUES ($1, $2, 1, 'invalid', '[1,2,3]', 'test-model', 2)`,
-        [fixture.workspaceId, documentId],
+          (workspace_id, created_by_user_id, document_id, chunk_index, content, embedding, embedding_model, embedding_dimensions)
+         VALUES ($1, $2, $3, 1, 'invalid', '[1,2,3]', 'test-model', 2)`,
+        [fixture.workspaceId, fixture.userId, documentId],
         '23514',
       );
     });
