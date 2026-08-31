@@ -10,6 +10,7 @@ export default defineConfig({
       'test/integration/product-db.test.ts',
       'test/integration/product-auth.test.ts',
       'test/integration/real-app-server.test.ts',
+      'test/integration/tenant-auth-postgres.test.ts',
     ],
     testTimeout: 20_000,
     hookTimeout: 20_000,

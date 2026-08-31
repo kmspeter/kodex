@@ -1,4 +1,9 @@
 import type { ClientRequest } from '@kodex/codex-protocol';
+import {
+  isUuid,
+  PRODUCT_WORKSPACE_HEADER_NAME,
+  PRODUCT_WORKSPACE_QUERY_PARAM,
+} from '@kodex/product-contract';
 import type {
   BootstrapResponse,
   ClientMethod,
@@ -17,14 +22,18 @@ interface PendingRpc {
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
+interface KodexClientOptions {
+  apiBase?: string;
+  workspaceId: string;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export class KodexClient {
-  readonly apiBase = import.meta.env.DEV
-    ? (import.meta.env.VITE_KODEX_API_URL || 'http://127.0.0.1:47831')
-    : window.location.origin;
+  readonly apiBase: string;
+  readonly workspaceId: string;
   #bootstrap: BootstrapResponse | null = null;
   #socket: WebSocket | null = null;
   #pending = new Map<string, PendingRpc>();
@@ -35,6 +44,14 @@ export class KodexClient {
   #reconnectTimer: number | null = null;
   #closed = false;
   #generation = 0;
+
+  constructor(options: KodexClientOptions) {
+    if (!isUuid(options.workspaceId)) throw new Error('Kodex requires a valid authenticated workspace scope.');
+    this.workspaceId = options.workspaceId;
+    this.apiBase = options.apiBase ?? (import.meta.env.DEV
+      ? (import.meta.env.VITE_KODEX_API_URL || 'http://127.0.0.1:47831')
+      : window.location.origin);
+  }
 
   async start(): Promise<BootstrapResponse> {
     const generation = ++this.#generation;
@@ -49,7 +66,7 @@ export class KodexClient {
     const response = await fetch(`${this.apiBase}/api/bootstrap`, {
       credentials: 'include',
       cache: 'no-store',
-      headers: { 'X-Kodex-Bootstrap': '1' },
+      headers: { 'X-Kodex-Bootstrap': '1', [PRODUCT_WORKSPACE_HEADER_NAME]: this.workspaceId },
     });
     if (!response.ok) throw new Error(await this.#errorMessage(response));
     if (generation !== this.#generation) throw new Error('Kodex client start was superseded.');
@@ -94,6 +111,7 @@ export class KodexClient {
   async http<T>(pathname: string, init: RequestInit = {}): Promise<T> {
     if (!this.#bootstrap) throw new Error('Kodex bootstrap has not completed.');
     const headers = new Headers(init.headers);
+    headers.set(PRODUCT_WORKSPACE_HEADER_NAME, this.workspaceId);
     if (init.body) headers.set('Content-Type', 'application/json');
     if (init.method && init.method !== 'GET') headers.set('X-Kodex-CSRF', this.#bootstrap.csrfToken);
     headers.set('X-Kodex-Session', this.#bootstrap.sessionToken);
@@ -120,7 +138,8 @@ export class KodexClient {
     if (this.#closed || generation !== this.#generation || !this.#bootstrap) return;
     this.#clearReconnectTimer();
     this.#emitConnection(state);
-    const socketUrl = this.apiBase.replace(/^http/u, 'ws') + '/ws';
+    const socketUrl = new URL('/ws', this.apiBase.replace(/^http/u, 'ws'));
+    socketUrl.searchParams.set(PRODUCT_WORKSPACE_QUERY_PARAM, this.workspaceId);
     const socket = new WebSocket(socketUrl, ['kodex', this.#bootstrap.sessionToken]);
     this.#socket = socket;
     socket.addEventListener('open', () => {
@@ -220,8 +239,8 @@ export class KodexClient {
 
   async #errorMessage(response: Response): Promise<string> {
     try {
-      const body = await response.json() as { error?: string };
-      return body.error ?? `HTTP ${response.status}`;
+      const body = await response.json() as { error?: string | { message?: string } };
+      return typeof body.error === 'string' ? body.error : body.error?.message ?? `HTTP ${response.status}`;
     } catch {
       return `HTTP ${response.status}`;
     }

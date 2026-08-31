@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { PRODUCT_SESSION_COOKIE_NAME } from '@kodex/product-contract';
 
-export const sessionCookieName = 'kodex_product_session';
+export const sessionCookieName = PRODUCT_SESSION_COOKIE_NAME;
 export const csrfCookieName = 'kodex_product_csrf';
 
 function constantTimeEqual(left: string | undefined, right: string): boolean {

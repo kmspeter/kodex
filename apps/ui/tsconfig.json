@@ -17,7 +17,8 @@
   },
   "references": [
     { "path": "../../packages/codex-protocol" },
-    { "path": "../../packages/kodex-api" }
+    { "path": "../../packages/kodex-api" },
+    { "path": "../../packages/product-contract" }
   ],
   "include": ["src"]
 }

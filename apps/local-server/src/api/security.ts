@@ -8,6 +8,40 @@ export interface SecurityOptions {
   maxBodyBytes?: number;
 }
 
+export class LocalSecurityError extends Error {
+  readonly status = 403;
+  readonly code = 'local_security_rejected';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'LocalSecurityError';
+  }
+}
+
+export function parseProductApiOrigins(value: string): Set<string> {
+  const entries = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0 || new Set(entries).size !== entries.length) {
+    throw new Error('KODEX_PRODUCT_API_ORIGINS must contain unique exact HTTP(S) origins.');
+  }
+  for (const entry of entries) {
+    let url: URL;
+    try {
+      url = new URL(entry);
+    } catch {
+      throw new Error('KODEX_PRODUCT_API_ORIGINS must contain unique exact HTTP(S) origins.');
+    }
+    if (
+      !['http:', 'https:'].includes(url.protocol)
+      || url.origin !== entry
+      || url.username
+      || url.password
+    ) {
+      throw new Error('KODEX_PRODUCT_API_ORIGINS must contain unique exact HTTP(S) origins.');
+    }
+  }
+  return new Set(entries);
+}
+
 function constantTimeEqual(left: string | undefined, right: string): boolean {
   const leftBuffer = Buffer.from(left ?? '');
   const rightBuffer = Buffer.from(right);
@@ -54,15 +88,15 @@ export class LocalSecurity {
       `${this.options.host}:${this.options.port}`.toLocaleLowerCase(),
       `localhost:${this.options.port}`,
     ]);
-    if (!allowedHosts.has(host)) throw new Error('Kodex only accepts loopback Host headers.');
+    if (!allowedHosts.has(host)) throw new LocalSecurityError('Kodex only accepts loopback Host headers.');
     const origin = request.headers.origin;
-    if (origin && !this.options.allowedOrigins.has(origin)) throw new Error('Browser Origin is not allowed.');
+    if (origin && !this.options.allowedOrigins.has(origin)) throw new LocalSecurityError('Browser Origin is not allowed.');
     if (!mutation) return;
-    if (!origin || !this.options.allowedOrigins.has(origin)) throw new Error('A valid Origin is required for mutations.');
+    if (!origin || !this.options.allowedOrigins.has(origin)) throw new LocalSecurityError('A valid Origin is required for mutations.');
     const cookies = parseCookies(request.headers.cookie);
     const sessionHeader = request.headers['x-kodex-session'] as string | undefined;
-    if (!constantTimeEqual(cookies.get('kodex_session'), this.sessionToken) && !constantTimeEqual(sessionHeader, this.sessionToken)) throw new Error('Kodex session is invalid.');
-    if (!constantTimeEqual(request.headers['x-kodex-csrf'] as string | undefined, this.csrfToken)) throw new Error('CSRF token is invalid.');
+    if (!constantTimeEqual(cookies.get('kodex_session'), this.sessionToken) && !constantTimeEqual(sessionHeader, this.sessionToken)) throw new LocalSecurityError('Kodex session is invalid.');
+    if (!constantTimeEqual(request.headers['x-kodex-csrf'] as string | undefined, this.csrfToken)) throw new LocalSecurityError('CSRF token is invalid.');
     const contentLength = Number(request.headers['content-length'] ?? 0);
     if (contentLength > this.maxBodyBytes) throw new Error('Request body is too large.');
   }
@@ -70,10 +104,10 @@ export class LocalSecurity {
   verifyWebSocket(request: IncomingMessage): void {
     this.verify(request, false);
     const origin = request.headers.origin;
-    if (!origin || !this.options.allowedOrigins.has(origin)) throw new Error('WebSocket Origin is not allowed.');
+    if (!origin || !this.options.allowedOrigins.has(origin)) throw new LocalSecurityError('WebSocket Origin is not allowed.');
     const cookies = parseCookies(request.headers.cookie);
     const protocols = (request.headers['sec-websocket-protocol'] ?? '').split(',').map((entry) => entry.trim());
-    if (!constantTimeEqual(cookies.get('kodex_session'), this.sessionToken) && !protocols.some((entry) => constantTimeEqual(entry, this.sessionToken))) throw new Error('Kodex WebSocket session is invalid.');
+    if (!constantTimeEqual(cookies.get('kodex_session'), this.sessionToken) && !protocols.some((entry) => constantTimeEqual(entry, this.sessionToken))) throw new LocalSecurityError('Kodex WebSocket session is invalid.');
   }
 
   verifyBootstrap(request: IncomingMessage): void {
@@ -86,7 +120,7 @@ export class LocalSecurity {
         if (this.options.allowedOrigins.has(new URL(referer).origin)) return;
       } catch { /* reject below */ }
     }
-    throw new Error('Kodex bootstrap requires an allowed local UI Origin.');
+    throw new LocalSecurityError('Kodex bootstrap requires an allowed local UI Origin.');
   }
 
   setSessionCookie(response: ServerResponse): void {

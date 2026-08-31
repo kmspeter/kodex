@@ -5,6 +5,7 @@ import {
   ProductAuthError,
   parseProductAuthResponse,
   resolveProductApiBase,
+  selectProductRuntimeWorkspace,
 } from '../../apps/ui/src/auth/product-auth';
 
 const csrfToken = 'A'.repeat(43);
@@ -46,6 +47,16 @@ describe('product auth browser contract', () => {
     }), true)).toThrow('default workspace');
     expect(() => parseProductAuthResponse(authBody({ csrfToken: 'short' }), false))
       .toThrow('invalid response');
+  });
+
+  it('selects only execution-capable memberships and does not start from viewer-only access', () => {
+    const viewer = { id: 'workspace-viewer', name: 'Read only', slug: 'read-only', role: 'viewer' as const };
+    const member = { id: 'workspace-member', name: 'Runnable', slug: 'runnable', role: 'member' as const };
+    const base = parseProductAuthResponse(authBody(), false).context;
+    expect(selectProductRuntimeWorkspace({ ...base, defaultWorkspace: viewer, workspaces: [viewer, member] }))
+      .toEqual(member);
+    expect(selectProductRuntimeWorkspace({ ...base, defaultWorkspace: viewer, workspaces: [viewer] }))
+      .toBeUndefined();
   });
 
   it('uses credentialed no-store requests and returns CSRF proof on logout', async () => {
@@ -141,6 +152,11 @@ describe('product auth browser contract', () => {
       'http://127.0.0.1:47832',
       'http://127.0.0.1:5173/',
       true,
+    )).toBe('http://127.0.0.1:47832');
+    expect(resolveProductApiBase(
+      undefined,
+      'http://127.0.0.1:47831/',
+      false,
     )).toBe('http://127.0.0.1:47832');
   });
 });

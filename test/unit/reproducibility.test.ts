@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createUiEnvironment, createServerEnvironment } from '../../scripts/process-environment.mjs';
+import { createProductApiEnvironment, createUiEnvironment, createServerEnvironment } from '../../scripts/process-environment.mjs';
 import { createVendorManifest, verifyVendorManifest } from '../../scripts/vendor-manifest.mjs';
 import { appServerEnvironment } from '../../apps/local-server/src/process/binary';
 
@@ -58,6 +58,7 @@ describe('repository reproducibility and secret isolation', () => {
     };
     const ui = createUiEnvironment(source, '47831');
     const server = createServerEnvironment(source, 'dev', '47831');
+    const productApi = createProductApiEnvironment(source, 'dev', '47832', '47831');
     expect(ui.OPENAI_API_KEY).toBeUndefined();
     expect(ui.KODEX_LOCAL_LLM_API_KEY).toBeUndefined();
     expect(ui.DATABASE_URL).toBeUndefined();
@@ -75,6 +76,13 @@ describe('repository reproducibility and secret isolation', () => {
     expect(JSON.stringify(ui)).not.toContain('must-not-reach-ui');
     expect(server.OPENAI_API_KEY).toBe(source.OPENAI_API_KEY);
     expect(server.KODEX_LOCAL_LLM_API_KEY).toBe(source.KODEX_LOCAL_LLM_API_KEY);
+    expect(server.KODEX_PRODUCT_API_ORIGINS)
+      .toBe('http://127.0.0.1:47832,http://localhost:47832');
+    expect(createServerEnvironment(source, 'start', '47831', '49000').KODEX_PRODUCT_API_ORIGINS)
+      .toBe('http://127.0.0.1:49000,http://localhost:49000');
+    expect(productApi.AUTH_ALLOWED_ORIGINS).toBe('http://127.0.0.1:5173,http://localhost:5173');
+    expect(createProductApiEnvironment(source, 'start', '47832', '47831').AUTH_ALLOWED_ORIGINS)
+      .toBe('http://127.0.0.1:47831,http://localhost:47831');
   });
 
   it('passes only the selected provider secret to the official App Server child', () => {

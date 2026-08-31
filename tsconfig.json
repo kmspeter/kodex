@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "packages/product-contract" },
     { "path": "packages/codex-protocol" },
     { "path": "packages/kodex-api" },
     { "path": "packages/shared" },

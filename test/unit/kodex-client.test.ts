@@ -11,7 +11,7 @@ class FakeWebSocket {
   readonly sent: string[] = [];
   readyState = 0;
 
-  constructor(readonly url: string, readonly protocols: string[]) {
+  constructor(readonly url: string | URL, readonly protocols: string[]) {
     FakeWebSocket.instances.push(this);
   }
 
@@ -58,12 +58,17 @@ describe('Kodex browser client reconnection', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ sessionToken: 'session-2' }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const client = new KodexClient();
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const client = new KodexClient({ workspaceId });
     const states: ConnectionState[] = [];
     client.onConnection((state) => states.push(state));
     await client.start();
     const first = FakeWebSocket.instances[0]!;
     expect(first.protocols).toEqual(['kodex', 'session-1']);
+    expect(String(first.url)).toContain(`workspace_id=${workspaceId}`);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: expect.objectContaining({ 'X-Kodex-Workspace-Id': workspaceId }),
+    });
     first.open();
 
     const pending = client.rpc('thread/list', { limit: 1, archived: false });

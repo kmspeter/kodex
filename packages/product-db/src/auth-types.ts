@@ -1,6 +1,6 @@
-export const workspaceRoles = ['owner', 'admin', 'member', 'viewer'] as const;
+import { workspaceRoles, type WorkspaceRole } from '@kodex/product-contract';
 
-export type WorkspaceRole = (typeof workspaceRoles)[number];
+export { workspaceRoles, type WorkspaceRole };
 
 export interface AuthUser {
   createdAt: Date;

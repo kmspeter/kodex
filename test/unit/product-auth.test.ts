@@ -156,6 +156,8 @@ describe('product API configuration and cookies', () => {
     expect(config.allowedOrigins).toEqual(new Set([
       'http://127.0.0.1:5173',
       'http://localhost:5173',
+      'http://127.0.0.1:47831',
+      'http://localhost:47831',
     ]));
     expect(() => productApiConfigFromEnv({ AUTH_COOKIE_SECRET: 'short' }))
       .toThrow('at least 32 random bytes');

@@ -1,26 +1,26 @@
-export const workspaceRoles = ['owner', 'admin', 'member', 'viewer'] as const;
+import {
+  canUseWorkspaceRuntime,
+  workspaceRoles,
+  type ProductAuthContextDto,
+  type ProductUserDto,
+  type ProductWorkspaceDto,
+  type WorkspaceRole,
+} from '@kodex/product-contract';
 
-export type WorkspaceRole = (typeof workspaceRoles)[number];
+export type ProductUser = ProductUserDto;
+export type ProductWorkspace = ProductWorkspaceDto;
+export type ProductAuthContext = ProductAuthContextDto;
 
-export interface ProductUser {
-  createdAt: string;
-  displayName: string | null;
-  email: string;
-  id: string;
-}
-
-export interface ProductWorkspace {
-  id: string;
-  name: string;
-  role: WorkspaceRole;
-  slug: string;
-}
-
-export interface ProductAuthContext {
-  defaultWorkspace?: ProductWorkspace;
-  session: { expiresAt: string };
-  user: ProductUser;
-  workspaces: ProductWorkspace[];
+export function selectProductRuntimeWorkspace(context: ProductAuthContext): ProductWorkspace | undefined {
+  const runnable = context.workspaces.filter((workspace) => canUseWorkspaceRuntime(workspace.role));
+  if (
+    context.defaultWorkspace
+    && canUseWorkspaceRuntime(context.defaultWorkspace.role)
+    && runnable.some((workspace) => workspace.id === context.defaultWorkspace?.id)
+  ) {
+    return context.defaultWorkspace;
+  }
+  return runnable[0];
 }
 
 export type ProductAuthErrorKind =
@@ -197,7 +197,9 @@ export function resolveProductApiBase(
   const page = new URL(pageUrl);
   const candidate = configuredBase?.trim() || (development
     ? 'http://127.0.0.1:47832'
-    : page.origin);
+    : loopbackAlias(page.hostname)
+      ? `${page.protocol}//${page.hostname}:47832`
+      : page.origin);
   let url: URL;
   try {
     url = new URL(candidate);

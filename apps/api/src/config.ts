@@ -116,7 +116,7 @@ export function productApiConfigFromEnv(
   const originsValue = env.AUTH_ALLOWED_ORIGINS?.trim()
     || (production
       ? configurationError('AUTH_ALLOWED_ORIGINS is required in production')
-      : 'http://127.0.0.1:5173,http://localhost:5173');
+      : 'http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:47831,http://localhost:47831');
   const hostsValue = env.PRODUCT_API_ALLOWED_HOSTS?.trim()
     || (production
       ? configurationError('PRODUCT_API_ALLOWED_HOSTS is required in production')

@@ -9,12 +9,7 @@
     "sourceMap": true,
     "rootDir": "src",
     "outDir": "dist",
-    "skipLibCheck": true,
-    "types": ["node"]
+    "skipLibCheck": true
   },
-  "references": [
-    { "path": "../../packages/product-contract" },
-    { "path": "../../packages/product-db" }
-  ],
   "include": ["src/**/*.ts"]
 }

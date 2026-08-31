@@ -12,7 +12,7 @@ import type {
 import type { AutomationRecord, BootstrapResponse, GitStatus, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
 import { Code2, GitCommitHorizontal, LoaderCircle, ShieldCheck, SquareTerminal } from 'lucide-react';
 import { ProductAuthGate } from './auth/AuthGate';
-import type { ProductAuthContext } from './auth/product-auth';
+import { selectProductRuntimeWorkspace, type ProductAuthContext } from './auth/product-auth';
 import { KodexClient, type ConnectionState } from './client/kodex-client';
 import { KodexMark } from './components/Brand';
 import { ChangesPanel } from './components/ChangesPanel';
@@ -28,19 +28,44 @@ const EMPTY_GIT: GitStatus = { isRepository: false, branch: '', files: [], total
 type ActivePopover = 'header-account' | 'header-open' | 'header-more' | 'composer-model' | null;
 
 export function App() {
-  return <ProductAuthGate>{(account, logout, loggingOut) => <AuthenticatedApp
+  return <ProductAuthGate>{(account, logout, loggingOut) => <ProductWorkspaceApp
     account={account}
     loggingOut={loggingOut}
     onLogout={logout}
   />}</ProductAuthGate>;
 }
 
-function AuthenticatedApp(props: {
+function ProductWorkspaceApp(props: {
   account: ProductAuthContext;
   loggingOut: boolean;
   onLogout: () => Promise<void>;
 }) {
-  const client = useMemo(() => new KodexClient(), []);
+  const workspace = selectProductRuntimeWorkspace(props.account);
+  if (!workspace) {
+    return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="workspace-required-title">
+      <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+      <div className="auth-status-icon is-error"><ShieldCheck size={20} /></div>
+      <h1 id="workspace-required-title">실행 가능한 workspace가 없습니다</h1>
+      <p>{props.account.workspaces.length > 0
+        ? '현재 membership은 읽기 전용입니다. Kodex runtime을 시작하려면 owner, admin 또는 member 역할이 필요합니다.'
+        : '계정은 인증되었지만 활성 membership이 없어 로컬 runtime을 시작하지 않았습니다. Workspace 관리자에게 접근 권한을 요청하세요.'}</p>
+      <button className="auth-submit" type="button" disabled={props.loggingOut} onClick={() => void props.onLogout()}>로그아웃</button>
+    </section></main>;
+  }
+  return <AuthenticatedApp
+    key={`${props.account.user.id}:${workspace.id}`}
+    {...props}
+    workspaceId={workspace.id}
+  />;
+}
+
+function AuthenticatedApp(props: {
+  account: ProductAuthContext;
+  loggingOut: boolean;
+  onLogout: () => Promise<void>;
+  workspaceId: string;
+}) {
+  const client = useMemo(() => new KodexClient({ workspaceId: props.workspaceId }), [props.workspaceId]);
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
   const [fatalError, setFatalError] = useState('');
   const [connection, setConnection] = useState<ConnectionState>('connecting');

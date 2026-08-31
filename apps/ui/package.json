@@ -11,6 +11,7 @@
   "dependencies": {
     "@kodex/codex-protocol": "0.2.0",
     "@kodex/kodex-api": "0.2.0",
+    "@kodex/product-contract": "0.2.0",
     "lucide-react": "^0.468.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

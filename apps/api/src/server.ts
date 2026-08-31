@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { ProductAuthResponseDto } from '@kodex/product-contract';
 import type { AuthContext, AuthSessionResult } from '@kodex/product-db';
 import { AuthServiceError } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
@@ -105,7 +106,7 @@ async function readJsonBody(request: IncomingMessage, limit: number): Promise<un
   }
 }
 
-function publicAuthContext(context: AuthContext, csrfToken: string): object {
+function publicAuthContext(context: AuthContext, csrfToken: string): ProductAuthResponseDto {
   return {
     user: {
       id: context.user.id,
@@ -119,7 +120,7 @@ function publicAuthContext(context: AuthContext, csrfToken: string): object {
   };
 }
 
-function authResponse(result: AuthSessionResult, csrfToken: string): object {
+function authResponse(result: AuthSessionResult, csrfToken: string): ProductAuthResponseDto {
   return {
     ...publicAuthContext(result.context, csrfToken),
     ...(result.defaultWorkspace ? { defaultWorkspace: result.defaultWorkspace } : {}),

@@ -13,6 +13,8 @@
   "dependencies": {
     "@kodex/codex-protocol": "0.2.0",
     "@kodex/kodex-api": "0.2.0",
+    "@kodex/product-contract": "0.2.0",
+    "@kodex/product-db": "0.2.0",
     "@kodex/shared": "0.2.0",
     "dotenv": "^17.2.3",
     "ws": "^8.18.3"
