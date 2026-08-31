@@ -32,18 +32,30 @@ export class KodexClient {
   #connectionListeners = new Set<(state: ConnectionState) => void>();
   #cursor: SequenceCursor = { epoch: null, lastSequence: 0 };
   #reconnectAttempt = 0;
+  #reconnectTimer: number | null = null;
   #closed = false;
   #generation = 0;
 
   async start(): Promise<BootstrapResponse> {
     const generation = ++this.#generation;
     this.#closed = false;
-    const response = await fetch(`${this.apiBase}/api/bootstrap`, { credentials: 'include', cache: 'no-store' });
+    this.#clearReconnectTimer();
+    const bootstrap = await this.#loadBootstrap(generation);
+    this.#connect('connecting', generation);
+    return bootstrap;
+  }
+
+  async #loadBootstrap(generation: number): Promise<BootstrapResponse> {
+    const response = await fetch(`${this.apiBase}/api/bootstrap`, {
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { 'X-Kodex-Bootstrap': '1' },
+    });
     if (!response.ok) throw new Error(await this.#errorMessage(response));
     if (generation !== this.#generation) throw new Error('Kodex client start was superseded.');
-    this.#bootstrap = await response.json() as BootstrapResponse;
-    this.#connect('connecting', generation);
-    return this.#bootstrap;
+    const bootstrap = await response.json() as BootstrapResponse;
+    this.#bootstrap = bootstrap;
+    return bootstrap;
   }
 
   subscribe(listener: (message: ServerSocketMessage) => void): () => void {
@@ -93,20 +105,18 @@ export class KodexClient {
   close(): void {
     this.#closed = true;
     this.#generation += 1;
+    this.#clearReconnectTimer();
     this.#socket?.close(1000, 'UI closed');
     this.#socket = null;
-    for (const pending of this.#pending.values()) {
-      window.clearTimeout(pending.timer);
-      pending.reject(new Error('Kodex connection closed.'));
-    }
-    this.#pending.clear();
+    this.#rejectPending('Kodex connection closed.');
   }
 
   #connect(state: ConnectionState, generation: number): void {
-    if (this.#closed || generation !== this.#generation) return;
+    if (this.#closed || generation !== this.#generation || !this.#bootstrap) return;
+    this.#clearReconnectTimer();
     this.#emitConnection(state);
     const socketUrl = this.apiBase.replace(/^http/u, 'ws') + '/ws';
-    const socket = new WebSocket(socketUrl, ['kodex', this.#bootstrap!.sessionToken]);
+    const socket = new WebSocket(socketUrl, ['kodex', this.#bootstrap.sessionToken]);
     this.#socket = socket;
     socket.addEventListener('open', () => {
       if (generation !== this.#generation) { socket.close(); return; }
@@ -115,12 +125,45 @@ export class KodexClient {
     });
     socket.addEventListener('message', (event) => this.#handleMessage(String(event.data)));
     socket.addEventListener('close', () => {
-      if (this.#closed || generation !== this.#generation) return;
-      this.#emitConnection('reconnecting');
-      const delay = Math.min(10_000, 400 * 2 ** this.#reconnectAttempt++) + Math.floor(Math.random() * 250);
-      window.setTimeout(() => this.#connect('reconnecting', generation), delay);
+      if (this.#closed || generation !== this.#generation || this.#socket !== socket) return;
+      this.#socket = null;
+      this.#rejectPending('Kodex connection was interrupted. Retry the operation.');
+      this.#scheduleReconnect(generation);
     });
     socket.addEventListener('error', () => socket.close());
+  }
+
+  #scheduleReconnect(generation: number): void {
+    if (this.#closed || generation !== this.#generation || this.#reconnectTimer !== null) return;
+    this.#emitConnection('reconnecting');
+    const delay = Math.min(10_000, 400 * 2 ** this.#reconnectAttempt++) + Math.floor(Math.random() * 250);
+    this.#reconnectTimer = window.setTimeout(() => {
+      this.#reconnectTimer = null;
+      void this.#refreshSessionAndReconnect(generation);
+    }, delay);
+  }
+
+  async #refreshSessionAndReconnect(generation: number): Promise<void> {
+    try {
+      await this.#loadBootstrap(generation);
+      this.#connect('reconnecting', generation);
+    } catch {
+      this.#scheduleReconnect(generation);
+    }
+  }
+
+  #clearReconnectTimer(): void {
+    if (this.#reconnectTimer === null) return;
+    window.clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = null;
+  }
+
+  #rejectPending(message: string): void {
+    for (const pending of this.#pending.values()) {
+      window.clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+    }
+    this.#pending.clear();
   }
 
   #handleMessage(raw: string): void {

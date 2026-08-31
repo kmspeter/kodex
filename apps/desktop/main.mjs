@@ -162,9 +162,22 @@ async function launch() {
   });
   await window.loadURL(origin);
   if (smoke) {
-    smokeStage = 'checking the rendered document';
+    smokeStage = 'checking the rendered application state';
     const title = await window.webContents.executeJavaScript('document.title');
     if (!String(title).toLocaleLowerCase().includes('kodex')) throw new Error(`Unexpected desktop document title: ${title}`);
+    const rendered = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+      const deadline = Date.now() + 10_000;
+      const inspect = () => {
+        const text = document.body.innerText;
+        const connection = document.querySelector('.local-status')?.textContent?.trim();
+        if (text.includes('Kodex Local Server에 연결할 수 없습니다')) { resolve({ ok: false, text, connection }); return; }
+        if (text.includes('OPENAI_API_KEY 설정이 필요합니다') && connection === 'connected') { resolve({ ok: true, text, connection }); return; }
+        if (Date.now() >= deadline) { resolve({ ok: false, text, connection }); return; }
+        setTimeout(inspect, 50);
+      };
+      inspect();
+    })`);
+    if (!rendered.ok) throw new Error(`Desktop renderer did not bootstrap successfully (connection=${rendered.connection ?? 'missing'}): ${String(rendered.text).slice(0, 500)}`);
     process.stdout.write('Kodex desktop smoke test passed.\n');
     if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
     window.destroy();

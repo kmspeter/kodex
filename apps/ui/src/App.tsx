@@ -23,6 +23,7 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { eventReducer, initialEventState } from './state/events';
 
 const EMPTY_GIT: GitStatus = { isRepository: false, branch: '', files: [], totals: { files: 0, added: 0, removed: 0 } };
+type ActivePopover = 'header-open' | 'header-more' | 'composer-model' | null;
 
 export function App() {
   const client = useMemo(() => new KodexClient(), []);
@@ -48,8 +49,12 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogName>(null);
+  const [popover, setPopover] = useState<ActivePopover>(null);
   const [toast, setToast] = useState('');
+  const closeDialog = useCallback(() => setDialog(null), []);
   const activeThreadIdRef = useRef<string | null>(null);
+  const refreshGenerationRef = useRef(0);
+  const threadSelectionGenerationRef = useRef(0);
   useEffect(() => { activeThreadIdRef.current = events.activeThread?.id ?? null; }, [events.activeThread?.id]);
 
   const refreshGit = useCallback(async () => {
@@ -59,6 +64,7 @@ export function App() {
   const refreshData = useCallback(async (project?: ProjectRecord) => {
     const cwd = project?.path ?? bootstrap?.activeProject.path;
     if (!cwd) return;
+    const generation = ++refreshGenerationRef.current;
     const [threadsResult, modelsResult, skillsResult, appsResult, pluginsResult, mcpResult, configResult] = await Promise.allSettled([
       client.rpc('thread/list', { limit: 200, archived: false }),
       client.rpc('model/list', { limit: 100, includeHidden: false }),
@@ -68,6 +74,7 @@ export function App() {
       client.rpc('mcpServerStatus/list', { limit: 100, detail: 'full', threadId: events.activeThread?.id ?? null }),
       client.rpc('config/read', { includeLayers: true, cwd }),
     ]);
+    if (generation !== refreshGenerationRef.current) return;
     if (threadsResult.status === 'fulfilled') dispatch({ type: 'threads-loaded', threads: threadsResult.value.data });
     if (modelsResult.status === 'fulfilled') {
       setModels(modelsResult.value.data);
@@ -100,8 +107,12 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    const offConnection = client.onConnection(setConnection);
+    const offConnection = client.onConnection((next) => {
+      setConnection(next);
+      if (next !== 'connected') setPopover(null);
+    });
     const offMessages = client.subscribe((message) => {
+      if (message.type === 'hello') setBootstrap((current) => current ? { ...current, engine: message.engine } : current);
       if (message.type === 'engine') setBootstrap((current) => current ? { ...current, engine: message.engine } : current);
       if (message.type === 'server-request') dispatch({ type: 'server-request', request: { request: message.request, owned: message.owned } });
       if (message.type === 'server-request-resolved') dispatch({ type: 'server-request-resolved', id: message.requestId });
@@ -110,6 +121,7 @@ export function App() {
         if (message.notification.method === 'turn/completed' || message.notification.method.includes('fileChange')) void refreshGit();
       }
       if (message.type === 'resync-required') {
+        setPopover(null);
         setToast(message.reason === 'server-restart' ? 'Local Server가 다시 시작되어 thread 상태를 재동기화합니다.' : 'Replay gap을 감지하여 thread 상태를 재동기화합니다.');
         void resynchronize().catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)));
       }
@@ -130,7 +142,11 @@ export function App() {
 
   useEffect(() => {
     if (!selectedFile) { setSelectedDiff(''); return; }
-    void client.http<{ path: string; diff: string }>(`/api/git/diff?path=${encodeURIComponent(selectedFile)}`).then((result) => setSelectedDiff(result.diff)).catch((error: unknown) => setSelectedDiff(error instanceof Error ? error.message : String(error)));
+    let active = true;
+    void client.http<{ path: string; diff: string }>(`/api/git/diff?path=${encodeURIComponent(selectedFile)}`)
+      .then((result) => { if (active) setSelectedDiff(result.diff); })
+      .catch((error: unknown) => { if (active) setSelectedDiff(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
   }, [client, selectedFile]);
 
   useEffect(() => {
@@ -140,10 +156,13 @@ export function App() {
   }, [toast]);
 
   async function selectThread(thread: Thread): Promise<void> {
+    const generation = ++threadSelectionGenerationRef.current;
     try {
       const read = await client.rpc('thread/read', { threadId: thread.id, includeTurns: false });
+      if (generation !== threadSelectionGenerationRef.current) return;
       dispatch({ type: 'thread-selected', thread: read.thread });
       const resumed = await client.rpc('thread/resume', { threadId: thread.id });
+      if (generation !== threadSelectionGenerationRef.current) return;
       dispatch({ type: 'thread-selected', thread: resumed.thread });
     } catch (error) { setToast(error instanceof Error ? error.message : String(error)); }
   }
@@ -182,7 +201,12 @@ export function App() {
     if (patch.detailPanelOpen !== undefined) setDetailsOpen(patch.detailPanelOpen);
   }
 
+  function persistSettings(patch: Partial<KodexSettings>): void {
+    void updateSettings(patch).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)));
+  }
+
   async function selectProject(project: ProjectRecord): Promise<void> {
+    threadSelectionGenerationRef.current += 1;
     try {
       const activeProject = await client.http<ProjectRecord>('/api/projects', { method: 'POST', body: JSON.stringify({ id: project.id }) });
       const projectResult = await client.http<{ data: ProjectRecord[]; active: ProjectRecord }>('/api/projects');
@@ -194,6 +218,7 @@ export function App() {
   }
 
   async function addProject(projectPath: string, name?: string): Promise<void> {
+    threadSelectionGenerationRef.current += 1;
     try {
       const project = await client.http<ProjectRecord>('/api/projects', { method: 'POST', body: JSON.stringify({ path: projectPath.trim(), name }) });
       const projectResult = await client.http<{ data: ProjectRecord[]; active: ProjectRecord }>('/api/projects');
@@ -204,6 +229,7 @@ export function App() {
   }
 
   async function removeProject(project: ProjectRecord): Promise<void> {
+    threadSelectionGenerationRef.current += 1;
     try {
       await client.http('/api/projects', { method: 'DELETE', body: JSON.stringify({ id: project.id }) });
       const projectResult = await client.http<{ data: ProjectRecord[]; active: ProjectRecord }>('/api/projects');
@@ -216,6 +242,7 @@ export function App() {
   }
 
   async function openDialog(next: Exclude<DialogName, null>): Promise<void> {
+    setPopover(null);
     setDialog(next);
     if (next !== 'archived') return;
     try {
@@ -275,9 +302,9 @@ export function App() {
   const engineReady = bootstrap.engine.state === 'ready';
   const items = events.activeThread?.turns.flatMap((turn) => turn.items) ?? [];
   return <main className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'} ${detailsOpen ? 'details-visible' : ''}`}>
-    <Sidebar open={sidebarOpen} connection={connection} threads={events.threads} activeThreadId={events.activeThread?.id ?? null} projects={bootstrap.projects} activeProjectId={bootstrap.activeProject.id} onClose={() => { setSidebarOpen(false); void updateSettings({ sidebarOpen: false }); }} onNew={() => dispatch({ type: 'thread-selected', thread: null })} onSelectThread={(thread) => void selectThread(thread)} onSelectProject={(project) => void selectProject(project)} onDialog={(next) => void openDialog(next)} />
+    <Sidebar open={sidebarOpen} connection={connection} threads={events.threads} activeThreadId={events.activeThread?.id ?? null} projects={bootstrap.projects} activeProjectId={bootstrap.activeProject.id} onClose={() => { setPopover(null); setSidebarOpen(false); persistSettings({ sidebarOpen: false }); }} onNew={() => { setPopover(null); threadSelectionGenerationRef.current += 1; dispatch({ type: 'thread-selected', thread: null }); }} onSelectThread={(thread) => { setPopover(null); void selectThread(thread); }} onSelectProject={(project) => { setPopover(null); void selectProject(project); }} onDialog={(next) => void openDialog(next)} />
     <section className="workspace-shell">
-      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} networkEnabled={bootstrap.settings.network.shell} onOpenSidebar={() => { setSidebarOpen(true); void updateSettings({ sidebarOpen: true }); }} onToggleDetails={() => { const next = !detailsOpen; setDetailsOpen(next); void updateSettings({ detailPanelOpen: next }); }} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onToast={setToast} />
+      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} menu={popover === 'header-open' ? 'open' : popover === 'header-more' ? 'more' : null} networkEnabled={bootstrap.settings.network.shell} onMenu={(next) => setPopover(next ? `header-${next}` : null)} onOpenSidebar={() => { setPopover(null); setSidebarOpen(true); persistSettings({ sidebarOpen: true }); }} onToggleDetails={() => { setPopover(null); const next = !detailsOpen; setDetailsOpen(next); persistSettings({ detailPanelOpen: next }); }} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onToast={setToast} />
       <section className="workspace-body"><section className="conversation-pane"><div className="conversation-scroll"><div className="conversation-inner">
         {!engineReady && <div className="setup-card"><ShieldCheck size={20} /><div><strong>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY 설정이 필요합니다' : bootstrap.engine.state === 'missing-binary' ? '로컬 Codex 빌드가 필요합니다' : 'Codex App Server를 시작할 수 없습니다'}</strong><p>{bootstrap.engine.message}</p><code>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY=your_openai_api_key_here' : bootstrap.engine.state === 'missing-binary' ? 'npm run codex:build' : 'App Server failed locally'}</code><span>키는 Local Server와 선택된 provider를 실행하는 App Server 자식 프로세스에만 존재하며 브라우저로 전달되지 않습니다.</span>{bootstrap.engine.state === 'failed' && <button className="secondary-action" onClick={() => void client.http('/api/engine/restart', { method: 'POST', body: '{}' }).then((engine) => setBootstrap((current) => current ? { ...current, engine: engine as BootstrapResponse['engine'] } : current)).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)))}>Restart App Server</button>}</div></div>}
         {!events.activeThread && engineReady && <div className="empty-thread"><KodexMark compact /><h2>What would you like Kodex to build?</h2><p>{bootstrap.activeProject.path}</p><div className="suggestion-grid"><button onClick={() => setDraft('이 코드베이스의 구조와 핵심 흐름을 설명해줘')}><Code2 size={14} /> Explain this codebase</button><button onClick={() => setDraft('현재 로컬 변경 사항에서 버그와 회귀 가능성을 검토해줘')}><GitCommitHorizontal size={14} /> Review current changes</button><button onClick={() => setDraft('실패하는 테스트를 찾아 원인을 진단해줘')}><SquareTerminal size={14} /> Diagnose failing tests</button><button onClick={() => setDraft('필요하면 공식 Web Search와 허용된 네트워크 도구를 사용해 이 프로젝트를 개선해줘')}><ShieldCheck size={14} /> Improve with tools</button></div></div>}
@@ -285,12 +312,12 @@ export function App() {
         {events.pendingRequests.map((pending) => <RequestCard key={`${pending.request.method}:${String(pending.request.id)}`} request={pending.request} owned={pending.owned} onResolve={resolveServerRequest} onError={rejectServerRequest} />)}
         {events.notices.map((notice, index) => <div className="policy-event" key={`${index}:${notice}`}><ShieldCheck size={13} />{notice}</div>)}
       </div></div>
-      <Composer draft={draft} busy={busy} connected={connection === 'connected'} engineReady={engineReady} activeTurnId={events.activeTurnId} models={models} model={model} effort={effort} settings={bootstrap.settings} git={git} onDraft={setDraft} onModel={(nextModel, nextEffort) => { setModel(nextModel); setEffort(nextEffort); }} onSend={() => void sendDraft()} onInterrupt={() => { if (events.activeThread && events.activeTurnId) void client.rpc('turn/interrupt', { threadId: events.activeThread.id, turnId: events.activeTurnId }).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error))); }} />
+      <Composer draft={draft} busy={busy} connected={connection === 'connected'} engineReady={engineReady} activeTurnId={events.activeTurnId} models={models} model={model} modelOpen={popover === 'composer-model'} effort={effort} settings={bootstrap.settings} git={git} onDraft={setDraft} onModel={(nextModel, nextEffort) => { setModel(nextModel); setEffort(nextEffort); }} onModelOpen={(open) => setPopover(open ? 'composer-model' : null)} onSend={() => void sendDraft()} onInterrupt={() => { if (events.activeThread && events.activeTurnId) void client.rpc('turn/interrupt', { threadId: events.activeThread.id, turnId: events.activeTurnId }).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error))); }} />
       </section>
-      {detailsOpen && <ChangesPanel git={git} selectedFile={selectedFile} diff={selectedDiff} onSelect={setSelectedFile} onClose={() => setDetailsOpen(false)} onRefresh={() => void refreshGit()} />}
+      {detailsOpen && <ChangesPanel git={git} selectedFile={selectedFile} diff={selectedDiff} onSelect={setSelectedFile} onClose={() => { setDetailsOpen(false); persistSettings({ detailPanelOpen: false }); }} onRefresh={() => void refreshGit()} />}
       </section>
     </section>
-    <Dialogs dialog={dialog} bootstrap={bootstrap} automations={automations} skills={skills} apps={apps} plugins={plugins} mcpServers={mcpServers} archivedThreads={archivedThreads} codexConfig={codexConfig} onClose={() => setDialog(null)} onCreateAutomation={async (input) => { await client.http('/api/automations', { method: 'POST', body: JSON.stringify(input) }); await refreshAutomations(); }} onRunAutomation={async (id) => { await client.http('/api/automations/run', { method: 'POST', body: JSON.stringify({ id }) }); await refreshAutomations(); setToast('자동화를 공식 Codex turn으로 시작했습니다.'); }} onDeleteAutomation={async (id) => { await client.http('/api/automations', { method: 'DELETE', body: JSON.stringify({ id }) }); await refreshAutomations(); }} onSettings={updateSettings} onAddProject={addProject} onRemoveProject={removeProject} onUnarchive={unarchiveThread} onAddMcp={async (name, url) => { if (!/^[A-Za-z0-9_-]+$/u.test(name)) throw new Error('MCP name may only contain letters, numbers, _ and -.'); await client.rpc('config/value/write', { keyPath: `mcp_servers.${name}`, value: { url }, mergeStrategy: 'upsert' }); await client.rpc('config/mcpServer/reload', undefined); setToast('Remote MCP configuration saved locally.'); await refreshData(); }} />
+    <Dialogs dialog={dialog} bootstrap={bootstrap} automations={automations} skills={skills} apps={apps} plugins={plugins} mcpServers={mcpServers} archivedThreads={archivedThreads} codexConfig={codexConfig} onClose={closeDialog} onError={(error) => setToast(error instanceof Error ? error.message : String(error))} onCreateAutomation={async (input) => { await client.http('/api/automations', { method: 'POST', body: JSON.stringify(input) }); await refreshAutomations(); }} onRunAutomation={async (id) => { await client.http('/api/automations/run', { method: 'POST', body: JSON.stringify({ id }) }); await refreshAutomations(); setToast('자동화를 공식 Codex turn으로 시작했습니다.'); }} onDeleteAutomation={async (id) => { await client.http('/api/automations', { method: 'DELETE', body: JSON.stringify({ id }) }); await refreshAutomations(); }} onSettings={updateSettings} onAddProject={addProject} onRemoveProject={removeProject} onUnarchive={unarchiveThread} onAddMcp={async (name, url) => { if (!/^[A-Za-z0-9_-]+$/u.test(name)) throw new Error('MCP name may only contain letters, numbers, _ and -.'); await client.rpc('config/value/write', { keyPath: `mcp_servers.${name}`, value: { url }, mergeStrategy: 'upsert' }); await client.rpc('config/mcpServer/reload', undefined); setToast('Remote MCP configuration saved locally.'); await refreshData(); }} />
     {toast && <div className="toast" role="status">{toast}</div>}
   </main>;
 }

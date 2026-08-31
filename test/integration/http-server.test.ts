@@ -35,7 +35,7 @@ describe('localhost HTTP security and missing-key startup', () => {
       const invalid = await fetch(`http://127.0.0.1:${port}/api/settings`, { method: 'PUT', headers: { origin, 'x-kodex-session': bootstrap.sessionToken, 'x-kodex-csrf': bootstrap.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ notifications: false }) });
       expect(invalid.status).toBe(400);
 
-      const external = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, { headers: { origin: 'https://example.invalid' } });
+      const external = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, { headers: { origin: 'https://example.invalid', 'x-kodex-bootstrap': '1' } });
       expect(external.status).toBe(400);
     } finally {
       await runtime.stop();
@@ -57,8 +57,9 @@ describe('localhost HTTP security and missing-key startup', () => {
     try {
       const page = await fetch(`${origin}/some/spa/route`);
       expect(page.status).toBe(200);
+      expect(page.headers.get('referrer-policy')).toBe('same-origin');
       expect(await page.text()).toContain('Kodex local');
-      const bootstrap = await fetch(`${origin}/api/bootstrap`, { headers: { referer: `${origin}/` } });
+      const bootstrap = await fetch(`${origin}/api/bootstrap`, { headers: { 'x-kodex-bootstrap': '1' } });
       expect(bootstrap.status).toBe(200);
     } finally {
       await server.close();

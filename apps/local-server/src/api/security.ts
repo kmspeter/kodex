@@ -43,7 +43,9 @@ export class LocalSecurity {
     response.setHeader('Cross-Origin-Resource-Policy', 'same-site');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
-    response.setHeader('Referrer-Policy', 'no-referrer');
+    // Bootstrap is a same-origin GET in production. Keep referrers off the wire for
+    // cross-origin navigation while allowing the browser to prove the local UI origin.
+    response.setHeader('Referrer-Policy', 'same-origin');
   }
 
   verify(request: IncomingMessage, mutation = false): void {
@@ -75,6 +77,7 @@ export class LocalSecurity {
   }
 
   verifyBootstrap(request: IncomingMessage): void {
+    if (request.headers['x-kodex-bootstrap'] === '1') return;
     const origin = request.headers.origin;
     if (origin && this.options.allowedOrigins.has(origin)) return;
     const referer = request.headers.referer;

@@ -211,7 +211,7 @@ export class LocalHttpServer {
     if (request.method === 'OPTIONS') {
       response.statusCode = 204;
       response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-      response.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Kodex-CSRF,X-Kodex-Session');
+      response.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-Kodex-Bootstrap,X-Kodex-CSRF,X-Kodex-Session');
       response.end();
       return;
     }
