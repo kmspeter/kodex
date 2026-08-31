@@ -1,5 +1,11 @@
 import path from 'node:path';
 import { canUseWorkspaceRuntime, isUuid } from '@kodex/product-contract';
+import type { HistoryEventSink } from '@kodex/product-db';
+import {
+  RuntimeHistoryRecorder,
+  type HistoryRecorderLogEvent,
+  type RuntimeHistoryRecorderOptions,
+} from './history/recorder.js';
 import { KodexRuntime, type KodexRuntimeOptions } from './runtime.js';
 import type { RuntimeScope } from './auth/product-authorization.js';
 
@@ -14,6 +20,12 @@ export interface RuntimeManagerOptions {
   clock?: () => number;
   createRuntime?: (scope: RuntimeScope, dataRoot: string) => KodexRuntime | Promise<KodexRuntime>;
   idleTimeoutMs?: number;
+  historyLog?: (event: HistoryRecorderLogEvent & { userId: string; workspaceId: string }) => void;
+  historyOptions?: Pick<
+    RuntimeHistoryRecorderOptions,
+    'maxEventBytes' | 'maxOutboxBytes' | 'maxOutboxRecords' | 'retryInitialMs' | 'retryMaximumMs'
+  >;
+  historySink?: HistoryEventSink;
   localApiKey?: string;
   maxActiveRuntimes?: number;
   repositoryRoot: string;
@@ -29,6 +41,7 @@ interface RuntimeEntry {
   promise: Promise<KodexRuntime>;
   root: string;
   runtime?: KodexRuntime;
+  history?: RuntimeHistoryRecorder;
   scope: RuntimeScope;
   stopPromise?: Promise<void>;
 }
@@ -62,6 +75,9 @@ export class RuntimeManager {
   #clock: () => number;
   #closed = false;
   #entries = new Map<string, RuntimeEntry>();
+  #historyLog: RuntimeManagerOptions['historyLog'];
+  #historyOptions: RuntimeManagerOptions['historyOptions'];
+  #historySink: HistoryEventSink | undefined;
   #tail: Promise<void> = Promise.resolve();
   #sweepTimer: NodeJS.Timeout;
   #createRuntime: (scope: RuntimeScope, dataRoot: string) => KodexRuntime | Promise<KodexRuntime>;
@@ -77,6 +93,9 @@ export class RuntimeManager {
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs, 15 * 60_000, 'idleTimeoutMs');
     this.sweepIntervalMs = positiveInteger(options.sweepIntervalMs, 60_000, 'sweepIntervalMs');
     this.#clock = options.clock ?? Date.now;
+    this.#historyLog = options.historyLog;
+    this.#historyOptions = options.historyOptions;
+    this.#historySink = options.historySink;
     this.#createRuntime = options.createRuntime ?? ((scope, dataRoot) => new KodexRuntime(
       this.repositoryRoot,
       options.apiKey,
@@ -109,6 +128,22 @@ export class RuntimeManager {
         lastUsedAt: this.#clock(),
         promise: Promise.resolve(runtimeResult).then(async (runtime) => {
           created.runtime = runtime;
+          if (this.#historySink) {
+            created.history = new RuntimeHistoryRecorder({
+              ...this.#historyOptions,
+              runtime,
+              sink: this.#historySink,
+              scope: created.scope,
+              dataRoot: root,
+              repositoryRoot: this.repositoryRoot,
+              onLog: (event) => this.#historyLog?.({
+                ...event,
+                userId: created.scope.userId,
+                workspaceId: created.scope.workspaceId,
+              }),
+            });
+            created.history.start();
+          }
           await runtime.initialize();
           return runtime;
         }),
@@ -164,8 +199,18 @@ export class RuntimeManager {
     });
   }
 
-  inspect(): Array<{ key: string; leases: number; root: string }> {
-    return [...this.#entries.values()].map((entry) => ({ key: entry.key, leases: entry.leases, root: entry.root }));
+  inspect(): Array<{
+    history?: ReturnType<RuntimeHistoryRecorder['status']>;
+    key: string;
+    leases: number;
+    root: string;
+  }> {
+    return [...this.#entries.values()].map((entry) => ({
+      key: entry.key,
+      leases: entry.leases,
+      root: entry.root,
+      ...(entry.history ? { history: entry.history.status() } : {}),
+    }));
   }
 
   async close(): Promise<void> {
@@ -199,8 +244,10 @@ export class RuntimeManager {
       try {
         const runtime = entry.runtime ?? await entry.promise;
         await runtime.stop();
+        await entry.history?.stop();
       } catch {
         if (entry.runtime) await entry.runtime.stop().catch(() => undefined);
+        await entry.history?.stop().catch(() => undefined);
       }
     })();
     return entry.stopPromise;

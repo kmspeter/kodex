@@ -4,6 +4,7 @@ import {
   Argon2idPasswordHasher,
   AuthService,
   PostgresAuthRepository,
+  PostgresHistoryRepository,
   ProductDatabaseConfigurationError,
   requireProductDatabaseFromEnv,
 } from '@kodex/product-db';
@@ -43,7 +44,7 @@ try {
   const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
     sessionTtlMs: config.sessionTtlMs,
   });
-  server = new ProductApiServer(auth, config);
+  server = new ProductApiServer(auth, config, new PostgresHistoryRepository(database));
   const port = await server.listen();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
 

@@ -1,8 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { ProductAuthResponseDto } from '@kodex/product-contract';
-import type { AuthContext, AuthSessionResult } from '@kodex/product-db';
-import { AuthServiceError } from '@kodex/product-db';
+import {
+  isUuid,
+  PRODUCT_WORKSPACE_HEADER_NAME,
+  PRODUCT_WORKSPACE_QUERY_PARAM,
+  type ProductAuthResponseDto,
+} from '@kodex/product-contract';
+import type { AuthContext, AuthSessionResult, HistoryReader, HistoryScope } from '@kodex/product-db';
+import { AuthServiceError, HistoryCursorError } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
 import {
   clearSessionCookies,
@@ -146,6 +151,13 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     json(response, status, { ok: false, error: { code, message } });
     return;
   }
+  if (error instanceof HistoryCursorError) {
+    json(response, 400, {
+      ok: false,
+      error: { code: 'invalid_cursor', message: 'History cursor is invalid.' },
+    });
+    return;
+  }
   process.stderr.write('Product API request failed without exposing internal details.\n');
   json(response, 500, {
     ok: false,
@@ -160,6 +172,7 @@ export class ProductApiServer {
   constructor(
     private readonly auth: AuthApplication,
     private readonly config: ProductApiConfig,
+    private readonly history?: HistoryReader,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -207,7 +220,10 @@ export class ProductApiServer {
         verifyOrigin(request, this.config.allowedOrigins);
         response.statusCode = 204;
         response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-        response.setHeader('Access-Control-Allow-Headers', 'Content-Type,X-CSRF-Token');
+        response.setHeader(
+          'Access-Control-Allow-Headers',
+          `Content-Type,X-CSRF-Token,${PRODUCT_WORKSPACE_HEADER_NAME}`,
+        );
         response.setHeader('Access-Control-Max-Age', '600');
         response.end();
         return;
@@ -286,6 +302,29 @@ export class ProductApiServer {
         ));
         return;
       }
+      if (url.pathname === '/api/history/threads' && request.method === 'GET' && this.history) {
+        const scope = await this.#historyScope(request, url);
+        const options = historyPageOptions(url);
+        json(response, 200, await this.history.listThreads(scope, options));
+        return;
+      }
+      const historyThreadMatch = /^\/api\/history\/threads\/([^/]+)$/u.exec(url.pathname);
+      if (historyThreadMatch && request.method === 'GET' && this.history) {
+        const scope = await this.#historyScope(request, url);
+        let codexThreadId: string;
+        try {
+          codexThreadId = decodeURIComponent(historyThreadMatch[1]);
+        } catch {
+          throw new HttpError(404, 'not_found', 'Not found.');
+        }
+        if (codexThreadId.length === 0 || codexThreadId.length > 256) {
+          throw new HttpError(404, 'not_found', 'Not found.');
+        }
+        const detail = await this.history.readThread(scope, codexThreadId, historyPageOptions(url));
+        if (!detail) throw new HttpError(404, 'not_found', 'Not found.');
+        json(response, 200, detail);
+        return;
+      }
       json(response, 404, {
         ok: false,
         error: { code: 'not_found', message: 'Not found.' },
@@ -294,4 +333,38 @@ export class ProductApiServer {
       errorResponse(response, error);
     }
   }
+
+  async #historyScope(request: IncomingMessage, url: URL): Promise<HistoryScope> {
+    const queryWorkspaces = url.searchParams.getAll(PRODUCT_WORKSPACE_QUERY_PARAM);
+    const headerWorkspace = request.headers[PRODUCT_WORKSPACE_HEADER_NAME.toLowerCase()];
+    if (
+      queryWorkspaces.length !== 1
+      || !isUuid(queryWorkspaces[0])
+      || typeof headerWorkspace !== 'string'
+      || !isUuid(headerWorkspace)
+      || headerWorkspace !== queryWorkspaces[0]
+    ) {
+      throw new HttpError(403, 'workspace_forbidden', 'Workspace access is not permitted.');
+    }
+    const token = parseCookies(request.headers.cookie).get(sessionCookieName);
+    if (!token) throw new HttpError(401, 'unauthenticated', 'Authentication is required.');
+    const context = await this.auth.authenticate(token);
+    if (!context.memberships.some((membership) => membership.id === headerWorkspace)) {
+      throw new HttpError(403, 'workspace_forbidden', 'Workspace access is not permitted.');
+    }
+    return { userId: context.user.id, workspaceId: headerWorkspace };
+  }
+}
+
+function historyPageOptions(url: URL): { cursor?: string; limit: number } {
+  const rawLimit = url.searchParams.get('limit');
+  const limit = rawLimit === null ? 25 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpError(400, 'invalid_request', 'History page limit must be between 1 and 100.');
+  }
+  const cursors = url.searchParams.getAll('cursor');
+  if (cursors.length > 1 || (cursors[0]?.length ?? 0) > 512) {
+    throw new HttpError(400, 'invalid_cursor', 'History cursor is invalid.');
+  }
+  return { limit, ...(cursors[0] ? { cursor: cursors[0] } : {}) };
 }

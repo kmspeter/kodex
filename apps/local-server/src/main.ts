@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PostgresAuthRepository,
+  PostgresHistoryRepository,
   ProductDatabaseConfigurationError,
   requireProductDatabaseFromEnv,
 } from '@kodex/product-db';
@@ -57,6 +58,7 @@ try {
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const authorizer = new DatabaseProductAuthorizer(new PostgresAuthRepository(database));
+  const history = new PostgresHistoryRepository(database);
   const configuredDataRoot = process.env.KODEX_DATA_ROOT
     ? path.resolve(process.env.KODEX_DATA_ROOT, 'tenants')
     : undefined;
@@ -65,6 +67,32 @@ try {
     tenantRoot: process.env.KODEX_TENANT_ROOT ? path.resolve(process.env.KODEX_TENANT_ROOT) : configuredDataRoot,
     apiKey: process.env.OPENAI_API_KEY,
     localApiKey: process.env.KODEX_LOCAL_LLM_API_KEY,
+    historySink: history,
+    historyOptions: {
+      maxEventBytes: positiveInteger(
+        process.env.KODEX_HISTORY_EVENT_MAX_BYTES, 65_536, 1_048_576,
+        'KODEX_HISTORY_EVENT_MAX_BYTES',
+      ),
+      maxOutboxBytes: positiveInteger(
+        process.env.KODEX_HISTORY_OUTBOX_MAX_BYTES, 16 * 1024 * 1024, 1024 * 1024 * 1024,
+        'KODEX_HISTORY_OUTBOX_MAX_BYTES',
+      ),
+      maxOutboxRecords: positiveInteger(
+        process.env.KODEX_HISTORY_OUTBOX_MAX_RECORDS, 10_000, 1_000_000,
+        'KODEX_HISTORY_OUTBOX_MAX_RECORDS',
+      ),
+      retryInitialMs: positiveInteger(
+        process.env.KODEX_HISTORY_RETRY_INITIAL_MS, 250, 60_000,
+        'KODEX_HISTORY_RETRY_INITIAL_MS',
+      ),
+      retryMaximumMs: positiveInteger(
+        process.env.KODEX_HISTORY_RETRY_MAX_MS, 30_000, 60 * 60_000,
+        'KODEX_HISTORY_RETRY_MAX_MS',
+      ),
+    },
+    historyLog: (event) => process.stderr.write(
+      `Kodex Local Server history state: ${JSON.stringify(event)}\n`,
+    ),
     maxActiveRuntimes: positiveInteger(process.env.KODEX_MAX_ACTIVE_RUNTIMES, 8, 128, 'KODEX_MAX_ACTIVE_RUNTIMES'),
     idleTimeoutMs: positiveInteger(process.env.KODEX_RUNTIME_IDLE_MS, 15 * 60_000, 24 * 60 * 60_000, 'KODEX_RUNTIME_IDLE_MS'),
     sweepIntervalMs: positiveInteger(process.env.KODEX_RUNTIME_SWEEP_MS, 60_000, 60 * 60_000, 'KODEX_RUNTIME_SWEEP_MS'),

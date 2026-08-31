@@ -190,9 +190,10 @@ describe('product database migrations', () => {
     const result = await database.query<{ checksum: string; version: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version',
     );
-    expect(result.rows).toHaveLength(2);
+    expect(result.rows).toHaveLength(3);
     expect(result.rows[0]).toMatchObject({ version: '1' });
     expect(result.rows[1]).toMatchObject({ version: '2' });
+    expect(result.rows[2]).toMatchObject({ version: '3' });
     expect(result.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
   });
 

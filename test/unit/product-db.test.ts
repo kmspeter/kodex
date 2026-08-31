@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(2);
+    expect(migrations).toHaveLength(3);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -142,5 +142,13 @@ describe('product database migration SQL', () => {
     expect(authSql).toContain('email = lower(btrim(email))');
     expect(authSql).toContain('octet_length(token_hash) = 32');
     expect(authSql).not.toMatch(/plaintext_password|session_token\s+text/iu);
+
+    const historySql = migrations[2].sql;
+    expect(migrations[2].version).toBe(3);
+    expect(historySql).toContain('projects_owner_external_key_uq');
+    expect(historySql).toContain('agent_threads_owner_codex_id_uq');
+    expect(historySql).toContain('created_by_user_id uuid REFERENCES users(id) ON DELETE RESTRICT');
+    expect(historySql).toContain('source_sort_key text');
+    expect(historySql).toContain('agent_events_owner_time_idx');
   });
 });

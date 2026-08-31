@@ -9,13 +9,13 @@ Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원�
 ```text
 apps/ui                 React/Vite renderer와 제품 인증 게이트
 apps/local-server       localhost API, 정적 UI, scheduler, Codex 수명 관리
-apps/api                독립 제품 인증 HTTP API
+apps/api                독립 제품 인증·사용자별 history HTTP API
 apps/desktop            Electron 창과 Local Server 수명 관리
 packages/codex-protocol 공식 바이너리에서 생성한 protocol/schema
 packages/kodex-api      UI ↔ Local Server 계약
 packages/product-contract 브라우저-safe auth/workspace 공개 계약
 packages/shared         JSONL, sequence, 마스킹 유틸리티
-packages/product-db     PostgreSQL pool, migration, 제품 schema와 hash-only session
+packages/product-db     PostgreSQL pool, migration, 제품 schema, auth/history repository
 infra/compose.yaml      개발용 PostgreSQL 17 + pgvector, 선택적 제품 API profile
 vendor/openai-codex     고정된 공식 전체 소스
 bin/codex.exe           위 소스에서 빌드한 공식 App Server 바이너리
@@ -79,13 +79,13 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 ## 로컬 데이터와 안정성
 
-`.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log와 `instance.lock`이 따로 저장됩니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 이번 단계에서는 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. 협업 이력은 다음 단계의 제품 DB event projection으로 공유하며 upstream Codex SQLite를 직접 공유하거나 읽지 않습니다.
+`.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`가 따로 저장됩니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, 서버 tenant 강제와 runtime 격리 (4단계, 필수)
+## 제품 PostgreSQL, tenant runtime과 내구성 history (5단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증 service를 소유합니다. `apps/api`가 등록·로그인을 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`, `docs/adr/0002-product-authentication.md`, `docs/adr/0003-tenant-runtime-isolation.md`에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증 service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history read를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`, `docs/adr/0002-product-authentication.md`, `docs/adr/0003-tenant-runtime-isolation.md`, `docs/adr/0004-app-server-history-projection.md`에 있습니다.
 
-`0001_initial_product_schema.sql`은 변경하지 않습니다. `0002_password_credentials.sql`은 이메일이 trim/lowercase 정규형인지 DB에서 검사하고, Argon2id PHC credential table과 정확히 32바이트인 session SHA-256 제약을 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다.
+`0001_initial_product_schema.sql`과 `0002_password_credentials.sql`은 변경하지 않습니다. 새 `0003_agent_history_projection.sql`은 사용자별 project/thread identity, 하위 history row의 `created_by_user_id` FK, source-derived sort/lifecycle 필드와 read index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -111,6 +111,8 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `POST /api/auth/login`: `{ "email", "password" }`, 성공 `200`. 존재하지 않는 이메일과 잘못된 비밀번호는 같은 `401 invalid_credentials`입니다.
 - `GET /api/auth/me`: session cookie로 사용자, session 만료, workspace membership을 조회합니다.
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
+- `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다.
+- `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다.
 
 register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csrfToken`이 포함됩니다. 이 값은 session bearer가 아니라 `kodex_product_csrf` cookie와 같은 HMAC double-submit 증명이며 프론트 메모리에만 유지됩니다. logout 때도 서버는 허용 Origin, session HttpOnly cookie, CSRF cookie/header, HMAC을 모두 검증합니다.
 
@@ -133,7 +135,9 @@ WebSocket upgrade도 같은 순서를 사용합니다. 연결 후에는 session 
 
 운영은 HTTPS same-origin reverse proxy가 UI와 `/api/auth/*`를 함께 제공하는 구성이 기본입니다. 제품 API를 별도 origin으로 둘 때는 동일-site HTTPS hostname, credentialed CORS allowlist, `Secure`/`SameSite=Strict` cookie가 모두 호환되어야 합니다. cross-site 배치는 현재 cookie 정책과 호환되지 않습니다. production Vite build에서 `VITE_PRODUCT_API_URL`을 생략하면 UI origin을 사용합니다.
 
-`RuntimeManager`의 기본 정책은 최대 active runtime 8개, idle timeout 15분, sweep 1분입니다. `KODEX_MAX_ACTIVE_RUNTIMES`, `KODEX_RUNTIME_IDLE_MS`, `KODEX_RUNTIME_SWEEP_MS`로 조정합니다. 동시 생성은 하나로 합치고 active WebSocket/HTTP lease가 있는 runtime은 eviction하지 않습니다. 최대치에서 모든 runtime이 leased 상태면 `503`을 반환합니다. 종료·eviction은 scheduler, pending approval/automation, App Server process와 data lock을 정리합니다.
+`RuntimeManager`의 기본 정책은 최대 active runtime 8개, idle timeout 15분, sweep 1분입니다. `KODEX_MAX_ACTIVE_RUNTIMES`, `KODEX_RUNTIME_IDLE_MS`, `KODEX_RUNTIME_SWEEP_MS`로 조정합니다. 동시 생성은 하나로 합치고 active WebSocket/HTTP lease가 있는 runtime은 eviction하지 않습니다. 최대치에서 모든 runtime이 leased 상태면 `503`을 반환합니다. tenant runtime마다 UI WebSocket 수와 무관한 history subscriber를 정확히 하나 설치한 뒤 App Server를 시작하며, 종료·eviction은 subscriber, retry timer, scheduler, pending approval/automation, App Server process와 data lock을 정리합니다.
+
+History subscriber는 thread/turn/item lifecycle과 tool/approval을 정규화하고 재귀 credential redaction 및 기본 64 KiB event 한계를 적용한 뒤 tenant root의 outbox에 먼저 원자적으로 기록합니다. DB transaction은 project/thread/turn/item/tool/approval 상태와 deduplicated `agent_events`를 함께 반영합니다. 전달 모델은 ordered at-least-once이고 `(source_instance, source_event_id)`와 monotonic lifecycle merge로 재시도·재시작·out-of-order를 흡수합니다. DB 장애는 agent 실행을 막지 않으며 250 ms부터 최대 30초까지 retry합니다. 기본 outbox는 tenant당 16 MiB/10,000 records로 제한되고 초과·손상·DB 불가는 credential 없는 명시적 history state log로 남습니다.
 
 ## 연결 복구, 승인, 자동화, 재시작
 
@@ -175,16 +179,19 @@ npm run test:product-db
 npm run test:product-auth
 # DATABASE_URL을 명시한 실제 Local Server tenant/WS 격리 검증
 npm run test:tenant-auth
+# DATABASE_URL을 명시한 실제 history projection/outbox/API 검증
+npm run test:history-postgres
 ```
 
-기본 `npm test`는 외부 모델이나 DB를 호출하지 않으며 dependency-injected session repository로 tenant 공격 경로를 검증합니다. `test:product-auth`와 `test:tenant-auth`만 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:tenant-auth`는 missing/expired/revoked session, non-member scope, HTTP/WS cross-tenant 차단, WS 사후 폐기, 사용자별 data/CODEX_HOME 경로와 event 격리를 확인합니다.
+기본 `npm test`는 외부 모델이나 DB를 호출하지 않으며 dependency-injected session/history sink로 tenant 공격 경로와 outbox replay를 검증합니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. History 검증은 duplicate/out-of-order idempotency, DB outage retry, restart replay, stable cursor, cross-user/workspace 차단, revoked session/membership, recursive redaction과 size bound를 포함합니다.
 
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
-- 제품 DB thread/event projection은 아직 연결하지 않았으므로 shared workspace의 협업 history는 공유되지 않습니다.
+- History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
+- 이 단계는 history projection만 구현하며 RAG/embedding 생성·검색은 연결하지 않습니다.
 - Electron/portable runtime은 Product API lifecycle과 tenant data root를 아직 통합하지 않았습니다. 현재 지원 실행 경로는 source의 `npm run dev`/`npm start`입니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 

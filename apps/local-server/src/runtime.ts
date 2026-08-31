@@ -15,7 +15,13 @@ export type ServerRequestResolution = 'answered' | 'timeout' | 'disconnect' | 'a
 export type RuntimeEvent =
   | { type: 'notification'; notification: ServerNotification }
   | { type: 'server-request'; request: ServerRequest; ownerId: string }
-  | { type: 'server-request-resolved'; requestId: RequestId; reason: ServerRequestResolution }
+  | {
+    type: 'server-request-resolved';
+    requestId: RequestId;
+    reason: ServerRequestResolution;
+    request?: ServerRequest;
+    response?: unknown;
+  }
   | { type: 'engine'; engine: EngineStatus };
 
 type RuntimeListener = (sequence: number, event: RuntimeEvent) => void;
@@ -171,7 +177,12 @@ export class KodexRuntime {
       clearTimeout(pending.timer);
       this.#pendingServerRequests.delete(key);
       try { this.appServer.respondError(pending.request.id, -32001, 'The approval owner disconnected. Retry the operation.'); } catch { /* App Server may already be gone */ }
-      this.emit({ type: 'server-request-resolved', requestId: pending.request.id, reason: 'disconnect' });
+      this.emit({
+        type: 'server-request-resolved',
+        requestId: pending.request.id,
+        reason: 'disconnect',
+        request: pending.request,
+      });
     }
   }
 
@@ -286,7 +297,10 @@ export class KodexRuntime {
     clearTimeout(pending.timer);
     this.appServer.respond(id, validated);
     await this.store.appendApproval({ id, method: pending.request.method, result: validated });
-    this.emit({ type: 'server-request-resolved', requestId: id, reason: 'answered' });
+    this.emit({
+      type: 'server-request-resolved', requestId: id, reason: 'answered',
+      request: pending.request, response: validated,
+    });
     return true;
   }
 
@@ -298,7 +312,10 @@ export class KodexRuntime {
     clearTimeout(pending.timer);
     this.appServer.respondError(id, code, message);
     await this.store.appendApproval({ id, method: pending.request.method, error: { code, message } });
-    this.emit({ type: 'server-request-resolved', requestId: id, reason: 'answered' });
+    this.emit({
+      type: 'server-request-resolved', requestId: id, reason: 'answered',
+      request: pending.request, response: { error: { code, message } },
+    });
     return true;
   }
 
@@ -306,13 +323,17 @@ export class KodexRuntime {
     if (!SUPPORTED_SERVER_REQUESTS.has(request.method)) {
       try { this.appServer.respondError(request.id, -32601, `${request.method} is unavailable because Kodex has no host-side dynamic tool/auth registry.`); } catch { /* process may exit */ }
       void this.store.appendLog('unsupported-requests.log', `${new Date().toISOString()} ${request.method}`);
-      this.emit({ type: 'server-request-resolved', requestId: request.id, reason: 'unsupported' });
+      this.emit({
+        type: 'server-request-resolved', requestId: request.id, reason: 'unsupported', request,
+      });
       return;
     }
     const ownerId = this.#activeUiId;
     if (!ownerId) {
       try { this.appServer.respondError(request.id, -32001, 'No active Kodex UI is connected to answer this request.'); } catch { /* process may exit */ }
-      this.emit({ type: 'server-request-resolved', requestId: request.id, reason: 'disconnect' });
+      this.emit({
+        type: 'server-request-resolved', requestId: request.id, reason: 'disconnect', request,
+      });
       return;
     }
     const key = requestKey(request.id);
@@ -323,7 +344,9 @@ export class KodexRuntime {
       if (!pending) return;
       this.#pendingServerRequests.delete(key);
       try { this.appServer.respondError(request.id, -32002, 'Kodex approval request timed out.'); } catch { /* process may exit */ }
-      this.emit({ type: 'server-request-resolved', requestId: request.id, reason: 'timeout' });
+      this.emit({
+        type: 'server-request-resolved', requestId: request.id, reason: 'timeout', request,
+      });
     }, this.options.serverRequestTimeoutMs ?? 120_000);
     timer.unref?.();
     this.#pendingServerRequests.set(key, { request, ownerId, timer });
@@ -360,7 +383,10 @@ export class KodexRuntime {
   #clearPendingRequests(reason: ServerRequestResolution): void {
     for (const pending of this.#pendingServerRequests.values()) {
       clearTimeout(pending.timer);
-      this.emit({ type: 'server-request-resolved', requestId: pending.request.id, reason });
+      this.emit({
+        type: 'server-request-resolved', requestId: pending.request.id, reason,
+        request: pending.request,
+      });
     }
     this.#pendingServerRequests.clear();
   }
