@@ -22,7 +22,7 @@ does not install a system-wide runtime.
 
 ## JavaScript dependencies
 
-The runtime includes the project-local `ws` and `dotenv` packages as well as
+The runtime dependencies include the project-local `ws`, `dotenv`, and `pg` packages as well as
 the built Kodex workspace packages. Their package metadata and license files
 are retained in `node_modules`; exact resolved versions are recorded in
 `package-lock.json`.

@@ -1,0 +1,23 @@
+name: kodex-product-infra
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PRODUCT_DB_NAME:-kodex}
+      POSTGRES_USER: ${PRODUCT_DB_USER:-kodex}
+      POSTGRES_PASSWORD: ${PRODUCT_DB_PASSWORD:?set PRODUCT_DB_PASSWORD in your env file}
+    ports:
+      - "${PRODUCT_DB_PORT:-5432}:5432"
+    volumes:
+      - kodex-product-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  kodex-product-postgres:

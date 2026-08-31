@@ -4,6 +4,7 @@
     { "path": "packages/codex-protocol" },
     { "path": "packages/kodex-api" },
     { "path": "packages/shared" },
+    { "path": "packages/product-db" },
     { "path": "apps/local-server" },
     { "path": "apps/ui" }
   ]

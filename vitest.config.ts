@@ -7,6 +7,7 @@ export default defineConfig({
     exclude: [
       'test/live/**',
       'test/integration/local-provider.test.ts',
+      'test/integration/product-db.test.ts',
       'test/integration/real-app-server.test.ts',
     ],
     testTimeout: 20_000,
