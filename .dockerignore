@@ -1,0 +1,12 @@
+**
+!package.json
+!package-lock.json
+!tsconfig.json
+!apps/
+!apps/api/
+!apps/api/**
+!packages/
+!packages/product-db/
+!packages/product-db/**
+**/dist
+**/*.tsbuildinfo

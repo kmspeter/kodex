@@ -1,0 +1,158 @@
+export interface ProductApiConfig {
+  allowedHosts: Set<string>;
+  allowedOrigins: Set<string>;
+  cookieSecret: Buffer;
+  host: string;
+  maxBodyBytes: number;
+  port: number;
+  secureCookies: boolean;
+  sessionTtlMs: number;
+}
+
+export class ProductApiConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductApiConfigurationError';
+  }
+}
+
+function configurationError(message: string): never {
+  throw new ProductApiConfigurationError(message);
+}
+
+function positiveInteger(
+  value: string | undefined,
+  name: string,
+  fallback: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > maximum) {
+    return configurationError(`${name} must be a positive integer no greater than ${maximum}`);
+  }
+  return parsed;
+}
+
+function booleanValue(value: string | undefined, name: string, fallback: boolean): boolean {
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+  if (value === 'true' || value === '1') {
+    return true;
+  }
+  if (value === 'false' || value === '0') {
+    return false;
+  }
+  return configurationError(`${name} must be true or false`);
+}
+
+function commaSeparated(value: string, name: string): string[] {
+  const entries = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0 || new Set(entries).size !== entries.length) {
+    return configurationError(`${name} must contain one or more unique comma-separated values`);
+  }
+  return entries;
+}
+
+function parseAllowedOrigins(value: string, production: boolean): Set<string> {
+  const origins = commaSeparated(value, 'AUTH_ALLOWED_ORIGINS');
+  for (const origin of origins) {
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      return configurationError('AUTH_ALLOWED_ORIGINS entries must be absolute HTTP(S) origins');
+    }
+    if (
+      !['http:', 'https:'].includes(url.protocol)
+      || url.origin !== origin
+      || url.username
+      || url.password
+    ) {
+      return configurationError('AUTH_ALLOWED_ORIGINS entries must be exact HTTP(S) origins');
+    }
+    if (production && url.protocol !== 'https:') {
+      return configurationError('AUTH_ALLOWED_ORIGINS must use HTTPS in production');
+    }
+  }
+  return new Set(origins);
+}
+
+function parseAllowedHosts(value: string): Set<string> {
+  const hosts = commaSeparated(value.toLowerCase(), 'PRODUCT_API_ALLOWED_HOSTS');
+  if (hosts.some((host) => host.includes('/') || host.includes('://') || /\s/u.test(host))) {
+    return configurationError('PRODUCT_API_ALLOWED_HOSTS entries must be exact Host header values');
+  }
+  return new Set(hosts);
+}
+
+function parseCookieSecret(value: string | undefined): Buffer {
+  if (!value || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    return configurationError('AUTH_COOKIE_SECRET must be an unpadded base64url value');
+  }
+  const secret = Buffer.from(value, 'base64url');
+  if (secret.length < 32 || secret.toString('base64url') !== value) {
+    return configurationError('AUTH_COOKIE_SECRET must contain at least 32 random bytes');
+  }
+  return secret;
+}
+
+export function productApiConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductApiConfig {
+  const production = env.NODE_ENV === 'production';
+  if (env.NODE_ENV && !['development', 'test', 'production'].includes(env.NODE_ENV)) {
+    return configurationError('NODE_ENV must be development, test, or production');
+  }
+
+  const host = env.PRODUCT_API_HOST?.trim() || '127.0.0.1';
+  if (!host || host.includes('://') || /[\s/]/u.test(host)) {
+    return configurationError('PRODUCT_API_HOST must be a bind hostname or address');
+  }
+  const port = positiveInteger(env.PRODUCT_API_PORT, 'PRODUCT_API_PORT', 47_832, 65_535);
+  const originsValue = env.AUTH_ALLOWED_ORIGINS?.trim()
+    || (production
+      ? configurationError('AUTH_ALLOWED_ORIGINS is required in production')
+      : 'http://127.0.0.1:5173,http://localhost:5173');
+  const hostsValue = env.PRODUCT_API_ALLOWED_HOSTS?.trim()
+    || (production
+      ? configurationError('PRODUCT_API_ALLOWED_HOSTS is required in production')
+      : `127.0.0.1:${port},localhost:${port}`);
+  const secureCookies = booleanValue(
+    env.AUTH_COOKIE_SECURE,
+    'AUTH_COOKIE_SECURE',
+    production,
+  );
+  if (production && !secureCookies) {
+    return configurationError('AUTH_COOKIE_SECURE cannot be disabled in production');
+  }
+
+  const sessionTtlSeconds = positiveInteger(
+    env.AUTH_SESSION_TTL_SECONDS,
+    'AUTH_SESSION_TTL_SECONDS',
+    43_200,
+    2_592_000,
+  );
+  if (sessionTtlSeconds < 300) {
+    return configurationError('AUTH_SESSION_TTL_SECONDS must be at least 300');
+  }
+
+  return {
+    host,
+    port,
+    allowedOrigins: parseAllowedOrigins(originsValue, production),
+    allowedHosts: parseAllowedHosts(hostsValue),
+    cookieSecret: parseCookieSecret(env.AUTH_COOKIE_SECRET),
+    secureCookies,
+    sessionTtlMs: sessionTtlSeconds * 1_000,
+    maxBodyBytes: positiveInteger(
+      env.PRODUCT_API_MAX_BODY_BYTES,
+      'PRODUCT_API_MAX_BODY_BYTES',
+      65_536,
+      1_048_576,
+    ),
+  };
+}

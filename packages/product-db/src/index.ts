@@ -1,5 +1,6 @@
 export {
   productDatabaseConfigFromEnv,
+  ProductDatabaseConfigurationError,
   requireProductDatabaseConfig,
   type ProductDatabaseConfig,
   type ProductDatabaseSslMode,
@@ -18,3 +19,35 @@ export {
   type AppliedMigration,
   type Migration,
 } from './migrations.js';
+export {
+  PostgresAuthRepository,
+  RegistrationConflictError,
+  type AuthRepository,
+  type CreateSessionInput,
+  type LoginCredential,
+  type RegisterAccountInput,
+  type RegistrationRecord,
+} from './auth-repository.js';
+export {
+  AuthService,
+  AuthServiceError,
+  hashSessionToken,
+  normalizeEmail,
+  type AuthErrorCode,
+  type AuthServiceOptions,
+  type AuthSessionResult,
+} from './auth-service.js';
+export {
+  requireWorkspaceRole,
+  workspaceRoles,
+  WorkspaceAuthorizationError,
+  type AuthContext,
+  type AuthUser,
+  type WorkspaceMembership,
+  type WorkspaceRole,
+} from './auth-types.js';
+export {
+  Argon2idPasswordHasher,
+  argon2idParameters,
+  type PasswordHasher,
+} from './password.js';

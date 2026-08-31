@@ -55,6 +55,11 @@ describe('product database configuration', () => {
         PRODUCT_DB_POOL_MAX: 'zero',
       }),
     ).toThrow('PRODUCT_DB_POOL_MAX must be a positive integer');
+
+    expect(() => productDatabaseConfigFromEnv({ DATABASE_URL: 'not-a-database-url' }))
+      .toThrow('DATABASE_URL must be a valid PostgreSQL URL');
+    expect(() => productDatabaseConfigFromEnv({ DATABASE_URL: 'https://example.com/kodex' }))
+      .toThrow('DATABASE_URL must be a valid PostgreSQL URL');
   });
 });
 
@@ -74,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -84,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(1);
+    expect(migrations).toHaveLength(2);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -129,5 +134,13 @@ describe('product database migration SQL', () => {
     expect(sql).not.toMatch(/embedding vector\(\d+\)/);
     expect(sql).toContain('embedding_dimensions = vector_dims(embedding)');
     expect(sql).toContain('never a replacement for or reader of CODEX_HOME SQLite');
+
+    const authSql = migrations[1].sql;
+    expect(migrations[1].version).toBe(2);
+    expect(authSql).toContain('CREATE TABLE password_credentials (');
+    expect(authSql).toContain("CHECK (password_hash ~ '^\\$argon2id\\$')");
+    expect(authSql).toContain('email = lower(btrim(email))');
+    expect(authSql).toContain('octet_length(token_hash) = 32');
+    expect(authSql).not.toMatch(/plaintext_password|session_token\s+text/iu);
   });
 });

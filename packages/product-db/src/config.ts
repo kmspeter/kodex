@@ -7,6 +7,17 @@ export interface ProductDatabaseConfig extends PoolConfig {
   connectionString: string;
 }
 
+export class ProductDatabaseConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductDatabaseConfigurationError';
+  }
+}
+
+function configurationError(message: string): never {
+  throw new ProductDatabaseConfigurationError(message);
+}
+
 function parsePositiveInteger(value: string | undefined, name: string, fallback: number): number {
   if (value === undefined || value.trim() === '') {
     return fallback;
@@ -14,7 +25,7 @@ function parsePositiveInteger(value: string | undefined, name: string, fallback:
 
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
+    return configurationError(`${name} must be a positive integer`);
   }
   return parsed;
 }
@@ -34,17 +45,37 @@ function parseSslMode(value: string | undefined): ProductDatabaseConfig['ssl'] |
   if (mode === 'verify-full') {
     return { rejectUnauthorized: true };
   }
-  throw new Error('PRODUCT_DB_SSL must be disable, require, or verify-full');
+  return configurationError('PRODUCT_DB_SSL must be disable, require, or verify-full');
+}
+
+function validateDatabaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return configurationError('DATABASE_URL must be a valid PostgreSQL URL');
+  }
+  if (
+    !['postgres:', 'postgresql:'].includes(url.protocol)
+    || !url.hostname
+    || url.pathname === '/'
+    || !url.pathname
+    || url.hash
+  ) {
+    return configurationError('DATABASE_URL must be a valid PostgreSQL URL');
+  }
+  return value;
 }
 
 /** Returns undefined when the product database is intentionally not configured. */
 export function productDatabaseConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): ProductDatabaseConfig | undefined {
-  const connectionString = env.DATABASE_URL?.trim();
-  if (!connectionString) {
+  const databaseUrl = env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
     return undefined;
   }
+  const connectionString = validateDatabaseUrl(databaseUrl);
 
   const config: ProductDatabaseConfig = {
     connectionString,
@@ -74,7 +105,7 @@ export function requireProductDatabaseConfig(
 ): ProductDatabaseConfig {
   const config = productDatabaseConfigFromEnv(env);
   if (!config) {
-    throw new Error('DATABASE_URL is required for product database operations');
+    return configurationError('DATABASE_URL is required for product database operations');
   }
   return config;
 }

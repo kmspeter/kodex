@@ -5,6 +5,7 @@
     { "path": "packages/kodex-api" },
     { "path": "packages/shared" },
     { "path": "packages/product-db" },
+    { "path": "apps/api" },
     { "path": "apps/local-server" },
     { "path": "apps/ui" }
   ]

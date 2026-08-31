@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "node scripts/run-kodex.mjs dev",
-    "build": "npm run build --workspace @kodex/codex-protocol && npm run build --workspace @kodex/kodex-api && npm run build --workspace @kodex/shared && npm run build --workspace @kodex/product-db && npm run build --workspace @kodex/local-server && npm run build --workspace @kodex/ui",
+    "build": "npm run build --workspace @kodex/codex-protocol && npm run build --workspace @kodex/kodex-api && npm run build --workspace @kodex/shared && npm run build --workspace @kodex/product-db && npm run build --workspace @kodex/product-api && npm run build --workspace @kodex/local-server && npm run build --workspace @kodex/ui",
     "start": "node scripts/run-kodex.mjs start",
     "test": "vitest run",
     "test:integration": "vitest run test/integration",
@@ -20,9 +20,12 @@
     "test:local-provider": "vitest run --config vitest.opt-in.config.ts test/integration/local-provider.test.ts",
     "test:handshake": "vitest run --config vitest.opt-in.config.ts test/integration/real-app-server.test.ts",
     "test:product-db": "npm run build --workspace @kodex/product-db && vitest run --config vitest.product-db.config.ts",
+    "test:product-auth": "npm run build --workspace @kodex/product-db && npm run build --workspace @kodex/product-api && vitest run --config vitest.product-auth.config.ts",
     "lint": "eslint apps packages scripts test --max-warnings=0",
     "typecheck": "tsc -b --pretty && tsc -p test/tsconfig.json --noEmit --pretty",
     "db:migrate": "npm run migrate --workspace @kodex/product-db",
+    "api:dev": "npm run dev --workspace @kodex/product-api",
+    "api:start": "npm run start --workspace @kodex/product-api",
     "codex:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-codex.ps1",
     "codex:generate-protocol": "node scripts/generate-protocol.mjs",
     "codex:verify-source": "node scripts/vendor-manifest.mjs",
@@ -45,6 +48,7 @@
     "vitest": "^4.0.18"
   },
   "allowScripts": {
+    "argon2@0.44.0": true,
     "esbuild@0.28.2": true
   }
 }
