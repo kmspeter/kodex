@@ -42,13 +42,37 @@ describe('repository reproducibility and secret isolation', () => {
     await expect(verifyVendorManifest(source, manifestPath)).rejects.toThrow('deleted: a.rs');
   });
 
-  it('removes provider keys only from the Vite process environment', () => {
-    const source = { PATH: 'test', OPENAI_API_KEY: 'sk-ui-must-not-see-this', KODEX_LOCAL_LLM_API_KEY: 'local-secret' };
+  it('removes provider and product server secrets from the Vite process environment', () => {
+    const source = {
+      PATH: 'test',
+      OPENAI_API_KEY: 'sk-ui-must-not-see-this',
+      KODEX_LOCAL_LLM_API_KEY: 'local-secret',
+      DATABASE_URL: 'postgresql://private',
+      AUTH_COOKIE_SECRET: 'cookie-secret',
+      PRODUCT_DB_PASSWORD: 'database-secret',
+      VITE_PRODUCT_API_URL: 'http://127.0.0.1:47832',
+      VITE_DATABASE_URL: 'postgresql://vite-private',
+      VITE_AUTH_COOKIE_SECRET: 'vite-cookie-secret',
+      VITE_ARBITRARY_VALUE: 'must-not-reach-ui',
+      vite_lowercase_secret: 'lowercase-must-not-reach-ui',
+    };
     const ui = createUiEnvironment(source, '47831');
     const server = createServerEnvironment(source, 'dev', '47831');
     expect(ui.OPENAI_API_KEY).toBeUndefined();
     expect(ui.KODEX_LOCAL_LLM_API_KEY).toBeUndefined();
+    expect(ui.DATABASE_URL).toBeUndefined();
+    expect(ui.AUTH_COOKIE_SECRET).toBeUndefined();
+    expect(ui.PRODUCT_DB_PASSWORD).toBeUndefined();
+    expect(ui.VITE_PRODUCT_API_URL).toBe(source.VITE_PRODUCT_API_URL);
+    expect(ui.VITE_KODEX_API_URL).toBe('http://127.0.0.1:47831');
+    expect(ui.VITE_DATABASE_URL).toBeUndefined();
+    expect(ui.VITE_AUTH_COOKIE_SECRET).toBeUndefined();
+    expect(ui.VITE_ARBITRARY_VALUE).toBeUndefined();
+    expect(ui.vite_lowercase_secret).toBeUndefined();
     expect(JSON.stringify(ui)).not.toContain('sk-ui-must-not-see-this');
+    expect(JSON.stringify(ui)).not.toContain('postgresql://private');
+    expect(JSON.stringify(ui)).not.toContain('cookie-secret');
+    expect(JSON.stringify(ui)).not.toContain('must-not-reach-ui');
     expect(server.OPENAI_API_KEY).toBe(source.OPENAI_API_KEY);
     expect(server.KODEX_LOCAL_LLM_API_KEY).toBe(source.KODEX_LOCAL_LLM_API_KEY);
   });

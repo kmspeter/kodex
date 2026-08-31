@@ -1,4 +1,14 @@
-const PRIVATE_PROVIDER_KEYS = ['OPENAI_API_KEY', 'KODEX_LOCAL_LLM_API_KEY'];
+const PRIVATE_UI_KEYS = [
+  'AUTH_COOKIE_SECRET',
+  'DATABASE_URL',
+  'KODEX_LOCAL_LLM_API_KEY',
+  'OPENAI_API_KEY',
+  'PRODUCT_DB_PASSWORD',
+];
+const PUBLIC_VITE_KEYS = new Set([
+  'VITE_KODEX_API_URL',
+  'VITE_PRODUCT_API_URL',
+]);
 
 export function createUiEnvironment(environment = process.env, port = '47831') {
   const output = {
@@ -8,7 +18,12 @@ export function createUiEnvironment(environment = process.env, port = '47831') {
     VITE_KODEX_API_URL: `http://127.0.0.1:${port}`,
   };
   for (const key of Object.keys(output)) {
-    if (PRIVATE_PROVIDER_KEYS.includes(key.toLocaleUpperCase())) delete output[key];
+    if (
+      PRIVATE_UI_KEYS.includes(key.toLocaleUpperCase())
+      || (/^VITE_/iu.test(key) && !PUBLIC_VITE_KEYS.has(key))
+    ) {
+      delete output[key];
+    }
   }
   return output;
 }

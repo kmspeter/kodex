@@ -11,6 +11,8 @@ import type {
 } from '@kodex/codex-protocol';
 import type { AutomationRecord, BootstrapResponse, GitStatus, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
 import { Code2, GitCommitHorizontal, LoaderCircle, ShieldCheck, SquareTerminal } from 'lucide-react';
+import { ProductAuthGate } from './auth/AuthGate';
+import type { ProductAuthContext } from './auth/product-auth';
 import { KodexClient, type ConnectionState } from './client/kodex-client';
 import { KodexMark } from './components/Brand';
 import { ChangesPanel } from './components/ChangesPanel';
@@ -23,9 +25,21 @@ import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { eventReducer, initialEventState } from './state/events';
 
 const EMPTY_GIT: GitStatus = { isRepository: false, branch: '', files: [], totals: { files: 0, added: 0, removed: 0 } };
-type ActivePopover = 'header-open' | 'header-more' | 'composer-model' | null;
+type ActivePopover = 'header-account' | 'header-open' | 'header-more' | 'composer-model' | null;
 
 export function App() {
+  return <ProductAuthGate>{(account, logout, loggingOut) => <AuthenticatedApp
+    account={account}
+    loggingOut={loggingOut}
+    onLogout={logout}
+  />}</ProductAuthGate>;
+}
+
+function AuthenticatedApp(props: {
+  account: ProductAuthContext;
+  loggingOut: boolean;
+  onLogout: () => Promise<void>;
+}) {
   const client = useMemo(() => new KodexClient(), []);
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
   const [fatalError, setFatalError] = useState('');
@@ -347,7 +361,7 @@ export function App() {
   return <main className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'} ${detailsOpen ? 'details-visible' : ''}`}>
     <Sidebar open={sidebarOpen} connection={connection} threads={events.threads} activeThreadId={events.activeThread?.id ?? null} projects={bootstrap.projects} activeProjectId={bootstrap.activeProject.id} onClose={() => setSidebarVisibility(false)} onNew={() => { setPopover(null); threadSelectionGenerationRef.current += 1; dispatch({ type: 'thread-selected', thread: null }); }} onSelectThread={(thread) => { setPopover(null); void selectThread(thread); }} onSelectProject={(project) => { setPopover(null); void selectProject(project); }} onDialog={(next) => void openDialog(next)} />
     <section className="workspace-shell">
-      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} menu={visiblePopover === 'header-open' ? 'open' : visiblePopover === 'header-more' ? 'more' : null} networkEnabled={bootstrap.settings.network.shell} onMenu={(next) => { if (next && detailsOpenRef.current) return; setPopover(next ? `header-${next}` : null); }} onOpenSidebar={() => setSidebarVisibility(true)} onToggleDetails={toggleDetailsPanel} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onToast={setToast} />
+      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} menu={visiblePopover === 'header-open' ? 'open' : visiblePopover === 'header-more' ? 'more' : visiblePopover === 'header-account' ? 'account' : null} networkEnabled={bootstrap.settings.network.shell} account={props.account} loggingOut={props.loggingOut} onMenu={(next) => { if (next && detailsOpenRef.current) return; setPopover(next ? `header-${next}` : null); }} onOpenSidebar={() => setSidebarVisibility(true)} onToggleDetails={toggleDetailsPanel} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onLogout={() => void props.onLogout()} onToast={setToast} />
       <section className="workspace-body"><section className="conversation-pane"><div className="conversation-scroll"><div className="conversation-inner">
         {!engineReady && <div className="setup-card"><ShieldCheck size={20} /><div><strong>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY 설정이 필요합니다' : bootstrap.engine.state === 'missing-binary' ? '로컬 Codex 빌드가 필요합니다' : 'Codex App Server를 시작할 수 없습니다'}</strong><p>{bootstrap.engine.message}</p><code>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY=your_openai_api_key_here' : bootstrap.engine.state === 'missing-binary' ? 'npm run codex:build' : 'App Server failed locally'}</code><span>키는 Local Server와 선택된 provider를 실행하는 App Server 자식 프로세스에만 존재하며 브라우저로 전달되지 않습니다.</span>{bootstrap.engine.state === 'failed' && <button className="secondary-action" onClick={() => void client.http('/api/engine/restart', { method: 'POST', body: '{}' }).then((engine) => setBootstrap((current) => current ? { ...current, engine: engine as BootstrapResponse['engine'] } : current)).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)))}>Restart App Server</button>}</div></div>}
         {!events.activeThread && engineReady && <div className="empty-thread"><KodexMark compact /><h2>What would you like Kodex to build?</h2><p>{bootstrap.activeProject.path}</p><div className="suggestion-grid"><button onClick={() => setDraft('이 코드베이스의 구조와 핵심 흐름을 설명해줘')}><Code2 size={14} /> Explain this codebase</button><button onClick={() => setDraft('현재 로컬 변경 사항에서 버그와 회귀 가능성을 검토해줘')}><GitCommitHorizontal size={14} /> Review current changes</button><button onClick={() => setDraft('실패하는 테스트를 찾아 원인을 진단해줘')}><SquareTerminal size={14} /> Diagnose failing tests</button><button onClick={() => setDraft('필요하면 공식 Web Search와 허용된 네트워크 도구를 사용해 이 프로젝트를 개선해줘')}><ShieldCheck size={14} /> Improve with tools</button></div></div>}

@@ -1,13 +1,13 @@
 # Kodex
 
-Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 실행하는 Windows 개인 앱입니다. UI, Local Server, 공식 Codex 전체 소스, 실행 파일, thread와 설정은 사용자의 컴퓨터에 있습니다. 선택적으로 실행하는 PostgreSQL 제품 API는 2단계로 실제 등록·로그인·로그아웃·현재 사용자 조회와 기본 workspace 생성을 제공하지만, 아직 로그인 UI나 Codex 작업 실행에 연결하지 않았습니다.
+Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 실행하는 Windows 앱입니다. UI, Local Server, 공식 Codex 전체 소스, 실행 파일, thread와 설정은 사용자의 컴퓨터에 있습니다. 선택적으로 실행하는 PostgreSQL 제품 API와 3단계 프론트 인증 게이트는 실제 등록·로그인·로그아웃·현재 사용자 조회와 기본 workspace 표시를 제공합니다. 인증되기 전에는 UI가 Local Server bootstrap이나 WebSocket/runtime 연결을 시작하지 않습니다.
 
 Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 모델을 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결하고 로컬 상태와 프로세스 수명만 관리합니다.
 
 ## 구조
 
 ```text
-apps/ui                 React/Vite renderer
+apps/ui                 React/Vite renderer와 제품 인증 게이트
 apps/local-server       localhost API, 정적 UI, scheduler, Codex 수명 관리
 apps/api                독립 제품 인증 HTTP API
 apps/desktop            Electron 창과 Local Server 수명 관리
@@ -80,7 +80,7 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 `.kodex-data/`에는 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log가 저장됩니다. JSON 없음과 손상·권한 오류를 구분하고, 손상 파일은 덮어쓰지 않습니다. atomic rename과 process 내 write 직렬화를 사용하며 `instance.lock`으로 동일 데이터 디렉터리를 여러 Kodex 인스턴스가 동시에 수정하지 못하게 합니다. App Server가 공식 thread 형식을 소유하며 Kodex가 별도 thread DB로 복제하지 않습니다.
 
-## 제품 PostgreSQL과 인증 API (2단계, 선택적)
+## 제품 PostgreSQL과 프론트 인증 게이트 (3단계, 선택적)
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증 service를 소유합니다. 사용자/session hash, workspace membership, project와 Codex thread ID 매핑, turn/item/event/tool/approval/audit 이력, 문서 chunk와 retrieval citation schema를 제공합니다. `apps/api`는 이 service만 호출하며 HTTP 계층에 SQL을 두지 않습니다. 두 경계 모두 `CODEX_HOME`이나 공식 Codex SQLite를 읽거나 수정하지 않으며, 기존 Local Server도 제품 DB나 인증 cookie를 알지 못합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`와 `docs/adr/0002-product-authentication.md`에 있습니다.
 
@@ -95,6 +95,8 @@ $env:DATABASE_URL = 'postgresql://kodex:<local-password>@127.0.0.1:5432/kodex'
 $env:PRODUCT_DB_SSL = 'disable'
 npm run db:migrate
 npm run api:dev
+# 별도 터미널: Vite UI와 Local Server
+npm run dev
 ```
 
 Docker 안에서 API까지 실행하려면 명시적 profile을 사용합니다. 기본 `docker compose up`은 기존처럼 PostgreSQL만 시작합니다.
@@ -110,9 +112,19 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `GET /api/auth/me`: session cookie로 사용자, session 만료, workspace membership을 조회합니다.
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
 
-session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. `kodex_product_csrf`는 session과 서버 전용 cookie secret의 HMAC이고 frontend가 logout header로 되돌려 보내야 합니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 `NODE_ENV=production`에서는 HTTPS Origin과 `Secure`를 강제합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin 설정은 서버 환경에만 있고 API 응답이나 UI bundle에 포함하지 않습니다.
+register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csrfToken`이 포함됩니다. 이 값은 session bearer가 아니라 `kodex_product_csrf` cookie와 같은 HMAC double-submit 증명이며 프론트 메모리에만 유지됩니다. logout 때도 서버는 허용 Origin, session HttpOnly cookie, CSRF cookie/header, HMAC을 모두 검증합니다.
 
-migration runner는 advisory lock 아래 모든 미적용 SQL과 `schema_migrations` 기록을 하나의 transaction으로 반영하고, 이미 적용한 파일의 이름/checksum 변경이나 코드에 없는 DB migration을 거부합니다. workspace API는 인증 service의 `AuthContext`와 `requireWorkspaceRole` guard를 사용해야 합니다. 로그인 화면, Codex 작업자 tenant 격리, 기존 로컬 JSON 이전, thread event ingestion과 RAG 연결은 이 단계의 범위가 아닙니다.
+session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. UI는 모든 auth fetch에 `credentials: include`와 `no-store`를 사용하고 session 원문·비밀번호·CSRF token을 Web Storage, IndexedDB, URL 또는 로그에 기록하지 않습니다. 비밀번호 input은 요청을 시작한 직후 지웁니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 `NODE_ENV=production`에서는 HTTPS Origin과 `Secure`를 강제합니다. UI process의 공개 환경 allowlist는 `VITE_KODEX_API_URL`과 `VITE_PRODUCT_API_URL`뿐이며 그 밖의 상속된 `VITE_*`도 제거합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin, OpenAI/provider key는 서버 환경에만 두며 `VITE_` 접두사를 붙이지 않습니다.
+
+앱 시작 상태는 `session 확인 중 → 로그인 필요 | 인증됨 | API 확인 불가/재시도`로 나뉩니다. `/me`의 정확한 `401 unauthenticated`만 로그인 화면으로 이동하며 네트워크 오류, 5xx, 비 JSON 또는 계약에 맞지 않는 응답은 복구 화면으로 분리합니다. 인증 중에도 session 만료 시각에 맞춰 최대 5분 간격으로 `/me`를 재검증하고, 탭이 다시 visible/focus가 될 때 중복을 제한해 즉시 확인합니다. 유효 응답은 기존 runtime을 유지한 채 사용자와 CSRF context를 갱신하며 401은 즉시 runtime을 unmount합니다. 로그인/등록 성공 후에만 기존 `KodexClient`를 만들고 bootstrap/WebSocket을 시작합니다. 로그아웃을 누르면 서버 응답을 기다리기 전에 해당 컴포넌트를 unmount하여 WebSocket, reconnect timer, pending RPC, bootstrap/runtime token과 UI 상태를 지웁니다. 이미 만료·폐기된 session의 logout 401은 정상 로그아웃으로 처리합니다. 인증 화면은 display name/email과 기본 workspace를 표시하지만 workspace 전환 API가 없으므로 전환 기능은 제공하지 않습니다.
+
+### 개발 hostname과 운영 cookie 배치
+
+개발 기본 조합은 UI `http://127.0.0.1:5173`, 제품 API `http://127.0.0.1:47832`입니다. 포트는 달라도 hostname은 정확히 같게 유지하고 `.env.local`의 `VITE_PRODUCT_API_URL`, `AUTH_ALLOWED_ORIGINS`, `PRODUCT_API_ALLOWED_HOSTS`도 이 조합과 맞춥니다. `localhost`를 선택했다면 세 설정과 브라우저 주소를 모두 `localhost`로 바꿉니다. 프론트는 개발 중 `localhost`와 `127.0.0.1`이 섞이면 cookie 누락으로 오인하지 않도록 설정 오류 복구 화면을 표시합니다.
+
+운영은 HTTPS same-origin reverse proxy가 UI와 `/api/auth/*`를 함께 제공하는 구성이 기본입니다. 제품 API를 별도 origin으로 둘 때는 동일-site HTTPS hostname, credentialed CORS allowlist, `Secure`/`SameSite=Strict` cookie가 모두 호환되어야 합니다. cross-site 배치는 현재 cookie 정책과 호환되지 않습니다. production Vite build에서 `VITE_PRODUCT_API_URL`을 생략하면 UI origin을 사용합니다.
+
+migration runner는 advisory lock 아래 모든 미적용 SQL과 `schema_migrations` 기록을 하나의 transaction으로 반영하고, 이미 적용한 파일의 이름/checksum 변경이나 코드에 없는 DB migration을 거부합니다. workspace API는 인증 service의 `AuthContext`와 `requireWorkspaceRole` guard를 사용해야 합니다. 이 단계의 인증 게이트는 브라우저의 시작 순서만 제한합니다. Local Server는 아직 제품 cookie나 workspace membership을 검증하지 않으며 사용자별 Codex worker도 격리하지 않습니다. 이 서버측 tenant 권한 강제는 다음 단계입니다. 기존 로컬 JSON 이전, event DB projection, RAG, 비밀번호 복구와 이메일 검증도 이번 범위가 아닙니다.
 
 ## 연결 복구, 승인, 자동화, 재시작
 
@@ -161,14 +173,14 @@ npm run test:product-db
 npm run test:product-auth
 ```
 
-기본 `npm test`는 외부 모델이나 DB를 호출하지 않습니다. product-db migration/config와 Argon2id, 인증 service, cookie/CSRF 단위 테스트를 포함합니다. `test:product-auth`만 실제 PostgreSQL에 사용자/session/workspace row를 만들고 각 실행의 test row를 종료 시 정리합니다. local-provider 검증은 loopback fake Responses server만 사용하고, handshake는 fake key로 `initialize`와 `thread/list`까지만 수행합니다. 실제 API 비용, Web Search, 원격 MCP를 쓰는 `npm run test:live`는 명시적으로 요청받은 경우에만 실행합니다.
+기본 `npm test`는 외부 모델이나 DB를 호출하지 않습니다. product-db migration/config와 Argon2id, 인증 service, cookie/CSRF, auth client 계약/오류 분기, 세션 게이트, logout cleanup, 로그인/등록 폼 DOM 동작을 포함합니다. `test:product-auth`만 실제 PostgreSQL에 사용자/session/workspace row를 만들고 각 실행의 test row를 종료 시 정리합니다. local-provider 검증은 loopback fake Responses server만 사용하고, handshake는 fake key로 `initialize`와 `thread/list`까지만 수행합니다. 실제 API 비용, Web Search, 원격 MCP를 쓰는 `npm run test:live`는 명시적으로 요청받은 경우에만 실행합니다.
 
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
-- 제품 인증 API는 아직 renderer 로그인 화면이나 Codex 작업 실행 권한에 연결되지 않았습니다.
+- 제품 인증은 renderer 시작 게이트에 연결되었지만 Local Server endpoint/WebSocket의 tenant 권한과 사용자별 Codex worker 격리는 아직 서버에서 강제하지 않습니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 
 제3자 license와 notice는 `THIRD_PARTY.md` 및 각 dependency에 포함된 license 파일을 참조하십시오.

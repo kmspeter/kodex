@@ -30,6 +30,7 @@ interface CookieSession {
 
 interface RegistrationResponse {
   body: {
+    csrfToken: string;
     defaultWorkspace: { id: string; role: string; slug: string };
     user: { email: string; id: string };
   };
@@ -145,6 +146,7 @@ describe('PostgreSQL product authentication API', () => {
 
     expect(registration.response.status).toBe(201);
     expect(registration.body.user.email).toBe(email);
+    expect(registration.body.csrfToken).toBe(registration.cookies.csrfToken);
     expect(registration.body.defaultWorkspace).toMatchObject({ role: 'owner' });
     expect(registration.body.defaultWorkspace.slug).toMatch(/^personal-[0-9a-f-]{36}$/u);
 
@@ -263,13 +265,16 @@ describe('PostgreSQL product authentication API', () => {
     await register(email);
     const login = await postJson('/api/auth/login', { email, password: validPassword });
     const cookies = cookieSession(login);
+    const loginBody = await login.json() as { csrfToken: string };
 
     expect(login.status).toBe(200);
+    expect(loginBody.csrfToken).toBe(cookies.csrfToken);
     const me = await fetch(`${baseUrl}/api/auth/me`, {
       headers: { Cookie: cookies.cookieHeader },
     });
     expect(me.status).toBe(200);
     expect(await me.json()).toMatchObject({
+      csrfToken: cookies.csrfToken,
       user: { email },
       workspaces: [{ role: 'owner' }],
     });

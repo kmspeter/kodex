@@ -5,6 +5,7 @@ import { AuthServiceError } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
 import {
   clearSessionCookies,
+  createCsrfToken,
   createSessionCookies,
   csrfCookieName,
   parseCookies,
@@ -104,7 +105,7 @@ async function readJsonBody(request: IncomingMessage, limit: number): Promise<un
   }
 }
 
-function publicAuthContext(context: AuthContext): object {
+function publicAuthContext(context: AuthContext, csrfToken: string): object {
   return {
     user: {
       id: context.user.id,
@@ -114,12 +115,13 @@ function publicAuthContext(context: AuthContext): object {
     },
     workspaces: context.memberships,
     session: { expiresAt: context.expiresAt.toISOString() },
+    csrfToken,
   };
 }
 
-function authResponse(result: AuthSessionResult): object {
+function authResponse(result: AuthSessionResult, csrfToken: string): object {
   return {
-    ...publicAuthContext(result.context),
+    ...publicAuthContext(result.context, csrfToken),
     ...(result.defaultWorkspace ? { defaultWorkspace: result.defaultWorkspace } : {}),
   };
 }
@@ -223,7 +225,10 @@ export class ProductApiServer {
           this.config.cookieSecret,
           this.config.secureCookies,
         ));
-        json(response, 201, authResponse(result));
+        json(response, 201, authResponse(
+          result,
+          createCsrfToken(result.token, this.config.cookieSecret),
+        ));
         return;
       }
       if (url.pathname === '/api/auth/login' && request.method === 'POST') {
@@ -238,7 +243,10 @@ export class ProductApiServer {
           this.config.cookieSecret,
           this.config.secureCookies,
         ));
-        json(response, 200, authResponse(result));
+        json(response, 200, authResponse(
+          result,
+          createCsrfToken(result.token, this.config.cookieSecret),
+        ));
         return;
       }
       if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
@@ -266,8 +274,15 @@ export class ProductApiServer {
       }
       if (url.pathname === '/api/auth/me' && request.method === 'GET') {
         const cookies = parseCookies(request.headers.cookie);
-        const context = await this.auth.authenticate(cookies.get(sessionCookieName));
-        json(response, 200, publicAuthContext(context));
+        const sessionToken = cookies.get(sessionCookieName);
+        if (!sessionToken) {
+          throw new HttpError(401, 'unauthenticated', 'Authentication is required.');
+        }
+        const context = await this.auth.authenticate(sessionToken);
+        json(response, 200, publicAuthContext(
+          context,
+          createCsrfToken(sessionToken, this.config.cookieSecret),
+        ));
         return;
       }
       json(response, 404, {

@@ -1,13 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { productApiConfigFromEnv } from '../../apps/api/src/config.js';
+import { productApiConfigFromEnv, type ProductApiConfig } from '../../apps/api/src/config.js';
 import {
+  createCsrfToken,
   createSessionCookies,
   csrfCookieName,
   parseCookies,
   sessionCookieName,
   verifyCsrfToken,
 } from '../../apps/api/src/cookies.js';
+import { ProductApiServer } from '../../apps/api/src/server.js';
 import {
   AuthService,
   hashSessionToken,
@@ -184,5 +186,65 @@ describe('product API configuration and cookies', () => {
     const csrf = parsed.get(csrfCookieName);
     expect(verifyCsrfToken('opaque-session', csrf, csrf, secret)).toBe(true);
     expect(verifyCsrfToken('opaque-session', csrf, 'forged', secret)).toBe(false);
+  });
+
+  it('returns the non-session CSRF contract on register and me while retaining double-submit verification', async () => {
+    const secret = Buffer.alloc(32, 23);
+    const authContext = context();
+    const logout = vi.fn(async () => undefined);
+    const config: ProductApiConfig = {
+      host: '127.0.0.1',
+      port: 0,
+      allowedHosts: new Set(),
+      allowedOrigins: new Set(['http://127.0.0.1:5173']),
+      cookieSecret: secret,
+      secureCookies: false,
+      sessionTtlMs: 60_000,
+      maxBodyBytes: 65_536,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(async () => authContext),
+      login: vi.fn(async () => ({ token: 'opaque-session', context: authContext })),
+      logout,
+      register: vi.fn(async () => ({
+        token: 'opaque-session',
+        context: authContext,
+        defaultWorkspace: authContext.memberships[0],
+      })),
+    }, config);
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${port}`;
+    const expectedCsrf = createCsrfToken('opaque-session', secret);
+    try {
+      const registration = await fetch(`${base}/api/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:5173',
+        },
+        body: JSON.stringify({ email: 'person@example.com', password: 'long enough password' }),
+      });
+      expect(registration.status).toBe(201);
+      expect(await registration.json()).toMatchObject({ csrfToken: expectedCsrf });
+
+      const cookie = `${sessionCookieName}=opaque-session; ${csrfCookieName}=${expectedCsrf}`;
+      const me = await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookie } });
+      expect(await me.json()).toMatchObject({ csrfToken: expectedCsrf });
+
+      const loggedOut = await fetch(`${base}/api/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie,
+          Origin: 'http://127.0.0.1:5173',
+          'X-CSRF-Token': expectedCsrf,
+        },
+        body: '{}',
+      });
+      expect(loggedOut.status).toBe(204);
+      expect(logout).toHaveBeenCalledWith('opaque-session');
+    } finally {
+      await server.close();
+    }
   });
 });

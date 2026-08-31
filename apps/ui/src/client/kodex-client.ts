@@ -109,6 +109,11 @@ export class KodexClient {
     this.#socket?.close(1000, 'UI closed');
     this.#socket = null;
     this.#rejectPending('Kodex connection closed.');
+    this.#bootstrap = null;
+    this.#cursor = { epoch: null, lastSequence: 0 };
+    this.#reconnectAttempt = 0;
+    this.#listeners.clear();
+    this.#connectionListeners.clear();
   }
 
   #connect(state: ConnectionState, generation: number): void {

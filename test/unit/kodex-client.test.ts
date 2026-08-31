@@ -77,5 +77,6 @@ describe('Kodex browser client reconnection', () => {
     second.open();
     expect(states.at(-1)).toBe('connected');
     client.close();
+    await expect(client.http('/api/settings')).rejects.toThrow('bootstrap has not completed');
   });
 });

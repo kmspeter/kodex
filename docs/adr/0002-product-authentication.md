@@ -36,9 +36,38 @@ CSRF cookie/header 일치, HMAC을 모두 검사한다. 등록과 로그인은 �
 `application/json`을 강제한다. 모든 응답은 `no-store`이며 credential, SQL, hash parser
 오류를 외부에 보내지 않는다.
 
+다른 origin/port의 브라우저 UI는 cookie 값을 직접 읽는 데 의존하지 않는다. register,
+login, me 성공 응답은 같은 HMAC CSRF 증명을 `csrfToken`으로 제공한다. 이것은 session
+bearer가 아니며 UI 메모리에만 머물고 logout header에만 사용한다. 서버는 응답으로 값을
+제공한 뒤에도 session HttpOnly cookie, CSRF cookie/header, HMAC과 Origin을 모두 검사한다.
+
+## 3단계 프론트 인증 게이트
+
+React renderer는 시작 시 `/api/auth/me`를 먼저 호출하며 상태를 session 확인 중,
+unauthenticated, authenticated, API unavailable/retry로 구분한다. 정확한 401만 로그인
+화면으로 처리하고 network/5xx/계약 오류는 별도 복구 상태로 유지한다. 로그인 또는 등록에
+성공한 뒤에만 기존 `KodexClient`를 mount하여 Local Server bootstrap과 WebSocket을
+시작한다. 로그아웃은 이 runtime tree를 먼저 unmount하고 WebSocket, reconnect timer,
+pending RPC, bootstrap token과 React 상태를 제거한 뒤 CSRF 보호 logout을 완료한다.
+
+UI process의 브라우저 공개 환경 allowlist는 `VITE_KODEX_API_URL`과
+`VITE_PRODUCT_API_URL`뿐이다. 그 밖의 상속된 `VITE_*`는 제거한다. session bearer와 비밀번호는 React
+장기 상태, Web Storage, IndexedDB, URL, 로그에 저장하지 않는다. development에서는 UI와
+API가 `localhost`/`127.0.0.1`을 섞으면 명시적 설정 오류로 중단한다. 운영 기본 배치는
+HTTPS same-origin reverse proxy이며, 별도 origin은 동일-site cookie와 credentialed CORS가
+호환되는 경우만 허용한다.
+
+authenticated 상태는 session 만료 시각을 기준으로 최대 5분마다 `/me`를 재검증하고,
+document가 visible/focus 상태로 돌아올 때 throttle된 재검증을 수행한다. 성공 응답은 runtime
+tree를 유지한 채 context와 CSRF proof를 갱신한다. 정확한 401은 runtime을 unmount하고
+unauthenticated로 전환하며, network/5xx/계약 오류는 unavailable로 분리한다. 이미 만료되거나
+폐기된 session의 logout 401은 정상적인 unauthenticated 결과로 수렴한다.
+
 ## 권한 경계와 남은 범위
 
 인증 service가 반환하는 `AuthContext`는 사용자, session 만료, workspace membership을
 포함한다. 이후 workspace API는 `requireWorkspaceRole`을 공통 guard로 사용해야 한다.
-이번 결정은 로그인 UI, Codex worker tenant 격리, event ingestion, RAG를 연결하지 않는다.
+프론트 게이트는 Local Server 또는 WebSocket endpoint의 authorization 경계가 아니다.
+Local Server의 제품 session/workspace 권한 강제와 사용자별 Codex worker 격리는 다음
+단계에서 구현한다. event DB projection, RAG, 비밀번호 복구와 이메일 검증도 연결하지 않는다.
 공식 Codex source와 생성 protocol도 변경하지 않는다.
