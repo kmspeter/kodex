@@ -87,6 +87,8 @@ export {
   type TextChunk,
 } from './chunking.js';
 export {
+  DEFAULT_OPENAI_EMBEDDING_DIMENSIONS,
+  DEFAULT_OPENAI_EMBEDDING_MODEL,
   OpenAIEmbeddingProvider,
   openAIEmbeddingConfigFromEnv,
   type OpenAIEmbeddingConfig,

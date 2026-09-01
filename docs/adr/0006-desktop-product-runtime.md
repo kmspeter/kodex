@@ -35,7 +35,7 @@ RuntimeManager는 `repositoryRoot`와 별개로 명시적인 trusted `dataRoot`�
 
 ## Portable bundle과 검증
 
-Windows x64 bundle은 Product API dist, Local Server/UI, product contract/DB dist, migration 0001~0004, declared `pg`/`argon2` runtime dependency closure와 Argon2 Windows prebuild를 복사한다. root `node_modules`, env/config 파일, credential과 tenant data는 복사하지 않는다. bundle 생성은 required file, 금지 config/data path, Product API server module import, migration directory 해석과 4개 migration load를 검증한다.
+Windows x64 bundle은 Product API dist, Local Server/UI, product contract/DB dist, migration 0001~0005, declared `pg`/`argon2` runtime dependency closure와 Argon2 Windows prebuild를 복사한다. root `node_modules`, env/config 파일, credential과 tenant data는 복사하지 않는다. bundle 생성은 required file, 금지 config/data path, Product API server module import, migration directory 해석과 5개 migration load를 검증한다.
 
 기본 smoke는 실제 DB/Docker/OpenAI를 사용하지 않는 명시적 fixture로 Product readiness → Local readiness → runtime origin → 로그인 UI를 확인한다. 실제 PostgreSQL desktop smoke는 `DATABASE_URL`을 주입한 별도 opt-in 명령이다.
 

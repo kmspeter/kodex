@@ -182,6 +182,191 @@ describe('real pgvector private RAG integration', () => {
     expect(Number(persisted.rows[0].citation_count)).toBe(result.citations.length);
   });
 
+  it('installs the default-model HNSW expression index and records migration 0005 once', async () => {
+    const versionsUnderTest = await database.query<{ pgvector: string; postgres: string }>(`
+      SELECT extversion AS pgvector,
+             current_setting('server_version_num') AS postgres
+      FROM pg_extension
+      WHERE extname = 'vector'
+    `);
+    expect(versionsUnderTest.rows[0]).toEqual({ pgvector: '0.8.6', postgres: expect.stringMatching(/^17/) });
+
+    const index = await database.query<{ indexdef: string }>(`
+      SELECT indexdef
+      FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND tablename = 'document_chunks'
+        AND indexname = 'document_chunks_openai_small_1536_hnsw_cosine_idx'
+    `);
+    expect(index.rows).toHaveLength(1);
+    expect(index.rows[0].indexdef).toContain('USING hnsw (((embedding)::vector(1536)) vector_cosine_ops)');
+    expect(index.rows[0].indexdef).toContain("embedding_model = 'text-embedding-3-small'::text");
+    expect(index.rows[0].indexdef).toContain('embedding_dimensions = 1536');
+
+    const versions = await database.query<{ count: string; max: string }>(`
+      SELECT count(*)::text AS count, max(version)::text AS max FROM schema_migrations
+    `);
+    expect(versions.rows[0]).toEqual({ count: '5', max: '5' });
+    await expect(database.migrate()).resolves.toEqual([]);
+  });
+
+  it('uses the 1536-dimension default path without crossing user or workspace scope', async () => {
+    const defaultService = new KnowledgeService(
+      repository,
+      new FakeEmbeddingProvider('text-embedding-3-small', 1_536),
+      config,
+    );
+    const alpha = await index(defaultService, scopeA, 'alpha default ANN reference');
+    await index(defaultService, scopeA, 'beta default ANN reference');
+    const otherUser = await index(defaultService, scopeB, 'alpha default private user B');
+    const otherWorkspace = await index(defaultService, scopeOtherWorkspace, 'alpha default private workspace B');
+
+    const directRun = await repository.createRetrievalRun(scopeA, {
+      query: 'alpha default direct query',
+      parameters: {},
+    });
+    const directCitations = await repository.completeRetrievalRun(scopeA, {
+      dimensions: 1_536,
+      model: 'text-embedding-3-small',
+      queryEmbedding: unitVector('alpha', 1_536),
+      runId: directRun,
+      threshold: 0.5,
+      topK: 1,
+    });
+    expect(directCitations[0]).toMatchObject({ documentId: alpha.documentId, rank: 1, score: 1 });
+
+    const result = await defaultService.retrieve(scopeA, 'alpha default query', {
+      topK: 1,
+      threshold: 0.5,
+    });
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0]).toMatchObject({
+      documentId: alpha.documentId,
+      rank: 1,
+      score: 1,
+    });
+    expect(result.citations.map((citation) => citation.documentId)).not.toContain(otherUser.documentId);
+    expect(result.citations.map((citation) => citation.documentId)).not.toContain(otherWorkspace.documentId);
+  });
+
+  it('makes the default HNSW index available to the planner but not to generic fallback', async () => {
+    const defaultVector = `[${unitVector('alpha', 1_536).join(',')}]`;
+    const genericVector = `[${unitVector('alpha', 3).join(',')}]`;
+    await database.transaction(async (client) => {
+      await client.query('SET LOCAL enable_seqscan = off');
+      const annPlan = await client.query<{ 'QUERY PLAN': unknown }>(`
+        EXPLAIN (FORMAT JSON, COSTS OFF)
+        WITH nearest AS MATERIALIZED (
+          SELECT candidate.id AS chunk_id,
+                 candidate.embedding::vector(1536) <=> $1::vector(1536) AS distance
+          FROM document_chunks AS candidate
+          WHERE candidate.workspace_id = $2
+            AND candidate.created_by_user_id = $3
+            AND candidate.embedding_model = 'text-embedding-3-small'
+            AND candidate.embedding_dimensions = 1536
+            AND candidate.embedding IS NOT NULL
+            AND candidate.embedding::vector(1536) <=> $1::vector(1536)
+              <= 1 - $4::double precision
+          ORDER BY candidate.embedding::vector(1536) <=> $1::vector(1536) ASC,
+                   candidate.id ASC
+          LIMIT $5
+        )
+        SELECT chunk.id
+        FROM nearest
+        JOIN document_chunks AS chunk ON chunk.id = nearest.chunk_id
+        JOIN documents AS document
+          ON document.id = chunk.document_id
+         AND document.workspace_id = chunk.workspace_id
+         AND document.created_by_user_id = chunk.created_by_user_id
+        ORDER BY nearest.distance ASC, nearest.chunk_id ASC
+        LIMIT $6
+        FOR KEY SHARE OF chunk, document
+      `, [defaultVector, workspaceA, userA, -1, 40, 5]);
+      const annPlanJson = JSON.stringify(annPlan.rows[0]['QUERY PLAN']);
+      expect(annPlanJson).toContain('document_chunks_openai_small_1536_hnsw_cosine_idx');
+      expect(annPlanJson).toContain('Index Scan');
+
+      const fallbackPlan = await client.query<{ 'QUERY PLAN': unknown }>(`
+        EXPLAIN (FORMAT JSON, COSTS OFF)
+        SELECT chunk.id
+        FROM document_chunks AS chunk
+        WHERE chunk.workspace_id = $2
+          AND chunk.created_by_user_id = $3
+          AND chunk.embedding_model = 'fake-embedding-v1'
+          AND chunk.embedding_dimensions = 3
+        ORDER BY chunk.embedding <=> $1::vector ASC, chunk.id ASC
+        LIMIT 5
+      `, [genericVector, workspaceA, userA]);
+      expect(JSON.stringify(fallbackPlan.rows[0]['QUERY PLAN']))
+        .not.toContain('document_chunks_openai_small_1536_hnsw_cosine_idx');
+
+      const nonDefaultDimensionPlan = await client.query<{ 'QUERY PLAN': unknown }>(`
+        EXPLAIN (FORMAT JSON, COSTS OFF)
+        SELECT chunk.id
+        FROM document_chunks AS chunk
+        WHERE chunk.workspace_id = $2
+          AND chunk.created_by_user_id = $3
+          AND chunk.embedding_model = 'text-embedding-3-small'
+          AND chunk.embedding_dimensions = 3
+        ORDER BY chunk.embedding <=> $1::vector ASC, chunk.id ASC
+        LIMIT 5
+      `, [genericVector, workspaceA, userA]);
+      expect(JSON.stringify(nonDefaultDimensionPlan.rows[0]['QUERY PLAN']))
+        .not.toContain('document_chunks_openai_small_1536_hnsw_cosine_idx');
+    });
+  });
+
+  it('keeps arbitrary-model and non-1536 configurations on functional exact fallback', async () => {
+    const arbitraryModel = new KnowledgeService(
+      repository,
+      new FakeEmbeddingProvider('custom-embedding-v1', 1_536),
+      config,
+    );
+    const nonDefaultDimension = new KnowledgeService(
+      repository,
+      new FakeEmbeddingProvider('text-embedding-3-small', 3),
+      config,
+    );
+    const customDocument = await index(arbitraryModel, scopeA, 'alpha custom model exact');
+    const smallDocument = await index(nonDefaultDimension, scopeA, 'beta default model small dimension');
+
+    const customResult = await arbitraryModel.retrieve(scopeA, 'alpha custom model query', {
+      topK: 1,
+      threshold: 0.5,
+    });
+    expect(customResult.citations[0]).toMatchObject({ documentId: customDocument.documentId, score: 1 });
+
+    const smallResult = await nonDefaultDimension.retrieve(scopeA, 'beta small dimension query', {
+      topK: 1,
+      threshold: 0.5,
+    });
+    expect(smallResult.citations[0]).toMatchObject({ documentId: smallDocument.documentId, score: 1 });
+  });
+
+  it('rejects malformed or dimension-mismatched query vectors before SQL search', async () => {
+    const runOne = await repository.createRetrievalRun(scopeA, { query: 'bad dimension', parameters: {} });
+    await expect(repository.completeRetrievalRun(scopeA, {
+      dimensions: 1_536,
+      model: 'text-embedding-3-small',
+      queryEmbedding: [1, 0, 0],
+      runId: runOne,
+      threshold: -1,
+      topK: 1,
+    })).rejects.toThrow('Embedding vector failed finite dimension validation');
+    await repository.failRetrievalRun(scopeA, runOne, 'provider_invalid_response');
+
+    const runTwo = await repository.createRetrievalRun(scopeA, { query: 'bad number', parameters: {} });
+    await expect(repository.completeRetrievalRun(scopeA, {
+      dimensions: 3,
+      model: 'fake-embedding-v1',
+      queryEmbedding: [1, Number.NaN, 0],
+      runId: runTwo,
+      threshold: -1,
+      topK: 1,
+    })).rejects.toThrow('Embedding vector failed finite dimension validation');
+    await repository.failRetrievalRun(scopeA, runTwo, 'provider_invalid_response');
+  });
+
   it('filters identical content by both embedding model and dimensions', async () => {
     const modelTwo = new KnowledgeService(repository, new FakeEmbeddingProvider('fake-embedding-v2', 3), config);
     const dimensionTwo = new KnowledgeService(repository, new FakeEmbeddingProvider('fake-embedding-v1', 2), config);

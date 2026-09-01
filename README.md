@@ -83,9 +83,9 @@ source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uu
 
 ## 제품 PostgreSQL, tenant runtime, 내구성 history와 private RAG (6단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0006-desktop-product-runtime.md`까지에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0008-default-embedding-hnsw.md`까지에 있습니다.
 
-`0001_initial_product_schema.sql`, `0002_password_credentials.sql`, `0003_agent_history_projection.sql`은 변경하지 않습니다. 새 `0004_user_scoped_rag.sql`은 knowledge/retrieval 계층 전체에 사용자 composite FK와 검색 index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG 설계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`에 있습니다.
+`0001_initial_product_schema.sql`부터 `0004_user_scoped_rag.sql`까지는 변경하지 않습니다. `0005_default_embedding_hnsw.sql`은 기본 embedding 조합 전용 HNSW index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG의 private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -132,7 +132,9 @@ repository/source tree, clipboard, 전체 Codex thread/history는 자동 scan하
 
 일반 `turn/start`는 첫 text query를 검색합니다. 결과는 document/chunk ID가 있는 bounded JSON block으로 원래 user input 뒤에 추가되며, block 자체가 untrusted reference이고 지시가 아니라는 경계를 포함합니다. 문서 속 prompt injection은 system/developer 권한으로 승격되지 않습니다. 결과 없음/실패는 원래 turn을 그대로 실행합니다. `turn/steer`에는 적용하지 않고 automation도 기본 미적용이며 `KODEX_RAG_AUTOMATIONS_ENABLED=true`에서만 사용합니다.
 
-현재 dimensionless vector schema는 model+dimension을 행별 지원하는 대신 하나의 안전한 고정-dimension HNSW/IVFFlat index를 두지 못합니다. 사용자/model/dimension B-tree prefilter 뒤 exact cosine sequential scan이므로 대규모 corpus는 느려질 수 있습니다. typed partition/ANN index, retention/expiry, workspace 공유 지식과 immutable citation 보존은 후속 작업입니다.
+dimensionless vector schema는 여러 model/dimension을 행별 지원합니다. 그중 정확히 `text-embedding-3-small` + 1,536 dimensions인 기본 조합만 `(embedding::vector(1536)) vector_cosine_ops` partial HNSW index를 사용할 수 있는 approximate cosine 경로로 검색합니다. PostgreSQL planner가 작은 corpus에 sequential scan이 더 싸다고 판단하면 이를 존중하며 제품 코드는 index scan을 강제하지 않습니다. 다른 모델 또는 차원은 기존 owner/model/dimension prefilter 뒤 exact generic cosine 검색으로 fallback하므로 모든 RAG 검색이 ANN인 것은 아닙니다.
+
+기본 ANN 경로는 tenant/model/dimension/threshold filter가 HNSW scan 뒤 적용될 때 결과가 부족해지는 문제를 줄이기 위해 pgvector 0.8.6의 strict iterative scan을 transaction-local로 사용하고 최대 20,000 tuple, `min(topK × 8, 800)` candidate로 작업량을 제한합니다. 그래도 HNSW 자체가 approximate이므로 exact generic 경로와 nearest-neighbor 집합이 항상 같지는 않습니다. 운영자는 corpus/filter 선택도와 latency를 관찰해 `REINDEX INDEX document_chunks_openai_small_1536_hnsw_cosine_idx` 유지보수 시간을 계획해야 합니다. HNSW build와 resident graph는 문서 수에 따라 CPU, I/O와 메모리를 사용하며 migration은 transaction 안에서 index를 만들기 때문에 쓰기를 막을 수 있습니다. 이 구현 경계는 PostgreSQL 17과 pgvector 0.8.6이며, extension 또는 PostgreSQL upgrade 전 실제 migration/EXPLAIN 회귀를 다시 실행해야 합니다.
 
 register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csrfToken`이 포함됩니다. 이 값은 session bearer가 아니라 `kodex_product_csrf` cookie와 같은 HMAC double-submit 증명이며 프론트 메모리에만 유지됩니다. logout 때도 서버는 허용 Origin, session HttpOnly cookie, CSRF cookie/header, HMAC을 모두 검증합니다.
 
@@ -189,7 +191,7 @@ npm run runtime:bundle
 # runtime\Kodex-win32-x64\Kodex.exe 실행
 ```
 
-bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0004, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
+bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0005, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
 
 ## 검증
 
@@ -230,7 +232,7 @@ $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:emb
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
-- RAG는 현재 수동 text 문서 등록, 명시적 미리보기/turn 질의와 exact cosine sequential scan만 지원합니다. repository connector, shared knowledge, retention과 ANN index는 후속 작업입니다.
+- RAG는 현재 수동 text 문서 등록과 명시적 미리보기/turn 질의를 지원합니다. 기본 `text-embedding-3-small`/1,536 조합은 planner 선택에 따라 HNSW ANN을 사용할 수 있고, 그 밖의 모델/차원은 exact cosine fallback입니다. repository connector, shared knowledge와 retention은 후속 작업입니다.
 - Portable runtime은 외부 PostgreSQL의 설치·기동·백업·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 

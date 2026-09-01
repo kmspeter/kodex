@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { isUuid } from '@kodex/product-contract';
-import type { PoolClient } from 'pg';
+import type { PoolClient, QueryResult } from 'pg';
 import type { ProductDatabase } from './database.js';
+import {
+  DEFAULT_OPENAI_EMBEDDING_DIMENSIONS,
+  DEFAULT_OPENAI_EMBEDDING_MODEL,
+} from './embedding-provider.js';
 import { KnowledgeNotFoundError, type KnowledgeDocumentRecord, type KnowledgeScope, type KnowledgeSourceRecord, type RagFailureCode, type RetrievalCitation } from './knowledge-types.js';
 
 interface SourceRow {
@@ -31,6 +35,65 @@ interface CitationRow {
   document_title: string | null;
   score: number;
 }
+
+const ANN_CANDIDATE_MULTIPLIER = 8;
+const ANN_MAX_CANDIDATES = 800;
+
+// This statement must stay structurally identical to the expression and partial
+// predicate in 0005_default_embedding_hnsw.sql. All identifiers, typmods, and
+// model/dimension literals are trusted source constants, never configuration.
+const DEFAULT_ANN_SEARCH_SQL = `
+  WITH nearest AS MATERIALIZED (
+    SELECT chunk.id AS chunk_id,
+           chunk.embedding::vector(1536) <=> $1::vector(1536) AS distance
+    FROM document_chunks AS chunk
+    WHERE chunk.workspace_id = $2
+      AND chunk.created_by_user_id = $3
+      AND chunk.embedding_model = 'text-embedding-3-small'
+      AND chunk.embedding_dimensions = 1536
+      AND chunk.embedding IS NOT NULL
+      AND chunk.embedding::vector(1536) <=> $1::vector(1536) <= 1 - $4::double precision
+    ORDER BY chunk.embedding::vector(1536) <=> $1::vector(1536) ASC, chunk.id ASC
+    LIMIT $5
+  )
+  SELECT chunk.id AS chunk_id, chunk.content, document.id AS document_id,
+         document.title AS document_title, 1 - nearest.distance AS score
+  FROM nearest
+  JOIN document_chunks AS chunk ON chunk.id = nearest.chunk_id
+  JOIN documents AS document
+    ON document.id = chunk.document_id
+   AND document.workspace_id = chunk.workspace_id
+   AND document.created_by_user_id = chunk.created_by_user_id
+  ORDER BY nearest.distance ASC, nearest.chunk_id ASC
+  LIMIT $6
+  FOR KEY SHARE OF chunk, document
+`;
+
+const GENERIC_EXACT_SEARCH_SQL = `
+  WITH compatible AS MATERIALIZED (
+    SELECT chunk.id AS chunk_id, chunk.content, chunk.embedding,
+           document.id AS document_id, document.title AS document_title
+    FROM document_chunks AS chunk
+    JOIN documents AS document
+      ON document.id = chunk.document_id
+     AND document.workspace_id = chunk.workspace_id
+     AND document.created_by_user_id = chunk.created_by_user_id
+    WHERE chunk.workspace_id = $2
+      AND chunk.created_by_user_id = $3
+      AND chunk.embedding_model = $4
+      AND chunk.embedding_dimensions = $5
+  )
+  SELECT compatible.chunk_id, compatible.content, compatible.document_id,
+         compatible.document_title,
+         1 - (compatible.embedding <=> $1::vector) AS score
+  FROM compatible
+  JOIN document_chunks AS locked_chunk ON locked_chunk.id = compatible.chunk_id
+  JOIN documents AS locked_document ON locked_document.id = compatible.document_id
+  WHERE 1 - (compatible.embedding <=> $1::vector) >= $6
+  ORDER BY compatible.embedding <=> $1::vector ASC, compatible.chunk_id ASC
+  LIMIT $7
+  FOR KEY SHARE OF locked_chunk, locked_document
+`;
 
 export interface StoredDocument extends KnowledgeDocumentRecord {
   contentChecksum: Buffer | null;
@@ -334,34 +397,29 @@ export class PostgresKnowledgeRepository {
     validateScope(scope);
     const queryVector = vectorLiteral(input.queryEmbedding, input.dimensions);
     return this.database.transaction(async (client) => {
-      const candidates = await client.query<CitationRow>(`
-        WITH compatible AS MATERIALIZED (
-          SELECT chunk.id AS chunk_id, chunk.content, chunk.embedding,
-                 document.id AS document_id, document.title AS document_title
-          FROM document_chunks AS chunk
-          JOIN documents AS document
-            ON document.id = chunk.document_id
-           AND document.workspace_id = chunk.workspace_id
-           AND document.created_by_user_id = chunk.created_by_user_id
-          WHERE chunk.workspace_id = $2
-            AND chunk.created_by_user_id = $3
-            AND chunk.embedding_model = $4
-            AND chunk.embedding_dimensions = $5
-        )
-        SELECT compatible.chunk_id, compatible.content, compatible.document_id,
-               compatible.document_title,
-               1 - (compatible.embedding <=> $1::vector) AS score
-        FROM compatible
-        JOIN document_chunks AS locked_chunk ON locked_chunk.id = compatible.chunk_id
-        JOIN documents AS locked_document ON locked_document.id = compatible.document_id
-        WHERE 1 - (compatible.embedding <=> $1::vector) >= $6
-        ORDER BY compatible.embedding <=> $1::vector ASC, compatible.chunk_id ASC
-        LIMIT $7
-        FOR KEY SHARE OF locked_chunk, locked_document
-      `, [
-        queryVector, scope.workspaceId, scope.userId, input.model,
-        input.dimensions, input.threshold, input.topK,
-      ]);
+      const useDefaultAnn = input.model === DEFAULT_OPENAI_EMBEDDING_MODEL
+        && input.dimensions === DEFAULT_OPENAI_EMBEDDING_DIMENSIONS;
+      let candidates: QueryResult<CitationRow>;
+      if (useDefaultAnn) {
+        // pgvector applies ordinary WHERE clauses after an approximate scan. Strict
+        // iterative scanning keeps expanding the HNSW scan for selective tenants,
+        // while max_scan_tuples and candidate overfetch bound the work.
+        await client.query("SET LOCAL hnsw.iterative_scan = 'strict_order'");
+        await client.query('SET LOCAL hnsw.max_scan_tuples = 20000');
+        const candidateLimit = Math.min(
+          input.topK * ANN_CANDIDATE_MULTIPLIER,
+          ANN_MAX_CANDIDATES,
+        );
+        candidates = await client.query<CitationRow>(DEFAULT_ANN_SEARCH_SQL, [
+          queryVector, scope.workspaceId, scope.userId, input.threshold,
+          candidateLimit, input.topK,
+        ]);
+      } else {
+        candidates = await client.query<CitationRow>(GENERIC_EXACT_SEARCH_SQL, [
+          queryVector, scope.workspaceId, scope.userId, input.model,
+          input.dimensions, input.threshold, input.topK,
+        ]);
+      }
       const updated = await client.query(`
         UPDATE retrieval_runs SET
           query_embedding = $1::vector,

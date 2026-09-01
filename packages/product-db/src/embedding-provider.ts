@@ -17,6 +17,8 @@ export interface OpenAIEmbeddingProviderOptions {
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+export const DEFAULT_OPENAI_EMBEDDING_DIMENSIONS = 1_536;
 
 function positiveInteger(
   value: string | undefined,
@@ -47,14 +49,19 @@ function nonNegativeInteger(
 export function openAIEmbeddingConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): OpenAIEmbeddingConfig {
-  const model = env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small';
+  const model = env.OPENAI_EMBEDDING_MODEL?.trim() || DEFAULT_OPENAI_EMBEDDING_MODEL;
   if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(model)) {
     throw new Error('OPENAI_EMBEDDING_MODEL has an invalid format.');
   }
   return {
     apiKey: env.OPENAI_API_KEY?.trim() || undefined,
     model,
-    dimensions: positiveInteger(env.OPENAI_EMBEDDING_DIMENSIONS, 1_536, 'OPENAI_EMBEDDING_DIMENSIONS', 16_000),
+    dimensions: positiveInteger(
+      env.OPENAI_EMBEDDING_DIMENSIONS,
+      DEFAULT_OPENAI_EMBEDDING_DIMENSIONS,
+      'OPENAI_EMBEDDING_DIMENSIONS',
+      16_000,
+    ),
     timeoutMs: positiveInteger(env.OPENAI_EMBEDDING_TIMEOUT_MS, 15_000, 'OPENAI_EMBEDDING_TIMEOUT_MS', 120_000),
     batchSize: positiveInteger(env.OPENAI_EMBEDDING_BATCH_SIZE, 32, 'OPENAI_EMBEDDING_BATCH_SIZE', 2_048),
     maxRetries: nonNegativeInteger(env.OPENAI_EMBEDDING_MAX_RETRIES, 2, 'OPENAI_EMBEDDING_MAX_RETRIES', 5),

@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(4);
+    expect(migrations).toHaveLength(5);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -160,5 +160,14 @@ describe('product database migration SQL', () => {
     expect(ragSql).toContain('retrieval_citations_chunk_user_scope_fk');
     expect(ragSql).toContain('created_by_user_id');
     expect(ragSql).toContain('embedding_model, embedding_dimensions');
+
+    const annSql = migrations[4].sql;
+    expect(migrations[4].version).toBe(5);
+    expect(migrations[4].checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(annSql).toContain('document_chunks_openai_small_1536_hnsw_cosine_idx');
+    expect(annSql).toContain('USING hnsw ((embedding::vector(1536)) vector_cosine_ops)');
+    expect(annSql).toContain("embedding_model = 'text-embedding-3-small'");
+    expect(annSql).toContain('embedding_dimensions = 1536');
+    expect(annSql).not.toMatch(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS/iu);
   });
 });

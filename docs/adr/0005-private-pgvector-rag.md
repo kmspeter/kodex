@@ -77,11 +77,9 @@ query vector, 모든 citation을 한 transaction에 기록한다. delete/reindex
 이후 문서 삭제/재색인은 과거 citation row도 cascade 삭제할 수 있다. 장기 감사용 immutable 인용
 보존은 별도 retention 결정이 필요하다.
 
-embedding column은 기존처럼 dimensionless `vector`다. 여러 model/dimension을 한 schema에 보관할
-수 있지만 pgvector HNSW/IVFFlat index는 고정 dimension expression/partial index 설계가 필요하므로
-현재는 owner/model/dimension B-tree prefilter 뒤 exact cosine sequential scan을 사용한다. 데이터가
-커지면 허용 model/dimension별 typed column/partition/partial ANN index를 migration으로 추가해야 한다.
-서로 다른 model 또는 dimension을 한 검색에서 섞는 것은 금지한다.
+embedding column은 기존처럼 dimensionless `vector`다. 여러 model/dimension을 한 schema에 보관하고
+서로 다른 model 또는 dimension을 한 검색에서 섞는 것은 금지한다. 이 ADR 이후 기본 조합 전용
+partial expression HNSW와 generic exact fallback을 ADR 0008에서 추가했다.
 
 ## agent 안전 경계와 가용성
 
@@ -100,5 +98,5 @@ run/citation count만 남기고 query/document/key를 남기지 않는다. 일�
 ## 후속 작업
 
 workspace 공유 지식/관리자 정책, source connector, retention/expiry, 사용자 export, immutable citation
-audit, typed-vector partition과 ANN index, provider residency/routing, per-document external-transmission
+audit, 추가 model/dimension용 typed-vector partition/index, provider residency/routing, per-document external-transmission
 consent UI는 후속 범위다.
