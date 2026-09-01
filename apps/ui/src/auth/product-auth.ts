@@ -1,10 +1,16 @@
 import {
   canUseWorkspaceRuntime,
   isUuid,
+  parseProductHistoryThreadDetail,
+  parseProductHistoryThreadPage,
+  PRODUCT_HISTORY_DEFAULT_LIMIT,
+  PRODUCT_HISTORY_MAX_LIMIT,
   PRODUCT_WORKSPACE_HEADER_NAME,
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthContextDto,
+  type ProductHistoryThreadDetailDto,
+  type ProductHistoryThreadPageDto,
   type ProductUserDto,
   type ProductWorkspaceDto,
   type WorkspaceRole,
@@ -340,6 +346,40 @@ export class ProductAuthClient {
     return this.#json(response) as Promise<T>;
   }
 
+  async historyThreads(
+    workspaceId: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ProductHistoryThreadPageDto> {
+    const value = await this.#historyGet('/api/history/threads', workspaceId, options);
+    try {
+      return parseProductHistoryThreadPage(value);
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The saved history API returned an invalid thread page.');
+    }
+  }
+
+  async historyThread(
+    workspaceId: string,
+    threadId: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ProductHistoryThreadDetailDto> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(threadId)) {
+      throw new ProductAuthError('rejected', 'Saved history thread ID is invalid.');
+    }
+    const value = await this.#historyGet(
+      `/api/history/threads/${encodeURIComponent(threadId)}`,
+      workspaceId,
+      options,
+    );
+    try {
+      const detail = parseProductHistoryThreadDetail(value);
+      if (detail.thread.threadId !== threadId) throw new Error('Saved history thread mismatch.');
+      return detail;
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The saved history API returned invalid thread details.');
+    }
+  }
+
   clearMemory(): void {
     this.#csrfToken = null;
   }
@@ -347,6 +387,37 @@ export class ProductAuthClient {
   onUnauthenticated(listener: () => void): () => void {
     this.#unauthenticatedListeners.add(listener);
     return () => this.#unauthenticatedListeners.delete(listener);
+  }
+
+  async #historyGet(
+    pathname: string,
+    workspaceId: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal },
+  ): Promise<unknown> {
+    const limit = options.limit ?? PRODUCT_HISTORY_DEFAULT_LIMIT;
+    if (
+      !isUuid(workspaceId)
+      || !Number.isSafeInteger(limit)
+      || limit < 1
+      || limit > PRODUCT_HISTORY_MAX_LIMIT
+      || (options.cursor !== undefined && (!/^[A-Za-z0-9_-]+$/u.test(options.cursor) || options.cursor.length > 512))
+      || !/^\/api\/history\/threads(?:\/[^/?#]+)?$/u.test(pathname)
+    ) {
+      throw new ProductAuthError('rejected', 'Saved history request scope is invalid.');
+    }
+    const url = new URL(pathname, this.apiBase);
+    if (url.origin !== this.apiBase || url.pathname !== pathname || url.search || url.hash) {
+      throw new ProductAuthError('rejected', 'Saved history request path is invalid.');
+    }
+    url.searchParams.set(PRODUCT_WORKSPACE_QUERY_PARAM, workspaceId);
+    url.searchParams.set('limit', String(limit));
+    if (options.cursor) url.searchParams.set('cursor', options.cursor);
+    const response = await this.#request(`${url.pathname}${url.search}`, {
+      method: 'GET',
+      signal: options.signal,
+      headers: { [PRODUCT_WORKSPACE_HEADER_NAME]: workspaceId },
+    });
+    return this.#json(response);
   }
 
   async #establish(

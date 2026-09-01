@@ -2,9 +2,16 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import {
   isUuid,
+  PRODUCT_HISTORY_DEFAULT_LIMIT,
+  PRODUCT_HISTORY_MAX_LIMIT,
+  PRODUCT_HISTORY_PREVIEW_CHARACTERS,
   PRODUCT_WORKSPACE_HEADER_NAME,
   PRODUCT_WORKSPACE_QUERY_PARAM,
   type ProductAuthResponseDto,
+  type ProductHistoryPreviewDto,
+  type ProductHistoryThreadDetailDto,
+  type ProductHistoryThreadPageDto,
+  type ProductHistoryThreadSummaryDto,
 } from '@kodex/product-contract';
 import type {
   AuthContext,
@@ -368,7 +375,7 @@ export class ProductApiServer {
       if (url.pathname === '/api/history/threads' && request.method === 'GET' && this.history) {
         const scope = await this.#historyScope(request, url);
         const options = historyPageOptions(url);
-        json(response, 200, await this.history.listThreads(scope, options));
+        json(response, 200, publicHistoryPage(await this.history.listThreads(scope, options)));
         return;
       }
       if (url.pathname === '/api/knowledge/documents' && request.method === 'GET') {
@@ -433,7 +440,7 @@ export class ProductApiServer {
         }
         const detail = await this.history.readThread(scope, codexThreadId, historyPageOptions(url));
         if (!detail) throw new HttpError(404, 'not_found', 'Not found.');
-        json(response, 200, detail);
+        json(response, 200, publicHistoryDetail(detail));
         return;
       }
       json(response, 404, {
@@ -506,6 +513,209 @@ export class ProductApiServer {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+const HISTORY_CHILD_LIMIT = 250;
+const HISTORY_SECRET_TEXT = [
+  /\b(?:sk|sess|proj)-[A-Za-z0-9_-]{8,}\b/giu,
+  /\bBearer\s+[A-Za-z0-9._~+/-]+=*\b/giu,
+  /("?(?:api[_-]?key|token|secret|authorization|password|session)"?\s*[:=]\s*)"?[^\s",}]+"?/giu,
+  /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu,
+] as const;
+
+interface SafeHistoryResult {
+  truncated: boolean;
+  value: unknown;
+}
+
+function normalizedHistoryKey(key: string): string {
+  return key.normalize('NFKC').replace(/[^a-z0-9]/giu, '').toLowerCase();
+}
+
+function omittedHistoryKey(key: string): boolean {
+  const normalized = normalizedHistoryKey(key);
+  return normalized === 'sourceinstance'
+    || normalized === 'sourceeventid'
+    || ['dbid', 'databaseid', 'internalid', 'rowid'].includes(normalized)
+    || normalized.includes('checksum')
+    || normalized.includes('embedding')
+    || normalized.includes('vector')
+    || normalized === 'rag'
+    || normalized.startsWith('rag')
+    || normalized.endsWith('rag');
+}
+
+function secretHistoryKey(key: string): boolean {
+  const normalized = normalizedHistoryKey(key);
+  return [
+    'authorization', 'cookie', 'credential', 'password', 'passphrase', 'secret',
+    'session', 'token', 'apikey', 'privatekey', 'encrypted',
+  ].some((fragment) => normalized.includes(fragment));
+}
+
+function cleanHistoryString(value: string): string {
+  let clean = [...value].filter((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return character === '\n' || character === '\r' || character === '\t' || (code >= 32 && code !== 127);
+  }).join('').replace(new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'gu'), '');
+  for (const pattern of HISTORY_SECRET_TEXT) {
+    clean = clean.replace(pattern, (_match, prefix: unknown) => (
+      typeof prefix === 'string' ? `${prefix}[redacted]` : '[redacted]'
+    ));
+  }
+  return clean;
+}
+
+function boundedHistoryLabel(value: string, maximum: number): string {
+  const clean = cleanHistoryString(value);
+  return clean.length <= maximum ? clean : `${clean.slice(0, maximum - 1)}…`;
+}
+
+function safeHistoryValue(value: unknown, depth = 0, seen = new WeakSet<object>()): SafeHistoryResult {
+  if (depth >= 6) return { value: '[depth limited]', truncated: true };
+  if (typeof value === 'string') {
+    const clean = cleanHistoryString(value);
+    return clean.length > PRODUCT_HISTORY_PREVIEW_CHARACTERS
+      ? { value: `${clean.slice(0, PRODUCT_HISTORY_PREVIEW_CHARACTERS - 1)}…`, truncated: true }
+      : { value: clean, truncated: false };
+  }
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') {
+    return { value, truncated: false };
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return { value: '[circular reference]', truncated: true };
+    seen.add(value);
+    const results = value.slice(0, 50).map((entry) => safeHistoryValue(entry, depth + 1, seen));
+    const entries = results.map((result) => result.value);
+    const omitted = value.length - entries.length;
+    if (omitted > 0) entries.push(`[${omitted} more entries]`);
+    seen.delete(value);
+    return {
+      value: entries,
+      truncated: omitted > 0 || results.some((result) => result.truncated),
+    };
+  }
+  if (!isRecord(value)) return { value: cleanHistoryString(String(value)), truncated: false };
+  if (seen.has(value)) return { value: '[circular reference]', truncated: true };
+  seen.add(value);
+  const safe: Record<string, unknown> = {};
+  let accepted = 0;
+  let truncated = false;
+  for (const [key, entry] of Object.entries(value)) {
+    if (omittedHistoryKey(key)) {
+      truncated = true;
+      continue;
+    }
+    if (accepted >= 50) {
+      safe._truncated = 'additional fields omitted';
+      truncated = true;
+      break;
+    }
+    if (secretHistoryKey(key)) {
+      safe[key] = '[redacted]';
+    } else {
+      const result = safeHistoryValue(entry, depth + 1, seen);
+      safe[key] = result.value;
+      truncated ||= result.truncated;
+    }
+    accepted += 1;
+  }
+  seen.delete(value);
+  return { value: safe, truncated };
+}
+
+export function publicHistoryPreview(value: unknown): ProductHistoryPreviewDto {
+  let content: string;
+  let truncated: boolean;
+  try {
+    const safe = safeHistoryValue(value);
+    content = JSON.stringify(safe.value, null, 2) ?? 'null';
+    truncated = safe.truncated;
+  } catch {
+    content = '"[unavailable]"';
+    truncated = true;
+  }
+  if (content.length <= PRODUCT_HISTORY_PREVIEW_CHARACTERS) return { content, truncated };
+  return {
+    content: `${content.slice(0, PRODUCT_HISTORY_PREVIEW_CHARACTERS - 1)}…`,
+    truncated: true,
+  };
+}
+
+function publicHistoryThread(thread: {
+  createdAt: string;
+  id: string;
+  project: { name: string };
+  status: ProductHistoryThreadSummaryDto['status'];
+  title: string | null;
+  updatedAt: string;
+}): ProductHistoryThreadSummaryDto {
+  return {
+    createdAt: thread.createdAt,
+    projectName: boundedHistoryLabel(thread.project.name, 500),
+    status: thread.status,
+    threadId: thread.id,
+    title: thread.title === null ? null : boundedHistoryLabel(thread.title, 1_000),
+    updatedAt: thread.updatedAt,
+  };
+}
+
+function publicHistoryPage(page: Awaited<ReturnType<HistoryReader['listThreads']>>): ProductHistoryThreadPageDto {
+  return { nextCursor: page.nextCursor, threads: page.threads.map(publicHistoryThread) };
+}
+
+function publicHistoryDetail(
+  detail: NonNullable<Awaited<ReturnType<HistoryReader['readThread']>>>,
+): ProductHistoryThreadDetailDto {
+  const items = detail.items.slice(0, HISTORY_CHILD_LIMIT);
+  const toolCalls = detail.toolCalls.slice(0, HISTORY_CHILD_LIMIT);
+  const approvals = detail.approvals.slice(0, HISTORY_CHILD_LIMIT);
+  return {
+    thread: publicHistoryThread(detail.thread),
+    turns: detail.turns.map((turn) => ({
+      turnId: turn.id,
+      status: turn.status,
+      startedAt: turn.startedAt,
+      completedAt: turn.completedAt,
+    })),
+    items: items.map((item) => ({
+      itemId: item.id,
+      turnId: item.turnId,
+      itemType: boundedHistoryLabel(item.itemType, 200),
+      role: item.role === null ? null : boundedHistoryLabel(item.role, 100),
+      status: item.status,
+      startedAt: item.startedAt,
+      completedAt: item.completedAt,
+      payload: publicHistoryPreview(item.payload),
+    })),
+    toolCalls: toolCalls.map((call) => ({
+      callId: call.id,
+      turnId: call.turnId,
+      toolName: boundedHistoryLabel(call.toolName, 200),
+      status: call.status,
+      arguments: publicHistoryPreview(call.arguments),
+      result: call.result === null ? null : publicHistoryPreview(call.result),
+      requestedAt: call.requestedAt,
+      startedAt: call.startedAt,
+      completedAt: call.completedAt,
+    })),
+    approvals: approvals.map((approval) => ({
+      requestId: approval.id,
+      turnId: approval.turnId,
+      approvalType: boundedHistoryLabel(approval.approvalType, 200),
+      status: approval.status,
+      requestPayload: publicHistoryPreview(approval.requestPayload),
+      responsePayload: approval.responsePayload === null ? null : publicHistoryPreview(approval.responsePayload),
+      requestedAt: approval.requestedAt,
+      resolvedAt: approval.resolvedAt,
+    })),
+    nextCursor: detail.nextCursor,
+    omitted: {
+      items: detail.items.length > items.length,
+      toolCalls: detail.toolCalls.length > toolCalls.length,
+      approvals: detail.approvals.length > approvals.length,
+    },
+  };
 }
 
 function publicKnowledgeDocument(document: {
@@ -619,10 +829,14 @@ function knowledgePageOptions(url: URL): { cursor?: string; limit: number } {
 }
 
 function historyPageOptions(url: URL): { cursor?: string; limit: number } {
-  const rawLimit = url.searchParams.get('limit');
-  const limit = rawLimit === null ? 25 : Number(rawLimit);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new HttpError(400, 'invalid_request', 'History page limit must be between 1 and 100.');
+  const limits = url.searchParams.getAll('limit');
+  if (limits.length > 1) {
+    throw new HttpError(400, 'invalid_request', 'History page limit must be specified at most once.');
+  }
+  const rawLimit = limits[0] ?? null;
+  const limit = rawLimit === null ? PRODUCT_HISTORY_DEFAULT_LIMIT : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > PRODUCT_HISTORY_MAX_LIMIT) {
+    throw new HttpError(400, 'invalid_request', `History page limit must be between 1 and ${PRODUCT_HISTORY_MAX_LIMIT}.`);
   }
   const cursors = url.searchParams.getAll('cursor');
   if (cursors.length > 1 || (cursors[0]?.length ?? 0) > 512) {

@@ -113,8 +113,8 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `POST /api/auth/login`: `{ "email", "password" }`, 성공 `200`. 존재하지 않는 이메일과 잘못된 비밀번호는 같은 `401 invalid_credentials`입니다.
 - `GET /api/auth/me`: session cookie로 사용자, session 만료, workspace membership을 조회합니다.
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
-- `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다.
-- `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다.
+- `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다. `limit`은 최대 50이고 cursor는 브라우저가 해석하지 않는 불투명 토큰입니다.
+- `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다. 브라우저 DTO는 DB 내부 ID, source event 식별자, checksum/vector와 session/secret을 제외하고 payload를 서버에서 재필터링한 최대 4,000자 preview로 제한합니다.
 - `POST /api/knowledge/documents?workspace_id=<uuid>`: `{ "documentId"?, "sourceId"?, "title", "content" }` text를 사용자 private source에 생성/갱신하고 chunk/embedding을 원자 교체합니다.
 - `GET /api/knowledge/documents?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 현재 사용자의 문서 metadata만 반환합니다. content checksum과 raw vector는 반환하지 않습니다.
 - `DELETE /api/knowledge/documents/<uuid>?workspace_id=<uuid>`: 현재 사용자 소유 문서만 삭제하며 추측한 다른 사용자 ID는 `404`입니다.
@@ -139,6 +139,8 @@ register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csr
 session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. UI는 모든 auth fetch에 `credentials: include`와 `no-store`를 사용하고 session 원문·비밀번호·CSRF token을 Web Storage, IndexedDB, URL 또는 로그에 기록하지 않습니다. 비밀번호 input은 요청을 시작한 직후 지웁니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 server production profile에서는 HTTPS Origin과 `Secure`를 강제합니다. Desktop은 원격 production 배치가 아니라 exact `127.0.0.1` HTTP cookie profile이므로 `PRODUCT_API_NODE_ENV=development`를 강제하지만 Host/Origin/CSP allowlist와 renderer의 protocol/hostname 검사는 그대로 유지합니다. UI process의 공개 환경 allowlist는 개발용 `VITE_KODEX_API_URL`과 `VITE_PRODUCT_API_URL`뿐이며 그 밖의 상속된 `VITE_*`도 제거합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin, OpenAI/provider key는 서버 환경에만 두며 `VITE_` 접두사를 붙이지 않습니다.
 
 앱 시작 상태는 `session 확인 중 → 로그인 필요 | 인증됨 | API 확인 불가/재시도`로 나뉩니다. runtime 실행 역할은 `owner`, `admin`, `member`이며 `viewer`는 읽기 전용 제품 membership이므로 Local Server HTTP/WS에서 `403 workspace_forbidden`입니다. 실행 가능한 membership이 없으면 명확한 권한 화면을 표시하고 `KodexClient`나 runtime을 만들지 않습니다. 선택은 실행 가능한 default membership 또는 첫 membership으로 고정하며 workspace 전환 API는 제공하지 않습니다. UI는 모든 Local Server HTTP 요청에 `X-Kodex-Workspace-Id`, WebSocket URL에는 비밀이 아닌 `workspace_id`를 보냅니다. session bearer는 계속 HttpOnly cookie에만 있습니다.
+
+로그인 후 사이드바의 **저장된 DB 히스토리**는 Product API의 사용자별 PostgreSQL projection만 조회하는 별도 다이얼로그입니다. 공식 Codex sidebar/thread 목록을 병합하거나 대체하지 않으며, 목록과 상세을 각각 cursor로 더 불러옵니다. projection은 비동기이므로 방금 끝난 대화가 잠시 늦게 보일 수 있습니다. 내보내기는 이 화면이 검증한 bounded DTO만 JSON Blob으로 만들고 임시 URL을 즉시 해제합니다. 세부 경계는 `docs/adr/0007-saved-db-history-ui.md`에 있습니다.
 
 Local Server 요청 순서는 다음과 같습니다.
 

@@ -79,6 +79,9 @@ interface CursorPayload {
   version: 1;
 }
 
+/** Fetch one sentinel row beyond the browser DTO child cap without loading an unbounded turn page. */
+const HISTORY_READ_CHILD_ROW_LIMIT = 251;
+
 function encodeCursor(payload: CursorPayload): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
@@ -111,6 +114,26 @@ function assertScope(scope: HistoryScope): void {
   }
 }
 
+function validPublicHistoryId(value: string | undefined): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256;
+}
+
+function assertPublicHistoryIdentifiers(event: HistoryIngestEvent): void {
+  if (
+    !validPublicHistoryId(event.thread.codexThreadId)
+    || (event.turn && (
+      !validPublicHistoryId(event.turn.codexTurnId)
+      || !validPublicHistoryId(event.turn.sourceSortKey)
+    ))
+    || (event.item && (
+      !validPublicHistoryId(event.item.codexItemId)
+      || !validPublicHistoryId(event.item.sourceSortKey)
+    ))
+    || (event.toolCall && !validPublicHistoryId(event.toolCall.codexCallId))
+    || (event.approval && !validPublicHistoryId(event.approval.codexRequestId))
+  ) throw new Error('History event contains an invalid public identifier.');
+}
+
 function stableOrdinal(value: string): string {
   const digest = createHash('sha256').update(value).digest();
   return (digest.readBigUInt64BE(0) & 0x7fff_ffff_ffff_ffffn).toString();
@@ -141,6 +164,7 @@ export class PostgresHistoryRepository implements HistoryEventSink, HistoryReade
     if (event.version !== 1 || event.thread.codexThreadId.length === 0) {
       throw new Error('History event is invalid.');
     }
+    assertPublicHistoryIdentifiers(event);
     await this.database.transaction(async (client) => {
       const ledgerKey = `${scope.workspaceId}\u001f${event.sourceInstance}\u001f${event.eventId}`;
       await client.query(
@@ -653,8 +677,9 @@ export class PostgresHistoryRepository implements HistoryEventSink, HistoryReade
              AND item_record.created_by_user_id = $2
              AND thread_record.codex_thread_id = $3
              AND turn_record.codex_turn_id = ANY($4::text[])
-           ORDER BY turn_record.source_sort_key, item_record.source_sort_key, item_record.id`,
-          [scope.workspaceId, scope.userId, codexThreadId, turnIds],
+           ORDER BY turn_record.source_sort_key, item_record.source_sort_key, item_record.id
+           LIMIT $5`,
+          [scope.workspaceId, scope.userId, codexThreadId, turnIds, HISTORY_READ_CHILD_ROW_LIMIT],
         ),
         this.database.query<ToolCallRow>(
           `SELECT
@@ -678,8 +703,9 @@ export class PostgresHistoryRepository implements HistoryEventSink, HistoryReade
              AND call_record.created_by_user_id = $2
              AND thread_record.codex_thread_id = $3
              AND turn_record.codex_turn_id = ANY($4::text[])
-           ORDER BY turn_record.source_sort_key, call_record.requested_at, call_record.id`,
-          [scope.workspaceId, scope.userId, codexThreadId, turnIds],
+           ORDER BY turn_record.source_sort_key, call_record.requested_at, call_record.id
+           LIMIT $5`,
+          [scope.workspaceId, scope.userId, codexThreadId, turnIds, HISTORY_READ_CHILD_ROW_LIMIT],
         ),
       ])
       : [{ rows: [] }, { rows: [] }];
@@ -707,8 +733,9 @@ export class PostgresHistoryRepository implements HistoryEventSink, HistoryReade
            turn_record.codex_turn_id = ANY($4::text[])
            OR ($5::boolean AND approval_record.turn_id IS NULL)
          )
-       ORDER BY approval_record.requested_at, approval_record.id`,
-      [scope.workspaceId, scope.userId, codexThreadId, turnIds, !cursor],
+       ORDER BY approval_record.requested_at, approval_record.id
+       LIMIT $6`,
+      [scope.workspaceId, scope.userId, codexThreadId, turnIds, !cursor, HISTORY_READ_CHILD_ROW_LIMIT],
     );
 
     const last = turnRows.at(-1);

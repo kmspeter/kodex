@@ -2,9 +2,11 @@ import type { AppInfo, ConfigReadResponse, McpServerStatus, PluginListResponse, 
 import type { AutomationRecord, BootstrapResponse, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
 import { ArchiveRestore, BookOpenText, Box, Clock3, LoaderCircle, Network, Play, Plus, Search, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import type { ProductAuthClient } from '../auth/product-auth';
 import { KodexMark } from './Brand';
+import { SavedHistoryDialog } from './SavedHistoryDialog';
 
-export type DialogName = 'automations' | 'skills' | 'archived' | 'knowledge' | 'settings' | null;
+export type DialogName = 'automations' | 'skills' | 'archived' | 'history' | 'knowledge' | 'settings' | null;
 
 interface AsyncActionProps {
   pendingAction: string | null;
@@ -20,7 +22,9 @@ export function Dialogs(props: {
   plugins: PluginListResponse | null;
   mcpServers: McpServerStatus[];
   archivedThreads: Thread[];
+  authClient: ProductAuthClient;
   codexConfig: ConfigReadResponse | null;
+  workspaceId: string;
   onClose: () => void;
   onError: (error: unknown) => void;
   onCreateAutomation: (input: { name: string; prompt: string; intervalMinutes: number }) => Promise<void>;
@@ -88,11 +92,12 @@ export function Dialogs(props: {
   if (!props.dialog) return null;
   const titleId = `kodex-dialog-title-${props.dialog}`;
   const requestClose = () => { if (!pendingActionRef.current) props.onClose(); };
-  return <div className="dialog-backdrop" onMouseDown={requestClose}><section ref={dialogRef} className={`app-dialog ${props.dialog === 'settings' ? 'settings-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={pendingAction !== null} onMouseDown={(event) => event.stopPropagation()}>
-    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>Local Kodex workspace</span><h2 id={titleId}>{props.dialog === 'automations' ? 'Automations' : props.dialog === 'skills' ? 'Skills & tools' : props.dialog === 'archived' ? 'Archived threads' : props.dialog === 'knowledge' ? 'Knowledge / RAG' : 'Settings'}</h2></div></div><button ref={closeButtonRef} className="icon-button" aria-label="Close" disabled={pendingAction !== null} onClick={requestClose}><X size={16} /></button></header>
+  return <div className="dialog-backdrop" onMouseDown={requestClose}><section ref={dialogRef} className={`app-dialog ${props.dialog === 'settings' ? 'settings-dialog' : ''} ${props.dialog === 'history' ? 'history-dialog' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={pendingAction !== null} onMouseDown={(event) => event.stopPropagation()}>
+    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>{props.dialog === 'history' ? 'Product DB projection' : 'Local Kodex workspace'}</span><h2 id={titleId}>{props.dialog === 'automations' ? 'Automations' : props.dialog === 'skills' ? 'Skills & tools' : props.dialog === 'archived' ? 'Archived threads' : props.dialog === 'history' ? '저장된 DB 히스토리' : props.dialog === 'knowledge' ? 'Knowledge / RAG' : 'Settings'}</h2></div></div><button ref={closeButtonRef} className="icon-button" aria-label="Close" disabled={pendingAction !== null} onClick={requestClose}><X size={16} /></button></header>
     {props.dialog === 'automations' && <AutomationDialog {...props} pendingAction={pendingAction} runAction={runAction} />}
     {props.dialog === 'skills' && <SkillsDialog skills={props.skills} apps={props.apps} plugins={props.plugins} mcpServers={props.mcpServers} />}
     {props.dialog === 'archived' && <ArchivedDialog threads={props.archivedThreads} onUnarchive={props.onUnarchive} pendingAction={pendingAction} runAction={runAction} />}
+    {props.dialog === 'history' && <SavedHistoryDialog client={props.authClient} workspaceId={props.workspaceId} />}
     {props.dialog === 'knowledge' && <KnowledgeDialog request={props.onKnowledgeRequest} />}
     {props.dialog === 'settings' && <SettingsDialog {...props} pendingAction={pendingAction} runAction={runAction} />}
   </section></div>;

@@ -38,8 +38,214 @@ export interface ProductAuthResponseDto extends ProductAuthContextDto {
   csrfToken: string;
 }
 
+export const PRODUCT_HISTORY_DEFAULT_LIMIT = 25;
+export const PRODUCT_HISTORY_MAX_LIMIT = 50;
+export const PRODUCT_HISTORY_PREVIEW_CHARACTERS = 4_000;
+
+export type ProductHistoryThreadStatus = 'active' | 'archived' | 'deleted';
+export type ProductHistoryTurnStatus = 'in_progress' | 'completed' | 'failed' | 'interrupted';
+export type ProductHistoryItemStatus = 'started' | 'completed';
+export type ProductHistoryToolStatus = 'requested' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ProductHistoryApprovalStatus = 'pending' | 'approved' | 'denied' | 'cancelled' | 'expired';
+
+/** A bounded, server-redacted JSON/text rendering. It is never the raw database payload. */
+export interface ProductHistoryPreviewDto {
+  content: string;
+  truncated: boolean;
+}
+
+export interface ProductHistoryThreadSummaryDto {
+  createdAt: string;
+  projectName: string;
+  status: ProductHistoryThreadStatus;
+  threadId: string;
+  title: string | null;
+  updatedAt: string;
+}
+
+export interface ProductHistoryThreadPageDto {
+  nextCursor: string | null;
+  threads: ProductHistoryThreadSummaryDto[];
+}
+
+export interface ProductHistoryTurnDto {
+  completedAt: string | null;
+  startedAt: string;
+  status: ProductHistoryTurnStatus;
+  turnId: string;
+}
+
+export interface ProductHistoryItemDto {
+  completedAt: string | null;
+  itemId: string;
+  itemType: string;
+  payload: ProductHistoryPreviewDto;
+  role: string | null;
+  startedAt: string | null;
+  status: ProductHistoryItemStatus;
+  turnId: string;
+}
+
+export interface ProductHistoryToolCallDto {
+  arguments: ProductHistoryPreviewDto;
+  callId: string;
+  completedAt: string | null;
+  requestedAt: string;
+  result: ProductHistoryPreviewDto | null;
+  startedAt: string | null;
+  status: ProductHistoryToolStatus;
+  toolName: string;
+  turnId: string;
+}
+
+export interface ProductHistoryApprovalDto {
+  approvalType: string;
+  requestId: string;
+  requestPayload: ProductHistoryPreviewDto;
+  requestedAt: string;
+  resolvedAt: string | null;
+  responsePayload: ProductHistoryPreviewDto | null;
+  status: ProductHistoryApprovalStatus;
+  turnId: string | null;
+}
+
+export interface ProductHistoryThreadDetailDto {
+  approvals: ProductHistoryApprovalDto[];
+  items: ProductHistoryItemDto[];
+  nextCursor: string | null;
+  omitted: { approvals: boolean; items: boolean; toolCalls: boolean };
+  thread: ProductHistoryThreadSummaryDto;
+  toolCalls: ProductHistoryToolCallDto[];
+  turns: ProductHistoryTurnDto[];
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+function historyRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactHistoryKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function historyString(value: unknown, maximum = 256): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum;
+}
+
+function historyDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function historyNullableDate(value: unknown): value is string | null {
+  return value === null || historyDate(value);
+}
+
+function historyCursor(value: unknown): value is string | null {
+  return value === null || (typeof value === 'string' && value.length > 0 && value.length <= 512 && /^[A-Za-z0-9_-]+$/u.test(value));
+}
+
+function parseHistoryPreview(value: unknown): ProductHistoryPreviewDto {
+  if (
+    !historyRecord(value)
+    || !exactHistoryKeys(value, ['content', 'truncated'])
+    || typeof value.content !== 'string'
+    || value.content.length > PRODUCT_HISTORY_PREVIEW_CHARACTERS
+    || typeof value.truncated !== 'boolean'
+  ) throw new Error('Invalid saved history preview.');
+  return { content: value.content, truncated: value.truncated };
+}
+
+function parseHistoryThread(value: unknown): ProductHistoryThreadSummaryDto {
+  if (
+    !historyRecord(value)
+    || !exactHistoryKeys(value, ['createdAt', 'projectName', 'status', 'threadId', 'title', 'updatedAt'])
+    || !historyDate(value.createdAt)
+    || !historyString(value.projectName, 500)
+    || !['active', 'archived', 'deleted'].includes(String(value.status))
+    || !historyString(value.threadId)
+    || (value.title !== null && typeof value.title !== 'string')
+    || (typeof value.title === 'string' && value.title.length > 1_000)
+    || !historyDate(value.updatedAt)
+  ) throw new Error('Invalid saved history thread.');
+  return value as unknown as ProductHistoryThreadSummaryDto;
+}
+
+/** Strict browser-boundary parser; rejects unexpected keys and oversized fields. */
+export function parseProductHistoryThreadPage(value: unknown): ProductHistoryThreadPageDto {
+  if (
+    !historyRecord(value)
+    || !exactHistoryKeys(value, ['nextCursor', 'threads'])
+    || !historyCursor(value.nextCursor)
+    || !Array.isArray(value.threads)
+    || value.threads.length > PRODUCT_HISTORY_MAX_LIMIT
+  ) throw new Error('Invalid saved history thread page.');
+  return { nextCursor: value.nextCursor, threads: value.threads.map(parseHistoryThread) };
+}
+
+/** Strict browser-boundary parser for a single turn page and its bounded child previews. */
+export function parseProductHistoryThreadDetail(value: unknown): ProductHistoryThreadDetailDto {
+  if (
+    !historyRecord(value)
+    || !exactHistoryKeys(value, ['approvals', 'items', 'nextCursor', 'omitted', 'thread', 'toolCalls', 'turns'])
+    || !historyCursor(value.nextCursor)
+    || !historyRecord(value.omitted)
+    || !exactHistoryKeys(value.omitted, ['approvals', 'items', 'toolCalls'])
+    || typeof value.omitted.approvals !== 'boolean'
+    || typeof value.omitted.items !== 'boolean'
+    || typeof value.omitted.toolCalls !== 'boolean'
+    || !Array.isArray(value.turns)
+    || !Array.isArray(value.items)
+    || !Array.isArray(value.toolCalls)
+    || !Array.isArray(value.approvals)
+    || value.turns.length > PRODUCT_HISTORY_MAX_LIMIT
+    || value.items.length > 250
+    || value.toolCalls.length > 250
+    || value.approvals.length > 250
+  ) throw new Error('Invalid saved history detail.');
+
+  const turns = value.turns.map((entry): ProductHistoryTurnDto => {
+    if (!historyRecord(entry) || !exactHistoryKeys(entry, ['completedAt', 'startedAt', 'status', 'turnId'])
+      || !historyNullableDate(entry.completedAt) || !historyDate(entry.startedAt)
+      || !['in_progress', 'completed', 'failed', 'interrupted'].includes(String(entry.status))
+      || !historyString(entry.turnId)) throw new Error('Invalid saved history turn.');
+    return entry as unknown as ProductHistoryTurnDto;
+  });
+  const items = value.items.map((entry): ProductHistoryItemDto => {
+    if (!historyRecord(entry) || !exactHistoryKeys(entry, ['completedAt', 'itemId', 'itemType', 'payload', 'role', 'startedAt', 'status', 'turnId'])
+      || !historyNullableDate(entry.completedAt) || !historyString(entry.itemId) || !historyString(entry.itemType, 200)
+      || (entry.role !== null && !historyString(entry.role, 100)) || !historyNullableDate(entry.startedAt)
+      || !['started', 'completed'].includes(String(entry.status)) || !historyString(entry.turnId)) throw new Error('Invalid saved history item.');
+    return { ...(entry as unknown as Omit<ProductHistoryItemDto, 'payload'>), payload: parseHistoryPreview(entry.payload) };
+  });
+  const toolCalls = value.toolCalls.map((entry): ProductHistoryToolCallDto => {
+    if (!historyRecord(entry) || !exactHistoryKeys(entry, ['arguments', 'callId', 'completedAt', 'requestedAt', 'result', 'startedAt', 'status', 'toolName', 'turnId'])
+      || !historyString(entry.callId) || !historyNullableDate(entry.completedAt) || !historyDate(entry.requestedAt)
+      || !historyNullableDate(entry.startedAt) || !['requested', 'running', 'completed', 'failed', 'cancelled'].includes(String(entry.status))
+      || !historyString(entry.toolName, 200) || !historyString(entry.turnId)) throw new Error('Invalid saved history tool call.');
+    return { ...(entry as unknown as Omit<ProductHistoryToolCallDto, 'arguments' | 'result'>), arguments: parseHistoryPreview(entry.arguments), result: entry.result === null ? null : parseHistoryPreview(entry.result) };
+  });
+  const approvals = value.approvals.map((entry): ProductHistoryApprovalDto => {
+    if (!historyRecord(entry) || !exactHistoryKeys(entry, ['approvalType', 'requestId', 'requestPayload', 'requestedAt', 'resolvedAt', 'responsePayload', 'status', 'turnId'])
+      || !historyString(entry.approvalType, 200) || !historyString(entry.requestId) || !historyDate(entry.requestedAt)
+      || !historyNullableDate(entry.resolvedAt) || !['pending', 'approved', 'denied', 'cancelled', 'expired'].includes(String(entry.status))
+      || (entry.turnId !== null && !historyString(entry.turnId))) throw new Error('Invalid saved history approval.');
+    return { ...(entry as unknown as Omit<ProductHistoryApprovalDto, 'requestPayload' | 'responsePayload'>), requestPayload: parseHistoryPreview(entry.requestPayload), responsePayload: entry.responsePayload === null ? null : parseHistoryPreview(entry.responsePayload) };
+  });
+  return {
+    approvals,
+    items,
+    nextCursor: value.nextCursor,
+    omitted: value.omitted as ProductHistoryThreadDetailDto['omitted'],
+    thread: parseHistoryThread(value.thread),
+    toolCalls,
+    turns,
+  };
 }

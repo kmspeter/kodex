@@ -37,6 +37,81 @@ function errorBody(code: string, message = 'Request failed.'): object {
 }
 
 describe('product auth browser contract', () => {
+  it('uses fixed saved-history GET paths with one normalized workspace query/header', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        nextCursor: null,
+        threads: [{
+          threadId: 'thread:safe', title: 'Saved', status: 'active', projectName: 'Project',
+          createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T01:00:00.000Z',
+        }],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        thread: {
+          threadId: 'thread:safe', title: 'Saved', status: 'active', projectName: 'Project',
+          createdAt: '2026-08-31T00:00:00.000Z', updatedAt: '2026-08-31T01:00:00.000Z',
+        },
+        turns: [], items: [], toolCalls: [], approvals: [], nextCursor: null,
+        omitted: { items: false, toolCalls: false, approvals: false },
+      }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+
+    await expect(client.historyThreads(workspaceId, { limit: 20 })).resolves.toMatchObject({
+      threads: [{ threadId: 'thread:safe' }],
+    });
+    await client.historyThread(workspaceId, 'thread:safe', { limit: 20 });
+
+    for (const [rawUrl, init] of fetchMock.mock.calls) {
+      const url = new URL(String(rawUrl));
+      expect(url.searchParams.getAll('workspace_id')).toEqual([workspaceId]);
+      expect(url.searchParams.getAll('limit')).toEqual(['20']);
+      expect(new Headers(init.headers).get('X-Kodex-Workspace-Id')).toBe(workspaceId);
+      expect(init).toMatchObject({ method: 'GET', credentials: 'include', cache: 'no-store' });
+    }
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/history/threads/thread%3Asafe?');
+    await expect(client.historyThread(workspaceId, '../knowledge/query')).rejects.toMatchObject({ kind: 'rejected' });
+    await expect(client.historyThreads(workspaceId, { limit: 51 })).rejects.toMatchObject({ kind: 'rejected' });
+  });
+
+  it('strictly rejects extra saved-history fields and invalidates only on 401', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const malformed = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ nextCursor: null, threads: [], internalId: 'leak' })),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await expect(malformed.historyThreads(workspaceId)).rejects.toMatchObject({ kind: 'invalid-response' });
+
+    for (const [status, code, kind, invalidates] of [
+      [401, 'unauthenticated', 'unauthenticated', true],
+      [503, 'internal_error', 'unavailable', false],
+    ] as const) {
+      const client = new ProductAuthClient({
+        apiBase: 'http://127.0.0.1:47832', development: true,
+        fetch: vi.fn().mockResolvedValue(jsonResponse(errorBody(code), status)),
+        pageUrl: 'http://127.0.0.1:5173/',
+      });
+      const listener = vi.fn();
+      client.onUnauthenticated(listener);
+      await expect(client.historyThreads(workspaceId)).rejects.toMatchObject({ kind, status });
+      expect(listener).toHaveBeenCalledTimes(invalidates ? 1 : 0);
+    }
+
+    const offlineClient = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockRejectedValue(new Error('offline')),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const offlineListener = vi.fn();
+    offlineClient.onUnauthenticated(offlineListener);
+    await expect(offlineClient.historyThreads(workspaceId)).rejects.toMatchObject({ kind: 'unavailable' });
+    expect(offlineListener).not.toHaveBeenCalled();
+  });
+
   it('binds the browser global fetch receiver before storing it on the client', async () => {
     const originalFetch = globalThis.fetch;
     const receiver = vi.fn();

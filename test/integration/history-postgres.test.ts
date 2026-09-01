@@ -484,9 +484,9 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
 
     const first = await historyGet(tokenA, sharedWorkspace, '/api/history/threads?limit=2');
     expect(first.status).toBe(200);
-    const firstBody = await first.json() as { nextCursor: string; threads: Array<{ id: string }> };
+    const firstBody = await first.json() as { nextCursor: string; threads: Array<{ threadId: string }> };
     expect(firstBody.threads).toHaveLength(2);
-    expect(firstBody.threads.every((thread) => thread.id !== userBThread)).toBe(true);
+    expect(firstBody.threads.every((thread) => thread.threadId !== userBThread)).toBe(true);
 
     const insertedAfterPage = randomUUID();
     await history.ingest(
@@ -496,19 +496,34 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
     const second = await historyGet(
       tokenA,
       sharedWorkspace,
-      `/api/history/threads?limit=100&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
+      `/api/history/threads?limit=50&cursor=${encodeURIComponent(firstBody.nextCursor)}`,
     );
     expect(second.status).toBe(200);
-    const secondBody = await second.json() as { threads: Array<{ id: string }> };
-    const pageIds = [...firstBody.threads, ...secondBody.threads].map((thread) => thread.id);
+    const secondBody = await second.json() as { threads: Array<{ threadId: string }> };
+    const pageIds = [...firstBody.threads, ...secondBody.threads].map((thread) => thread.threadId);
     expect(new Set(pageIds).size).toBe(pageIds.length);
     expect(pageIds).not.toContain(insertedAfterPage);
     expect(pageIds).not.toContain(userBThread);
+
+    const userBPage = await historyGet(tokenB, sharedWorkspace, '/api/history/threads?limit=50');
+    expect(userBPage.status).toBe(200);
+    expect((await userBPage.json() as { threads: Array<{ threadId: string }> }).threads.map((thread) => thread.threadId))
+      .toEqual([userBThread]);
+
+    const emptyOwnedWorkspace = await historyGet(tokenA, workspaceA, '/api/history/threads');
+    expect(emptyOwnedWorkspace.status).toBe(200);
+    expect(await emptyOwnedWorkspace.json()).toMatchObject({ threads: [], nextCursor: null });
+    expect((await historyGet(
+      tokenA, workspaceA, `/api/history/threads/${userAThreads[0]}`,
+    )).status).toBe(404);
 
     expect((await historyGet(
       tokenA, sharedWorkspace, '/api/history/threads', workspaceA,
     )).status).toBe(403);
     expect((await historyGet(tokenA, workspaceB, '/api/history/threads')).status).toBe(403);
+    expect((await historyGet(tokenA, sharedWorkspace, '/api/history/threads?limit=51')).status).toBe(400);
+    expect((await historyGet(tokenA, sharedWorkspace, '/api/history/threads?limit=2&limit=3')).status).toBe(400);
+    expect((await historyGet(tokenA, sharedWorkspace, '/api/history/threads?cursor=not-valid!')).status).toBe(400);
     expect((await historyGet(
       tokenA, sharedWorkspace, `/api/history/threads/${userBThread}`,
     )).status).toBe(404);
@@ -531,20 +546,28 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
       },
       item: {
         codexItemId: itemId, itemType: 'commandExecution', role: null,
-        payload: { type: 'commandExecution' },
+        payload: {
+          type: 'commandExecution',
+          nested: {
+            authorization: 'Bearer browser-secret',
+            sourceInstance: 'internal-worker', sourceEventId: 'internal-event',
+            embeddingVector: [0.1, 0.2], contentChecksum: 'internal-checksum',
+            sessionToken: 'internal-session', ragMetadata: { source: 'internal-rag' },
+          },
+        },
         sourceSortKey: `0000000000001001:${itemId}`,
         status: 'completed', lifecycleRank: 2,
         startedAt: occurredAt, completedAt: occurredAt,
       },
       toolCall: {
         codexCallId: itemId, toolName: 'shell', status: 'completed',
-        arguments: { command: 'npm test' }, result: { exitCode: 0 },
+        arguments: { command: 'npm test', apiKey: 'internal-tool-secret' }, result: { exitCode: 0 },
         requestedAt: occurredAt, startedAt: occurredAt, completedAt: occurredAt,
       },
       approval: {
         codexRequestId: `string:${randomUUID()}`,
         approvalType: 'item/commandExecution/requestApproval', status: 'approved',
-        requestPayload: { reason: 'test' }, responsePayload: { decision: 'accept' },
+        requestPayload: { reason: 'test', cookie: 'internal-cookie' }, responsePayload: { decision: 'accept' },
         requestedAt: occurredAt, resolvedAt: occurredAt,
       },
     });
@@ -552,13 +575,33 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
       tokenA, sharedWorkspace, `/api/history/threads/${threadId}`,
     );
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      thread: { id: threadId },
-      turns: [{ id: turnId, status: 'completed' }],
-      items: [{ id: itemId, turnId, status: 'completed' }],
-      toolCalls: [{ id: itemId, turnId, status: 'completed' }],
+    const body = await response.json();
+    expect(body).toMatchObject({
+      thread: { threadId },
+      turns: [{ turnId, status: 'completed' }],
+      items: [{ itemId, turnId, status: 'completed' }],
+      toolCalls: [{ callId: itemId, turnId, status: 'completed' }],
       approvals: [{ turnId, status: 'approved' }],
+      omitted: { items: false, toolCalls: false, approvals: false },
     });
+    expect(Object.keys(body.thread).sort()).toEqual([
+      'createdAt', 'projectName', 'status', 'threadId', 'title', 'updatedAt',
+    ]);
+    expect(Object.keys(body.items[0].payload).sort()).toEqual(['content', 'truncated']);
+    expect(typeof body.items[0].payload.content).toBe('string');
+    expect(body.items[0].payload).not.toHaveProperty('type');
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('browser-secret');
+    expect(serialized).not.toContain('internal-worker');
+    expect(serialized).not.toContain('internal-event');
+    expect(serialized).not.toContain('internal-checksum');
+    expect(serialized).not.toContain('internal-session');
+    expect(serialized).not.toContain('internal-rag');
+    expect(serialized).not.toContain('internal-tool-secret');
+    expect(serialized).not.toContain('internal-cookie');
+    expect(serialized).not.toContain('embedding');
+    expect(body.thread).not.toHaveProperty('project.id');
+    expect(body).not.toHaveProperty('source_instance');
   });
 
   it('rejects revoked sessions and removed memberships at read time', async () => {
