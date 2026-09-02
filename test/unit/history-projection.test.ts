@@ -119,6 +119,28 @@ describe('history projection redaction and normalization', () => {
     expect(serialized).not.toContain('hidden-token');
   });
 
+  it('omits an absent tool call instead of sanitizing undefined into a truthy placeholder', () => {
+    const normalizer = new HistoryEventNormalizer({
+      repositoryRoot: 'D:\\project',
+      sourceInstance: 'stable-source',
+    });
+    const projected = normalizer.normalize({
+      type: 'notification',
+      notification: {
+        method: 'item/started',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          startedAtMs: 1_000,
+          item: { id: 'user-1', type: 'userMessage', content: [] },
+        },
+      },
+    } as unknown as RuntimeEvent);
+
+    expect(projected).toMatchObject({ item: { itemType: 'userMessage' } });
+    expect(projected).not.toHaveProperty('toolCall');
+  });
+
   it('derives distinct bounded approval identities when a raw JSON-RPC id is reused', () => {
     const normalizer = new HistoryEventNormalizer({
       repositoryRoot: 'D:\\project',

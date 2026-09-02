@@ -116,6 +116,7 @@ export class KodexRuntime {
   #pendingServerRequests = new Map<string, PendingServerRequest>();
   #automationRuns = new Map<string, AutomationRun>();
   #automationById = new Map<string, AutomationRun>();
+  #liveThreadIds = new Set<string>();
 
   constructor(readonly repositoryRoot: string, apiKey: string | undefined, readonly options: KodexRuntimeOptions = {}) {
     this.store = new LocalStore(repositoryRoot, options.dataRoot);
@@ -240,7 +241,9 @@ export class KodexRuntime {
           modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : request.params.modelProvider,
           config: { ...request.params.config, ...threadConfig(settings) }, ephemeral: false, serviceName: 'Kodex',
         };
-        return this.appServer.request('thread/start', params);
+        const result = await this.appServer.request('thread/start', params);
+        this.#liveThreadIds.add(result.thread.id);
+        return result;
       }
       case 'thread/list': {
         const params: ThreadListParams = { ...request.params, cwd: project.path };
@@ -254,7 +257,9 @@ export class KodexRuntime {
           modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : request.params.modelProvider,
           config: { ...request.params.config, ...threadConfig(settings) },
         };
-        return this.appServer.request('thread/resume', params);
+        const result = await this.appServer.request('thread/resume', params);
+        this.#liveThreadIds.add(result.thread.id);
+        return result;
       }
       case 'thread/fork': {
         const params: ThreadForkParams = {
@@ -264,16 +269,21 @@ export class KodexRuntime {
           modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : request.params.modelProvider,
           config: { ...request.params.config, ...threadConfig(settings) }, ephemeral: false,
         };
-        return this.appServer.request('thread/fork', params);
+        const result = await this.appServer.request('thread/fork', params);
+        this.#liveThreadIds.add(result.thread.id);
+        return result;
       }
       case 'turn/start': {
-        await this.appServer.request('thread/resume', {
-          threadId: request.params.threadId, cwd: project.path, approvalPolicy: settings.approvalPolicy,
-          approvalsReviewer: 'user', sandbox: settings.sandbox, config: threadConfig(settings),
-          model: selectedModel(settings, request.params.model),
-          modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : null,
-          excludeTurns: true,
-        });
+        if (!this.#liveThreadIds.has(request.params.threadId)) {
+          await this.appServer.request('thread/resume', {
+            threadId: request.params.threadId, cwd: project.path, approvalPolicy: settings.approvalPolicy,
+            approvalsReviewer: 'user', sandbox: settings.sandbox, config: threadConfig(settings),
+            model: selectedModel(settings, request.params.model),
+            modelProvider: settings.provider.mode === 'local' ? 'kodex_local' : null,
+            excludeTurns: true,
+          });
+          this.#liveThreadIds.add(request.params.threadId);
+        }
         const input = this.options.ragAugmenter && context.rag !== false
           ? await this.options.ragAugmenter.augment(request.params.input)
           : request.params.input;
@@ -379,6 +389,7 @@ export class KodexRuntime {
 
   async #onEngineStatus(engine: EngineStatus): Promise<void> {
     if (engine.state === 'failed' || engine.state === 'stopped') {
+      this.#liveThreadIds.clear();
       this.#clearPendingRequests('app-server-restart');
       for (const run of this.#automationById.values()) await this.store.finishAutomation(run.automationId, run.claimId, 'interrupted', 'Codex App Server stopped before the turn completed.');
       this.#automationById.clear();

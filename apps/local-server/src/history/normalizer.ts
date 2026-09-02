@@ -456,7 +456,8 @@ export class HistoryEventNormalizer {
       );
       event.turn = this.#turn(turnId, occurredAt);
       event.item = item;
-      event.toolCall = toolCallFromItem(sourceItem, completed ? 'completed' : 'started', occurredAt);
+      const toolCall = toolCallFromItem(sourceItem, completed ? 'completed' : 'started', occurredAt);
+      if (toolCall) event.toolCall = toolCall;
       return event;
     }
     return undefined;

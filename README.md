@@ -224,11 +224,44 @@ npm run test:tenant-auth
 npm run test:history-postgres
 # 독립 --rm pgvector 컨테이너를 만들고 항상 정리하는 실제 RAG 검증
 npm run test:rag-postgres
+# 인증부터 실제 두 서버/codex.exe/DB projection/격리/logout까지의 opt-in API/WS acceptance
+npm run test:full-stack
 # 실제 OpenAI 호출은 key만으로 실행되지 않으며 두 값을 모두 명시해야 함
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`는 전용 `pgvector/pgvector:0.8.6-pg17` `--rm` 컨테이너를 생성해 검증하고 `finally`에서 container를 중지·제거합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`와 `test:full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 두 스크립트는 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+
+### Full-stack acceptance 경계
+
+`npm run test:full-stack`은 Node/npm dependencies, 실행 중인 Docker daemon(첫 실행은 image pull network),
+현재 저장소의 `bin/codex.exe`를 요구합니다. opt-in CI job도 같은 세 전제를 artifact/runner에 준비해야 합니다.
+명령은 제품을 build한 뒤 다음 경계를 한 시나리오로 검증합니다.
+
+| 경계 | 실제 실행 | acceptance 증거 |
+| --- | --- | --- |
+| 프론트 계약 | Product `register/logout/login/me`, Local `bootstrap/settings` HTTP | HttpOnly product cookie, CSRF, runnable workspace와 tenant provider 설정 |
+| Product API | build된 별도 server process | auth status, user/workspace-scoped Saved DB History list/detail |
+| Local Server | build된 별도 HTTP/WS server process | product session 재검증, replay, `thread/start`/`turn/start`, cross-tenant 거부 |
+| agent | 저장소의 실제 `bin/codex.exe app-server` | keyless loopback Responses, 실제 shell tool call/output, 최종 assistant/`turn/completed` |
+| persistence | 임시 실제 PostgreSQL 17 + pgvector image | thread/turn/assistant/tool projection을 Product API에서 bounded polling |
+| 폐기 | 실제 Product logout | Product API `401`, 새 Local 연결 거부, 기존 WS code `1008` 종료 |
+
+```text
+auth HTTP -> tenant Local HTTP -> Local WS -> real codex.exe -> loopback model/tool round trip
+          -> history outbox -> PostgreSQL -> Product history API -> B isolation -> A logout/revocation
+```
+
+이 테스트는 실제 브라우저나 Electron renderer를 실행하지 않으므로 UI E2E가 아니라 프론트가 의존하는
+HTTP/WS 계약의 full-stack acceptance입니다. 외부 OpenAI generation/API key도 쓰지 않습니다. RAG는 명시적으로
+비활성화하며 embedding endpoint를 테스트용으로 바꾸지 않습니다. 실제 RAG/pgvector retrieval은 독립
+`npm run test:rag-postgres`, live embedding은 별도 opt-in smoke가 담당합니다. 상세 결정은
+`docs/adr/0010-full-stack-acceptance-harness.md`에 있습니다.
+
+Windows에서 실제 command lifecycle을 안정적으로 검증하기 위해 이 테스트 tenant만 settings API로
+`danger-full-access`/`never`를 사용합니다. model fixture가 호출할 수 있는 command는 고정된 로컬 echo 하나이며
+shell/Web Search network를 끄고, 실제 exit code 0과 marker output을 확인합니다. 운영 기본 설정을 바꾸거나
+사용자 prompt/repository 내용을 command로 실행하지 않습니다.
 
 ## 실제 한계
 

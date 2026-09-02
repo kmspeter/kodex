@@ -13,6 +13,7 @@ export default defineConfig({
       'test/integration/tenant-auth-postgres.test.ts',
       'test/integration/history-postgres.test.ts',
       'test/integration/rag-postgres.test.ts',
+      'test/acceptance/full-stack.test.ts',
     ],
     testTimeout: 20_000,
     hookTimeout: 20_000,

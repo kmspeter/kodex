@@ -1,0 +1,639 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { PRODUCT_SESSION_COOKIE_NAME, PRODUCT_WORKSPACE_HEADER_NAME } from '@kodex/product-contract';
+import { expect, it } from 'vitest';
+import { WebSocket } from 'ws';
+import { startResponsesLoopbackFixture, type ResponsesLoopbackFixture } from '../fixtures/responses-loopback';
+
+type UnknownRecord = Record<string, unknown>;
+
+interface AuthSession {
+  cookie: string;
+  csrfToken: string;
+  sessionToken: string;
+  userId: string;
+  workspaceId: string;
+}
+
+interface ManagedProcess {
+  child: ChildProcess;
+  name: string;
+}
+
+interface SocketClient {
+  messages: UnknownRecord[];
+  rpc(method: string, params: UnknownRecord): Promise<unknown>;
+  socket: WebSocket;
+}
+
+interface HistoryDetail {
+  items: Array<{ itemType: string; payload: { content: string }; role: string | null; status: string; turnId: string }>;
+  thread: { threadId: string };
+  toolCalls: Array<{ result: { content: string } | null; status: string; toolName: string; turnId: string }>;
+  turns: Array<{ status: string; turnId: string }>;
+}
+
+const repositoryRoot = path.resolve(import.meta.dirname, '..', '..');
+const productMain = path.join(repositoryRoot, 'apps', 'api', 'dist', 'main.js');
+const localMain = path.join(repositoryRoot, 'apps', 'local-server', 'dist', 'main.js');
+const codexBinary = path.join(repositoryRoot, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
+const password = 'correct horse battery staple';
+
+function record(value: unknown, phase: string): UnknownRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${phase} returned a non-object response.`);
+  }
+  return value as UnknownRecord;
+}
+
+async function reservePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+function startProcess(name: string, entrypoint: string, env: NodeJS.ProcessEnv): ManagedProcess {
+  if (!existsSync(entrypoint)) throw new Error(`${name} build output is missing at ${entrypoint}.`);
+  const child = spawn(process.execPath, [entrypoint], {
+    cwd: repositoryRoot,
+    env,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  child.stdout?.resume();
+  child.stderr?.resume();
+  child.on('error', () => undefined);
+  return { child, name };
+}
+
+async function stopProcess(processRecord: ManagedProcess | undefined): Promise<void> {
+  const child = processRecord?.child;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (child.connected) {
+    try { child.send({ type: 'kodex-shutdown' }); } catch { /* fall back to process termination */ }
+  }
+  await Promise.race([
+    new Promise<void>((resolve) => child.once('exit', () => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill('SIGTERM');
+  await Promise.race([
+    new Promise<void>((resolve) => child.once('exit', () => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+  ]);
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+      stdio: 'ignore', shell: false, windowsHide: true,
+    });
+    await new Promise<void>((resolve) => {
+      killer.once('error', () => resolve());
+      killer.once('exit', () => resolve());
+    });
+  } else child.kill('SIGKILL');
+}
+
+async function waitForHttp(
+  processRecord: ManagedProcess,
+  url: string,
+  phase: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (processRecord.child.exitCode !== null || processRecord.child.signalCode !== null) {
+      throw new Error(`${phase} failed because ${processRecord.name} exited before becoming ready.`);
+    }
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+      if (response.ok) return;
+    } catch { /* retry until the bounded deadline */ }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${phase} timed out after ${timeoutMs} ms.`);
+}
+
+function setCookies(response: Response): string[] {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  return headers.getSetCookie?.() ?? [response.headers.get('set-cookie') ?? ''].filter(Boolean);
+}
+
+function authSession(response: Response, body: UnknownRecord, phase: string): AuthSession {
+  const pairs = setCookies(response).map((entry) => entry.split(';', 1)[0]);
+  const cookies = new Map(pairs.map((pair) => {
+    const separator = pair.indexOf('=');
+    return [pair.slice(0, separator), decodeURIComponent(pair.slice(separator + 1))];
+  }));
+  const sessionToken = cookies.get(PRODUCT_SESSION_COOKIE_NAME);
+  const csrfToken = typeof body.csrfToken === 'string' ? body.csrfToken : undefined;
+  const user = record(body.user, phase);
+  const memberships = Array.isArray(body.workspaces) ? body.workspaces : [];
+  const workspace = record(
+    body.defaultWorkspace ?? memberships.find((entry) => {
+      const membership = entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? entry as UnknownRecord
+        : undefined;
+      return ['owner', 'admin', 'member'].includes(String(membership?.role));
+    }),
+    phase,
+  );
+  if (!sessionToken || !csrfToken || typeof user.id !== 'string' || typeof workspace.id !== 'string') {
+    throw new Error(`${phase} did not return the complete cookie, CSRF, user, and workspace contract.`);
+  }
+  return {
+    cookie: pairs.join('; '),
+    csrfToken,
+    sessionToken,
+    userId: user.id,
+    workspaceId: workspace.id,
+  };
+}
+
+async function postAuth(
+  productBaseUrl: string,
+  origin: string,
+  route: 'login' | 'register',
+  input: UnknownRecord,
+): Promise<AuthSession> {
+  const response = await fetch(`${productBaseUrl}/api/auth/${route}`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = record(await response.json(), `Product ${route}`);
+  expect(response.status, `Product ${route} status`).toBe(route === 'register' ? 201 : 200);
+  return authSession(response, body, `Product ${route}`);
+}
+
+async function logout(productBaseUrl: string, origin: string, session: AuthSession): Promise<Response> {
+  return fetch(`${productBaseUrl}/api/auth/logout`, {
+    method: 'POST',
+    headers: {
+      Origin: origin,
+      Cookie: session.cookie,
+      'X-CSRF-Token': session.csrfToken,
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+}
+
+async function bootstrapLocal(
+  localBaseUrl: string,
+  origin: string,
+  session: AuthSession,
+  workspaceId = session.workspaceId,
+): Promise<{ body: UnknownRecord; response: Response }> {
+  const response = await fetch(`${localBaseUrl}/api/bootstrap`, {
+    headers: {
+      Origin: origin,
+      Cookie: session.cookie,
+      [PRODUCT_WORKSPACE_HEADER_NAME]: workspaceId,
+      'X-Kodex-Bootstrap': '1',
+    },
+  });
+  const body = record(await response.json(), 'Local bootstrap');
+  return { body, response };
+}
+
+function waitForSocketMessage(
+  messages: UnknownRecord[],
+  predicate: (message: UnknownRecord) => boolean,
+  phase: string,
+  timeoutMs = 20_000,
+): Promise<UnknownRecord> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const inspect = () => {
+      const found = messages.find(predicate);
+      if (found) { resolve(found); return; }
+      if (Date.now() >= deadline) { reject(new Error(`${phase} timed out after ${timeoutMs} ms.`)); return; }
+      setTimeout(inspect, 20);
+    };
+    inspect();
+  });
+}
+
+async function connectSocket(
+  localPort: number,
+  origin: string,
+  session: AuthSession,
+  localSessionToken: string,
+  workspaceId = session.workspaceId,
+): Promise<SocketClient> {
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${localPort}/ws?workspace_id=${workspaceId}`,
+    ['kodex', localSessionToken],
+    { origin, headers: { Cookie: session.cookie } },
+  );
+  const messages: UnknownRecord[] = [];
+  socket.on('message', (raw) => messages.push(record(JSON.parse(raw.toString()) as unknown, 'Local WebSocket')));
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Local WebSocket open timed out after 20 seconds.')), 20_000);
+    socket.once('open', () => { clearTimeout(timer); resolve(); });
+    socket.once('error', (error) => { clearTimeout(timer); reject(error); });
+  });
+  const hello = await waitForSocketMessage(messages, (message) => message.type === 'hello', 'Local WebSocket hello');
+  socket.send(JSON.stringify({
+    type: 'replay',
+    epoch: hello.epoch,
+    afterSequence: hello.latestSequence,
+  }));
+  let requestSequence = 0;
+  return {
+    messages,
+    socket,
+    rpc: async (method, params) => {
+      requestSequence += 1;
+      const requestId = `acceptance-${requestSequence}`;
+      socket.send(JSON.stringify({
+        type: 'rpc',
+        requestId,
+        request: { id: requestSequence, method, params },
+      }));
+      const response = await waitForSocketMessage(
+        messages,
+        (message) => (message.type === 'rpc-result' || message.type === 'rpc-error')
+          && message.requestId === requestId,
+        `Local WebSocket ${method}`,
+        30_000,
+      );
+      if (response.type === 'rpc-error') {
+        const publicMessage = typeof response.message === 'string'
+          ? response.message.slice(0, 500)
+          : 'No public error message was returned.';
+        throw new Error(`Local WebSocket ${method} returned an RPC error: ${publicMessage}`);
+      }
+      return response.result;
+    },
+  };
+}
+
+async function expectSocketRejected(
+  localPort: number,
+  origin: string,
+  session: AuthSession,
+  localSessionToken: string,
+  workspaceId: string,
+  expectedStatus: number,
+): Promise<void> {
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${localPort}/ws?workspace_id=${workspaceId}`,
+    ['kodex', localSessionToken],
+    { origin, headers: { Cookie: session.cookie } },
+  );
+  socket.on('error', () => undefined);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.terminate();
+      reject(new Error(`Rejected Local WebSocket did not respond within 10 seconds (expected HTTP ${expectedStatus}).`));
+    }, 10_000);
+    socket.once('open', () => {
+      clearTimeout(timer);
+      socket.close();
+      reject(new Error(`Local WebSocket unexpectedly opened (expected HTTP ${expectedStatus}).`));
+    });
+    socket.once('unexpected-response', (_request, response) => {
+      clearTimeout(timer);
+      response.destroy();
+      if (response.statusCode === expectedStatus) resolve();
+      else reject(new Error(`Local WebSocket returned HTTP ${response.statusCode}; expected ${expectedStatus}.`));
+    });
+  });
+}
+
+async function closeSocket(socket: WebSocket | undefined): Promise<void> {
+  if (!socket || socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  socket.close();
+  await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 1_000))]);
+  if (Number(socket.readyState) !== WebSocket.CLOSED) socket.terminate();
+}
+
+async function historyGet(
+  productBaseUrl: string,
+  session: AuthSession,
+  route: string,
+  workspaceId = session.workspaceId,
+): Promise<Response> {
+  return fetch(`${productBaseUrl}${route}${route.includes('?') ? '&' : '?'}workspace_id=${workspaceId}`, {
+    headers: { Cookie: session.cookie, [PRODUCT_WORKSPACE_HEADER_NAME]: workspaceId },
+  });
+}
+
+async function pollForHistory(
+  productBaseUrl: string,
+  session: AuthSession,
+  threadId: string,
+  turnId: string,
+  outboxDirectory: string,
+): Promise<HistoryDetail> {
+  const deadline = Date.now() + 20_000;
+  let lastObservation = 'history detail was not available';
+  while (Date.now() < deadline) {
+    const response = await historyGet(
+      productBaseUrl,
+      session,
+      `/api/history/threads/${encodeURIComponent(threadId)}?limit=50`,
+    );
+    if (response.status === 200) {
+      const detail = await response.json() as HistoryDetail;
+      lastObservation = JSON.stringify({
+        threadMatched: detail.thread.threadId === threadId,
+        turns: detail.turns.map((entry) => ({ matched: entry.turnId === turnId, status: entry.status })),
+        items: detail.items.map((entry) => ({
+          matched: entry.turnId === turnId,
+          itemType: entry.itemType,
+          role: entry.role,
+          status: entry.status,
+        })),
+        toolCalls: detail.toolCalls.map((entry) => ({
+          matched: entry.turnId === turnId,
+          toolName: entry.toolName,
+          status: entry.status,
+          hasResult: entry.result !== null,
+        })),
+      });
+      const assistant = detail.items.find(
+        (item) => item.turnId === turnId && item.role === 'assistant' && item.status === 'completed'
+          && item.payload.content.includes('local stream ok'),
+      );
+      const tool = detail.toolCalls.find(
+        (call) => call.turnId === turnId && call.toolName === 'shell' && call.status === 'completed'
+          && call.result?.content.includes('kodex-loopback-tool'),
+      );
+      if (
+        detail.thread.threadId === threadId
+        && detail.turns.some((turn) => turn.turnId === turnId && turn.status === 'completed')
+        && assistant
+        && tool
+      ) return detail;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  let pendingObservation = 'outbox unavailable';
+  try {
+    const filenames = (await readdir(outboxDirectory)).filter((entry) => entry.endsWith('.json')).sort().slice(0, 20);
+    const pending = [];
+    for (const filename of filenames) {
+      const event = record(JSON.parse(await readFile(path.join(outboxDirectory, filename), 'utf8')) as unknown, 'history outbox diagnostic');
+      const item = event.item && typeof event.item === 'object' && !Array.isArray(event.item)
+        ? event.item as UnknownRecord
+        : undefined;
+      const toolCall = event.toolCall && typeof event.toolCall === 'object' && !Array.isArray(event.toolCall)
+        ? event.toolCall as UnknownRecord
+        : undefined;
+      const eventThread = event.thread && typeof event.thread === 'object' && !Array.isArray(event.thread)
+        ? event.thread as UnknownRecord
+        : undefined;
+      const eventTurn = event.turn && typeof event.turn === 'object' && !Array.isArray(event.turn)
+        ? event.turn as UnknownRecord
+        : undefined;
+      pending.push({
+        eventType: event.eventType,
+        threadIdLength: typeof eventThread?.codexThreadId === 'string' ? eventThread.codexThreadId.length : null,
+        turnIdLength: typeof eventTurn?.codexTurnId === 'string' ? eventTurn.codexTurnId.length : null,
+        turnSortKeyLength: typeof eventTurn?.sourceSortKey === 'string' ? eventTurn.sourceSortKey.length : null,
+        itemIdLength: typeof item?.codexItemId === 'string' ? item.codexItemId.length : null,
+        itemSortKeyLength: typeof item?.sourceSortKey === 'string' ? item.sourceSortKey.length : null,
+        itemType: item?.itemType,
+        itemStatus: item?.status,
+        toolName: toolCall?.toolName,
+        toolStatus: toolCall?.status,
+      });
+    }
+    pendingObservation = JSON.stringify(pending);
+  } catch { /* keep the structural API observation */ }
+  throw new Error(`PostgreSQL Saved DB History projection did not contain the thread, completed turn, assistant item, and tool result within 20 seconds. Last structural state: ${lastObservation}. Pending structural outbox state: ${pendingObservation}`);
+}
+
+it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreSQL history -> isolation -> logout over HTTP/WS (no browser UI)', async () => {
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) throw new Error('DATABASE_URL is required. Use npm run test:full-stack.');
+  if (!existsSync(codexBinary)) throw new Error(`Repository Codex binary is missing at ${codexBinary}.`);
+
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'kodex-full-stack-'));
+  const productPort = await reservePort();
+  const localPort = await reservePort();
+  const productBaseUrl = `http://127.0.0.1:${productPort}`;
+  const localBaseUrl = `http://127.0.0.1:${localPort}`;
+  const origin = localBaseUrl;
+  const commonEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    DATABASE_URL: databaseUrl,
+    PRODUCT_DB_SSL: 'disable',
+    KODEX_DISABLE_ENV_FILE: '1',
+    KODEX_CODEX_BIN: codexBinary,
+    KODEX_RAG_ENABLED: 'false',
+    KODEX_RAG_AUTOMATIONS_ENABLED: 'false',
+    OPENAI_API_KEY: '',
+    KODEX_LOCAL_LLM_API_KEY: '',
+  };
+  let productProcess: ManagedProcess | undefined;
+  let localProcess: ManagedProcess | undefined;
+  let loopback: ResponsesLoopbackFixture | undefined;
+  let socketA: SocketClient | undefined;
+  let socketB: SocketClient | undefined;
+  try {
+    productProcess = startProcess('Product API', productMain, {
+      ...commonEnv,
+      PRODUCT_API_NODE_ENV: 'test',
+      PRODUCT_API_HOST: '127.0.0.1',
+      PRODUCT_API_PORT: String(productPort),
+      PRODUCT_API_ALLOWED_HOSTS: `127.0.0.1:${productPort}`,
+      AUTH_ALLOWED_ORIGINS: origin,
+      AUTH_COOKIE_SECRET: randomBytes(32).toString('base64url'),
+      AUTH_COOKIE_SECURE: 'false',
+    });
+    await waitForHttp(productProcess, `${productBaseUrl}/api/health/ready`, 'Product API readiness');
+
+    localProcess = startProcess('Local Server', localMain, {
+      ...commonEnv,
+      PRODUCT_API_PORT: String(productPort),
+      KODEX_SERVER_PORT: String(localPort),
+      KODEX_PRODUCT_API_ORIGINS: productBaseUrl,
+      KODEX_UI_ORIGINS: origin,
+      KODEX_DATA_ROOT: path.join(temporaryRoot, 'data'),
+      KODEX_TENANT_ROOT: path.join(temporaryRoot, 'data', 'tenants'),
+      KODEX_AUTH_REVALIDATE_MS: '100',
+      KODEX_HISTORY_RETRY_INITIAL_MS: '25',
+      KODEX_HISTORY_RETRY_MAX_MS: '250',
+    });
+    await waitForHttp(localProcess, `${localBaseUrl}/api/health`, 'Local Server readiness');
+    loopback = await startResponsesLoopbackFixture();
+
+    const emailA = `full-stack-a-${randomUUID()}@example.invalid`;
+    const registeredA = await postAuth(productBaseUrl, origin, 'register', {
+      email: emailA, password, displayName: 'Acceptance User A',
+    });
+    expect((await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: registeredA.cookie } })).status).toBe(200);
+    expect((await logout(productBaseUrl, origin, registeredA)).status).toBe(204);
+    expect((await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: registeredA.cookie } })).status).toBe(401);
+
+    const sessionA = await postAuth(productBaseUrl, origin, 'login', { email: emailA, password });
+    expect(sessionA.userId).toBe(registeredA.userId);
+    expect(sessionA.workspaceId).toBe(registeredA.workspaceId);
+    const bootstrapA = await bootstrapLocal(localBaseUrl, origin, sessionA);
+    expect(bootstrapA.response.status).toBe(200);
+    const localSessionToken = bootstrapA.body.sessionToken;
+    const localCsrfToken = bootstrapA.body.csrfToken;
+    if (typeof localSessionToken !== 'string' || typeof localCsrfToken !== 'string') {
+      throw new Error('Local bootstrap did not return its session and CSRF proof.');
+    }
+    const settingsResponse = await fetch(`${localBaseUrl}/api/settings`, {
+      method: 'PUT',
+      headers: {
+        Origin: origin,
+        Cookie: sessionA.cookie,
+        [PRODUCT_WORKSPACE_HEADER_NAME]: sessionA.workspaceId,
+        'X-Kodex-Session': localSessionToken,
+        'X-Kodex-CSRF': localCsrfToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+        network: { shell: false, webSearch: false },
+        provider: { mode: 'local', baseUrl: loopback.baseUrl, model: 'kodex-loopback-model' },
+      }),
+    });
+    expect(settingsResponse.status, 'Authenticated Local Server provider settings update').toBe(200);
+    expect(await settingsResponse.json()).toMatchObject({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      network: { shell: false, webSearch: false },
+      provider: { mode: 'local', baseUrl: loopback.baseUrl, model: 'kodex-loopback-model' },
+    });
+
+    socketA = await connectSocket(localPort, origin, sessionA, localSessionToken);
+    const threadResult = record(await socketA.rpc('thread/start', {}), 'thread/start');
+    const thread = record(threadResult.thread, 'thread/start');
+    if (typeof thread.id !== 'string') throw new Error('thread/start did not return a thread ID.');
+    const turnResult = record(await socketA.rpc('turn/start', {
+      threadId: thread.id,
+      input: [{ type: 'text', text: 'Run the provided local echo tool, then answer.', text_elements: [] }],
+    }), 'turn/start');
+    const turn = record(turnResult.turn, 'turn/start');
+    if (typeof turn.id !== 'string') throw new Error('turn/start did not return a turn ID.');
+    await waitForSocketMessage(
+      socketA.messages,
+      (message) => {
+        if (message.type !== 'notification') return false;
+        const notification = record(message.notification, 'turn completion notification');
+        if (notification.method !== 'turn/completed') return false;
+        const params = record(notification.params, 'turn completion notification');
+        const completedTurn = record(params.turn, 'turn completion notification');
+        return completedTurn.id === turn.id && completedTurn.status === 'completed';
+      },
+      'Official turn/completed notification',
+      30_000,
+    );
+    expect(loopback.requests.length).toBeGreaterThanOrEqual(2);
+    expect(loopback.requests.every((request) => request.url === '/v1/responses')).toBe(true);
+    expect(loopback.requests.every((request) => !request.headers.authorization)).toBe(true);
+    expect(loopback.sawToolOutput()).toBe(true);
+    expect(loopback.toolOutputContainsExpectedText()).toBe(true);
+    expect(loopback.toolOutputSucceeded()).toBe(true);
+
+    const listA = await historyGet(productBaseUrl, sessionA, '/api/history/threads?limit=50');
+    expect(listA.status).toBe(200);
+    const userAOutbox = path.join(
+      temporaryRoot,
+      'data',
+      'tenants',
+      'users',
+      sessionA.userId,
+      'workspaces',
+      sessionA.workspaceId,
+      'product-history-outbox',
+    );
+    await pollForHistory(productBaseUrl, sessionA, thread.id, turn.id, userAOutbox);
+
+    const sessionB = await postAuth(productBaseUrl, origin, 'register', {
+      email: `full-stack-b-${randomUUID()}@example.invalid`,
+      password,
+      displayName: 'Acceptance User B',
+    });
+    const bootstrapB = await bootstrapLocal(localBaseUrl, origin, sessionB);
+    expect(bootstrapB.response.status).toBe(200);
+    const localSessionB = bootstrapB.body.sessionToken;
+    if (typeof localSessionB !== 'string') throw new Error('User B Local bootstrap did not return a session proof.');
+    socketB = await connectSocket(localPort, origin, sessionB, localSessionB);
+
+    const tenantRoot = path.join(temporaryRoot, 'data', 'tenants', 'users');
+    const userARoot = path.join(tenantRoot, sessionA.userId, 'workspaces', sessionA.workspaceId);
+    const userBRoot = path.join(tenantRoot, sessionB.userId, 'workspaces', sessionB.workspaceId);
+    expect(path.resolve(userARoot)).not.toBe(path.resolve(userBRoot));
+    expect((await stat(userARoot)).isDirectory()).toBe(true);
+    expect((await stat(userBRoot)).isDirectory()).toBe(true);
+
+    const bList = await historyGet(productBaseUrl, sessionB, '/api/history/threads?limit=50');
+    expect(bList.status).toBe(200);
+    expect(await bList.json()).toMatchObject({ threads: [] });
+    expect((await historyGet(
+      productBaseUrl,
+      sessionB,
+      `/api/history/threads/${encodeURIComponent(thread.id)}?limit=50`,
+    )).status).toBe(404);
+    expect((await historyGet(
+      productBaseUrl,
+      sessionB,
+      '/api/history/threads?limit=50',
+      sessionA.workspaceId,
+    )).status).toBe(403);
+
+    const crossBootstrap = await bootstrapLocal(localBaseUrl, origin, sessionB, sessionA.workspaceId);
+    expect(crossBootstrap.response.status).toBe(403);
+    await expectSocketRejected(
+      localPort,
+      origin,
+      sessionB,
+      localSessionToken,
+      sessionA.workspaceId,
+      403,
+    );
+
+    const existingSocketClosed = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Existing Local WebSocket was not revoked within 10 seconds after logout.')), 10_000);
+      socketA!.socket.once('close', (code) => { clearTimeout(timer); resolve(code); });
+    });
+    expect((await logout(productBaseUrl, origin, sessionA)).status).toBe(204);
+    expect((await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: sessionA.cookie } })).status).toBe(401);
+    expect((await historyGet(productBaseUrl, sessionA, '/api/history/threads?limit=50')).status).toBe(401);
+    expect((await bootstrapLocal(localBaseUrl, origin, sessionA)).response.status).toBe(401);
+    await expectSocketRejected(
+      localPort,
+      origin,
+      sessionA,
+      localSessionToken,
+      sessionA.workspaceId,
+      401,
+    );
+    await expect(existingSocketClosed).resolves.toBe(1008);
+  } finally {
+    await closeSocket(socketA?.socket);
+    await closeSocket(socketB?.socket);
+    await loopback?.close();
+    await stopProcess(localProcess);
+    await stopProcess(productProcess);
+    await rm(temporaryRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  }
+}, 120_000);

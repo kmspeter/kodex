@@ -20,6 +20,60 @@ function approval(id: string): ServerRequest {
 }
 
 describe('runtime ownership and automation coordination', () => {
+  it('resumes only threads that are not live in the current App Server process', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-new-thread-turn-'));
+    roots.push(root);
+    const runtime = new KodexRuntime(root, undefined, { startAppServer: false });
+    await runtime.initialize();
+    const methods: string[] = [];
+    vi.spyOn(runtime.appServer, 'request').mockImplementation(async (method) => {
+      methods.push(method);
+      if (method === 'thread/start') return { thread: { id: 'thread-new' } } as never;
+      if (method === 'thread/resume') {
+        return { thread: { id: 'thread-existing' } } as never;
+      }
+      if (method === 'turn/start') return { turn: { id: 'turn-new' } } as never;
+      throw new Error(`Unexpected method ${method}`);
+    });
+    await expect(runtime.handleRpc({ method: 'thread/start', id: 1, params: {} }))
+      .resolves.toMatchObject({ thread: { id: 'thread-new' } });
+    await expect(runtime.handleRpc({
+      method: 'turn/start',
+      id: 2,
+      params: {
+        threadId: 'thread-new',
+        input: [{ type: 'text', text: 'hello', text_elements: [] }],
+      },
+    })).resolves.toMatchObject({ turn: { id: 'turn-new' } });
+    expect(methods).toEqual(['thread/start', 'turn/start']);
+
+    await runtime.handleRpc({
+      method: 'turn/start',
+      id: 3,
+      params: {
+        threadId: 'thread-existing',
+        input: [{ type: 'text', text: 'resume me', text_elements: [] }],
+      },
+    });
+    expect(methods).toEqual(['thread/start', 'turn/start', 'thread/resume', 'turn/start']);
+
+    runtime.appServer.emit('status', { ...runtime.appServer.status(), state: 'stopped' });
+    await runtime.handleRpc({
+      method: 'turn/start',
+      id: 4,
+      params: {
+        threadId: 'thread-new',
+        input: [{ type: 'text', text: 'resume after restart', text_elements: [] }],
+      },
+    });
+    expect(methods).toEqual([
+      'thread/start', 'turn/start',
+      'thread/resume', 'turn/start',
+      'thread/resume', 'turn/start',
+    ]);
+    await runtime.stop();
+  });
+
   it('assigns an approval to the most recently active UI and forwards exactly one response', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-owner-'));
     roots.push(root);

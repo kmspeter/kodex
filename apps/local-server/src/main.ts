@@ -115,6 +115,12 @@ try {
     host,
     port,
     allowedOrigins,
+    authorizationRevalidateMs: positiveInteger(
+      process.env.KODEX_AUTH_REVALIDATE_MS,
+      5 * 60_000,
+      5 * 60_000,
+      'KODEX_AUTH_REVALIDATE_MS',
+    ),
     productApiOrigins,
     uiRoot,
     securityLog: (event) => process.stderr.write(`Kodex Local Server security event: ${event.kind} status=${event.status}\n`),

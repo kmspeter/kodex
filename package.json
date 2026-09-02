@@ -25,6 +25,7 @@
     "test:tenant-auth": "npm run build && vitest run --config vitest.tenant-auth.config.ts",
     "test:history-postgres": "npm run build && vitest run --config vitest.history-postgres.config.ts",
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",
+    "test:full-stack": "node scripts/test-full-stack.mjs",
     "test:embedding-smoke": "vitest run --config vitest.embedding-live.config.ts",
     "lint": "eslint apps packages scripts test --max-warnings=0",
     "typecheck": "tsc -b --pretty && tsc -p test/tsconfig.json --noEmit --pretty",
