@@ -83,7 +83,7 @@ source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uu
 
 ## 제품 PostgreSQL, tenant runtime, 내구성 history와 private RAG (6단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0008-default-embedding-hnsw.md`까지에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0009-memory-workspace-switching.md`까지에 있습니다.
 
 `0001_initial_product_schema.sql`부터 `0004_user_scoped_rag.sql`까지는 변경하지 않습니다. `0005_default_embedding_hnsw.sql`은 기본 embedding 조합 전용 HNSW index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG의 private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
 
@@ -140,7 +140,11 @@ register/login/me 성공 JSON에는 사용자·workspace·session 만료와 `csr
 
 session token은 32 random bytes이며 브라우저의 `kodex_product_session` HttpOnly cookie에만 전달됩니다. DB에는 SHA-256 hash만 저장합니다. UI는 모든 auth fetch에 `credentials: include`와 `no-store`를 사용하고 session 원문·비밀번호·CSRF token을 Web Storage, IndexedDB, URL 또는 로그에 기록하지 않습니다. 비밀번호 input은 요청을 시작한 직후 지웁니다. cookie는 `Path=/`, `SameSite=Strict`, `Max-Age`, `Expires`를 가지며 server production profile에서는 HTTPS Origin과 `Secure`를 강제합니다. Desktop은 원격 production 배치가 아니라 exact `127.0.0.1` HTTP cookie profile이므로 `PRODUCT_API_NODE_ENV=development`를 강제하지만 Host/Origin/CSP allowlist와 renderer의 protocol/hostname 검사는 그대로 유지합니다. UI process의 공개 환경 allowlist는 개발용 `VITE_KODEX_API_URL`과 `VITE_PRODUCT_API_URL`뿐이며 그 밖의 상속된 `VITE_*`도 제거합니다. `DATABASE_URL`, `AUTH_COOKIE_SECRET`, 허용 Origin, OpenAI/provider key는 서버 환경에만 두며 `VITE_` 접두사를 붙이지 않습니다.
 
-앱 시작 상태는 `session 확인 중 → 로그인 필요 | 인증됨 | API 확인 불가/재시도`로 나뉩니다. runtime 실행 역할은 `owner`, `admin`, `member`이며 `viewer`는 읽기 전용 제품 membership이므로 Local Server HTTP/WS에서 `403 workspace_forbidden`입니다. 실행 가능한 membership이 없으면 명확한 권한 화면을 표시하고 `KodexClient`나 runtime을 만들지 않습니다. 선택은 실행 가능한 default membership 또는 첫 membership으로 고정하며 workspace 전환 API는 제공하지 않습니다. UI는 모든 Local Server HTTP 요청에 `X-Kodex-Workspace-Id`, WebSocket URL에는 비밀이 아닌 `workspace_id`를 보냅니다. session bearer는 계속 HttpOnly cookie에만 있습니다.
+앱 시작 상태는 `session 확인 중 → 로그인 필요 | 인증됨 | API 확인 불가/재시도`로 나뉩니다. runtime 실행 역할은 `owner`, `admin`, `member`이며 `viewer`는 읽기 전용 제품 membership이므로 목록에는 역할과 함께 보이지만 선택할 수 없고 Local Server HTTP/WS에서도 `403 workspace_forbidden`입니다. 실행 가능한 membership이 없으면 명확한 권한 화면을 표시하고 `KodexClient`나 runtime을 만들지 않습니다.
+
+최초 runtime workspace는 실행 가능한 default membership, 없으면 첫 `owner`/`admin`/`member` membership입니다. 로그인한 사용자는 account menu에서 실행 가능한 membership 사이를 전환할 수 있습니다. 선택은 현재 로그인 React 메모리에만 있고 localStorage, sessionStorage, IndexedDB 또는 URL에 저장하지 않습니다. `/api/auth/me` 재검증에서 같은 사용자와 실행 가능한 membership이 유지되면 선택을 보존하고, membership 제거나 `viewer` 강등이면 기존 UI client를 즉시 unmount한 뒤 안전한 default/첫 workspace로 fallback합니다. fallback이 없으면 runtime 없는 권한 화면으로 이동하며, 사용자가 바뀌면 이전 사용자의 workspace ID를 폐기합니다.
+
+workspace 전환은 `AuthenticatedApp`와 `KodexClient`를 `(user ID, workspace ID)` key로 완전히 다시 만들므로 이전 WebSocket, pending RPC, event reducer, active thread/project/dialog와 RAG/history 화면 상태가 새 tenant에 섞이지 않습니다. 이전 client의 UI 연결과 pending RPC는 닫히지만 서버에서 이미 실행 중인 turn을 취소했다는 뜻은 아니며 해당 작업은 서버 정책에 따라 계속될 수 있습니다. Product knowledge/history 요청과 모든 Local Server HTTP 요청은 active workspace의 `X-Kodex-Workspace-Id`/`workspace_id`를 사용하고 WebSocket URL도 같은 비밀 아닌 `workspace_id`를 사용합니다. session bearer는 계속 HttpOnly cookie에만 있습니다. 이 UI 선택에 필요한 별도 workspace-switch API는 없으며 서버측 workspace 생성·초대·membership 관리 API도 아직 제공하지 않습니다.
 
 로그인 후 사이드바의 **저장된 DB 히스토리**는 Product API의 사용자별 PostgreSQL projection만 조회하는 별도 다이얼로그입니다. 공식 Codex sidebar/thread 목록을 병합하거나 대체하지 않으며, 목록과 상세을 각각 cursor로 더 불러옵니다. projection은 비동기이므로 방금 끝난 대화가 잠시 늦게 보일 수 있습니다. 내보내기는 이 화면이 검증한 bounded DTO만 JSON Blob으로 만들고 임시 URL을 즉시 해제합니다. 세부 경계는 `docs/adr/0007-saved-db-history-ui.md`에 있습니다.
 
@@ -229,6 +233,7 @@ $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:emb
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
+- account menu는 기존 membership 사이의 메모리 전용 runtime 전환만 제공합니다. 서버측 workspace 생성, 초대, membership/role 관리는 아직 제공하지 않습니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.

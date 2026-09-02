@@ -20,6 +20,11 @@ export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
 export type ProductAuthContext = ProductAuthContextDto;
 
+export interface ProductRuntimeWorkspaceSelection {
+  userId: string;
+  workspaceId: string;
+}
+
 export function selectProductRuntimeWorkspace(context: ProductAuthContext): ProductWorkspace | undefined {
   const runnable = context.workspaces.filter((workspace) => canUseWorkspaceRuntime(workspace.role));
   if (
@@ -30,6 +35,20 @@ export function selectProductRuntimeWorkspace(context: ProductAuthContext): Prod
     return context.defaultWorkspace;
   }
   return runnable[0];
+}
+
+export function reconcileProductRuntimeWorkspace(
+  context: ProductAuthContext,
+  selection: ProductRuntimeWorkspaceSelection | null,
+): ProductRuntimeWorkspaceSelection | null {
+  if (selection?.userId === context.user.id) {
+    const selectedMembership = context.workspaces.find((workspace) => (
+      workspace.id === selection.workspaceId && canUseWorkspaceRuntime(workspace.role)
+    ));
+    if (selectedMembership) return selection;
+  }
+  const fallback = selectProductRuntimeWorkspace(context);
+  return fallback ? { userId: context.user.id, workspaceId: fallback.id } : null;
 }
 
 export type ProductAuthErrorKind =

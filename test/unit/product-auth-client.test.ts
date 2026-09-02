@@ -4,6 +4,7 @@ import {
   ProductAuthConfigurationError,
   ProductAuthError,
   parseProductAuthResponse,
+  reconcileProductRuntimeWorkspace,
   resolveProductApiBase,
   selectProductRuntimeWorkspace,
 } from '../../apps/ui/src/auth/product-auth';
@@ -152,6 +153,49 @@ describe('product auth browser contract', () => {
       .toEqual(member);
     expect(selectProductRuntimeWorkspace({ ...base, defaultWorkspace: viewer, workspaces: [viewer] }))
       .toBeUndefined();
+  });
+
+  it('reconciles an in-memory runtime workspace across defaults, revalidation, users, and role changes', () => {
+    const owner = { id: 'workspace-owner', name: 'Owner', slug: 'owner', role: 'owner' as const };
+    const admin = { id: 'workspace-admin', name: 'Admin', slug: 'admin', role: 'admin' as const };
+    const member = { id: 'workspace-member', name: 'Member', slug: 'member', role: 'member' as const };
+    const viewer = { id: 'workspace-viewer', name: 'Viewer', slug: 'viewer', role: 'viewer' as const };
+    const base = parseProductAuthResponse(authBody(), false).context;
+    const multiple = { ...base, defaultWorkspace: admin, workspaces: [owner, admin, member, viewer] };
+
+    expect(reconcileProductRuntimeWorkspace(multiple, null)).toEqual({
+      userId: base.user.id,
+      workspaceId: admin.id,
+    });
+    const selectedMember = { userId: base.user.id, workspaceId: member.id };
+    expect(reconcileProductRuntimeWorkspace({ ...multiple, session: { ...multiple.session } }, selectedMember))
+      .toBe(selectedMember);
+
+    const memberRemoved = { ...multiple, workspaces: [owner, admin, viewer] };
+    expect(reconcileProductRuntimeWorkspace(memberRemoved, selectedMember)).toEqual({
+      userId: base.user.id,
+      workspaceId: admin.id,
+    });
+    const memberDowngraded = {
+      ...multiple,
+      defaultWorkspace: owner,
+      workspaces: [owner, { ...member, role: 'viewer' as const }, viewer],
+    };
+    expect(reconcileProductRuntimeWorkspace(memberDowngraded, selectedMember)).toEqual({
+      userId: base.user.id,
+      workspaceId: owner.id,
+    });
+    expect(reconcileProductRuntimeWorkspace({
+      ...multiple,
+      defaultWorkspace: viewer,
+      workspaces: [viewer],
+    }, selectedMember)).toBeNull();
+
+    const otherUser = { ...multiple, user: { ...base.user, id: 'user-2' }, defaultWorkspace: owner };
+    expect(reconcileProductRuntimeWorkspace(otherUser, selectedMember)).toEqual({
+      userId: 'user-2',
+      workspaceId: owner.id,
+    });
   });
 
   it('uses credentialed no-store requests and returns CSRF proof on logout', async () => {
