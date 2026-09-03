@@ -6,6 +6,7 @@ import type {
 import { ArchiveRestore, BookOpenText, Box, Clock3, LoaderCircle, Network, Play, Plus, Search, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ProductAuthClient } from '../auth/product-auth';
+import type { KodexDesktopBridge } from '../desktop';
 import { KodexMark } from './Brand';
 import { SavedHistoryDialog } from './SavedHistoryDialog';
 
@@ -383,12 +384,26 @@ function SettingsDialog(props: Parameters<typeof Dialogs>[0] & AsyncActionProps)
   const [mcpUrl, setMcpUrl] = useState('');
   const [projectPath, setProjectPath] = useState('');
   const [projectName, setProjectName] = useState('');
+  const [selectingProject, setSelectingProject] = useState(false);
+  const desktopBridge: Readonly<KodexDesktopBridge> | undefined = window.kodexDesktop;
   const settings = props.bootstrap.settings;
   const [providerMode, setProviderMode] = useState(settings.provider.mode);
   const [providerBaseUrl, setProviderBaseUrl] = useState(settings.provider.baseUrl);
   const [providerModel, setProviderModel] = useState(settings.provider.model);
   const tabs = ['General', 'Agent', 'Network & MCP', 'About Kodex'];
   const toggle = (patch: Partial<KodexSettings>) => props.runAction('update-settings', () => props.onSettings(patch));
+  async function selectProjectDirectory(): Promise<void> {
+    if (!desktopBridge || selectingProject) return;
+    setSelectingProject(true);
+    try {
+      const selected = await desktopBridge.selectDirectory();
+      if (selected) setProjectPath(selected);
+    } catch (error) {
+      props.onError(error);
+    } finally {
+      setSelectingProject(false);
+    }
+  }
   return <div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabs.map((name) => <button className={tab === name ? 'is-selected' : ''} aria-current={tab === name ? 'page' : undefined} disabled={props.pendingAction !== null} key={name} onClick={() => setTab(name)}>{name}</button>)}</nav><div className="settings-content"><div className="settings-page-title"><h3>{tab}</h3><p>Kodex local host settings</p></div>
     {tab === 'General' && <>
       <div className="setting-row"><div><strong>Workspace</strong><span>{props.bootstrap.activeProject.path}</span></div><span className="status-pill">Local</span></div>
@@ -396,7 +411,7 @@ function SettingsDialog(props: Parameters<typeof Dialogs>[0] & AsyncActionProps)
       <div className="setting-row"><div><strong>Sidebar</strong><span>Persisted by Local Server, not browser storage.</span></div><button className={`toggle-control ${settings.sidebarOpen ? 'is-on' : ''}`} role="switch" aria-label="Show sidebar" aria-checked={settings.sidebarOpen} disabled={props.pendingAction !== null} onClick={() => toggle({ sidebarOpen: !settings.sidebarOpen })}><span /></button></div>
       <h4 className="dialog-section-title">Local projects</h4>
       <div className="integration-list">{props.bootstrap.projects.map((project) => <div className="integration-row" key={project.id}><Box size={15} /><div><strong>{project.name}</strong><span>{project.path}</span></div>{props.bootstrap.projects.length > 1 && <button className="icon-button" aria-label={`Remove ${project.name}`} disabled={props.pendingAction !== null} onClick={() => props.runAction(`remove-project-${project.id}`, () => props.onRemoveProject(project))}><Trash2 size={13} /></button>}</div>)}</div>
-      <div className="mcp-form"><input aria-label="Absolute project path" disabled={props.pendingAction !== null} placeholder="D:\\absolute\\project\\path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} /><input aria-label="Optional project display name" disabled={props.pendingAction !== null} placeholder="Optional display name" value={projectName} onChange={(event) => setProjectName(event.target.value)} /><button className="primary-action" disabled={!projectPath.trim() || props.pendingAction !== null} onClick={() => props.runAction('add-project', () => props.onAddProject(projectPath, projectName || undefined), () => { setProjectPath(''); setProjectName(''); })}><Plus size={13} /> {props.pendingAction === 'add-project' ? 'Adding…' : 'Add project'}</button></div>
+      <div className="mcp-form"><input aria-label="Absolute project path" disabled={props.pendingAction !== null || selectingProject} placeholder="D:\\absolute\\project\\path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} />{desktopBridge && <button className="secondary-action" aria-label="Browse for project directory" disabled={props.pendingAction !== null || selectingProject} onClick={() => void selectProjectDirectory()}>{selectingProject ? 'Selecting…' : 'Browse'}</button>}<input aria-label="Optional project display name" disabled={props.pendingAction !== null} placeholder="Optional display name" value={projectName} onChange={(event) => setProjectName(event.target.value)} /><button className="primary-action" disabled={!projectPath.trim() || props.pendingAction !== null || selectingProject} onClick={() => props.runAction('add-project', () => props.onAddProject(projectPath, projectName || undefined), () => { setProjectPath(''); setProjectName(''); })}><Plus size={13} /> {props.pendingAction === 'add-project' ? 'Adding…' : 'Add project'}</button></div>
     </>}
     {tab === 'Agent' && <>
       <div className="setting-row"><div><strong>Codex source build</strong><span>{props.bootstrap.engine.version ?? props.bootstrap.engine.binary ?? 'Run npm run codex:build'}</span></div><span className="status-pill">{props.bootstrap.engine.binarySource ?? 'missing'}</span></div>

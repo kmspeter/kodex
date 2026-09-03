@@ -26,7 +26,9 @@ const bundledRuntime = existsSync(path.join(bundledCandidate, 'server', 'main.js
 const sourceRoot = bundledRuntime ? bundledCandidate : path.resolve(desktopRoot, '..', '..');
 const fakeSmoke = process.argv.includes('--smoke');
 const fullStackAcceptance = process.argv.includes('--full-stack-acceptance');
-const smoke = fakeSmoke || process.argv.includes('--smoke-real') || fullStackAcceptance;
+const repositoryRagAcceptance = process.argv.includes('--repository-rag-acceptance');
+const desktopAcceptance = fullStackAcceptance || repositoryRagAcceptance;
+const smoke = fakeSmoke || process.argv.includes('--smoke-real') || desktopAcceptance;
 const children = [];
 let mainWindow = null;
 let quitting = false;
@@ -37,9 +39,9 @@ let acceptanceArtifactDirectory = null;
 
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
   void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
-}, fullStackAcceptance ? 180_000 : 30_000) : null;
+}, repositoryRagAcceptance ? 270_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
 
-if (fullStackAcceptance) {
+if (desktopAcceptance) {
   const isolatedUserData = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_USER_DATA?.trim() ?? '');
   const artifactDirectory = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_ARTIFACT_DIR?.trim() ?? '');
   const acceptanceRoot = path.dirname(isolatedUserData);
@@ -129,6 +131,9 @@ function childEnvironment(overrides) {
       'PRODUCT_DB_PASSWORD',
     ]) delete environment[key];
   }
+  if (desktopAcceptance && process.env.KODEX_DESKTOP_ACCEPTANCE_NODE_OPTIONS?.trim()) {
+    environment.NODE_OPTIONS = process.env.KODEX_DESKTOP_ACCEPTANCE_NODE_OPTIONS.trim();
+  }
   return environment;
 }
 
@@ -211,6 +216,19 @@ function safeExternalUrl(value) {
 
 function registerDesktopIpc() {
   ipcMain.handle('kodex:select-directory', async () => {
+    if (repositoryRagAcceptance) {
+      const configured = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_REPOSITORY_ROOT?.trim() ?? '');
+      const acceptanceRoot = path.dirname(configured);
+      const relativeRoot = path.relative(app.getPath('temp'), acceptanceRoot);
+      if (
+        !path.isAbsolute(process.env.KODEX_DESKTOP_ACCEPTANCE_REPOSITORY_ROOT?.trim() ?? '')
+        || path.basename(configured) !== 'repository-fixture'
+        || !path.basename(acceptanceRoot).startsWith('kodex-desktop-ui-')
+        || relativeRoot.startsWith('..')
+        || path.isAbsolute(relativeRoot)
+      ) throw new Error('Repository RAG acceptance directory is outside its owned temporary root.');
+      return configured;
+    }
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
@@ -265,7 +283,7 @@ async function launch() {
     minHeight: 680,
     show: !smoke,
     webPreferences: {
-      preload: path.join(runtimeRoot(), bundledRuntime || app.isPackaged ? 'desktop/preload.mjs' : 'apps/desktop/preload.mjs'),
+      preload: path.join(runtimeRoot(), bundledRuntime || app.isPackaged ? 'desktop/preload.cjs' : 'apps/desktop/preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -299,6 +317,35 @@ async function launch() {
       password: process.env.KODEX_DESKTOP_ACCEPTANCE_PASSWORD,
     });
     process.stdout.write('Kodex desktop full-stack acceptance passed through renderer DOM interactions.\n');
+    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+    quitting = true;
+    launchComplete = false;
+    mainWindow.destroy();
+    mainWindow = null;
+    await stopServices();
+    app.quit();
+    return;
+  }
+
+  if (repositoryRagAcceptance) {
+    smokeStage = 'running the repository RAG renderer DOM acceptance scenario';
+    const { runDesktopRepositoryRagAcceptance } = await import('./repository-rag-acceptance-driver.mjs');
+    await runDesktopRepositoryRagAcceptance(mainWindow, {
+      artifactDirectory: acceptanceArtifactDirectory,
+      databaseUrl: process.env.DATABASE_URL,
+      displayName: process.env.KODEX_DESKTOP_ACCEPTANCE_DISPLAY_NAME,
+      email: process.env.KODEX_DESKTOP_ACCEPTANCE_EMAIL,
+      fixtureBaseUrl: process.env.KODEX_DESKTOP_ACCEPTANCE_BASE_URL,
+      foreignEmail: process.env.KODEX_DESKTOP_ACCEPTANCE_FOREIGN_EMAIL,
+      foreignPassword: process.env.KODEX_DESKTOP_ACCEPTANCE_FOREIGN_PASSWORD,
+      localOrigin,
+      password: process.env.KODEX_DESKTOP_ACCEPTANCE_PASSWORD,
+      productOrigin,
+      repositoryRoot: process.env.KODEX_DESKTOP_ACCEPTANCE_REPOSITORY_ROOT,
+      sourceFile: process.env.KODEX_DESKTOP_ACCEPTANCE_SOURCE_FILE,
+      updatedContent: process.env.KODEX_DESKTOP_ACCEPTANCE_UPDATED_CONTENT,
+    });
+    process.stdout.write('Kodex desktop repository RAG acceptance passed through renderer DOM interactions.\n');
     if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
     quitting = true;
     launchComplete = false;

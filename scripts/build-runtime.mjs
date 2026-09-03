@@ -68,7 +68,7 @@ await mkdir(appRoot, { recursive: true });
 
 await Promise.all([
   copy('apps/desktop/main.mjs', 'desktop/main.mjs'),
-  copy('apps/desktop/preload.mjs', 'desktop/preload.mjs'),
+  copy('apps/desktop/preload.cjs', 'desktop/preload.cjs'),
   copy('apps/desktop/runtime-processes.mjs', 'desktop/runtime-processes.mjs'),
   copy('apps/desktop/smoke-service.mjs', 'desktop/smoke-service.mjs'),
   copy('apps/desktop/verify-runtime.mjs', 'desktop/verify-runtime.mjs'),

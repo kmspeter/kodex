@@ -264,7 +264,15 @@ npm run test:desktop-full-stack
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:workspace-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:workspace-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+
+Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
+
+```powershell
+npm run test:desktop-repository-rag
+```
+
+이 명령은 임시 Git 저장소에 일반 UTF-8 문서, `.gitignore` 제외 파일, `.env`와 `.ssh` 비밀 fixture를 만들고 실제 renderer DOM에서 Settings의 project 추가와 Knowledge/RAG의 preview → 파일 선택 → consent → confirm을 수행합니다. 동일 파일 재인덱싱 skip, 내용 변경 후 동일 document identity 갱신, 검색과 agent의 안전한 상대 경로 citation, 명시적 삭제와 manual text 보존을 PostgreSQL/pgvector row와 교차 검증합니다. 별도 tenant 문서를 Product API로 만든 뒤 foreign workspace `403`, foreign document `404`, tampered active-project confirm `409`도 확인합니다. Responses 모델은 loopback이고 embedding은 acceptance 자식 프로세스에만 사전 로드한 결정적 fixture이므로 외부 모델 network나 실제 OpenAI key를 사용하지 않습니다. 성공·실패·중단 모두 Electron process tree, 임시 DB container와 파일을 정리하며, Docker daemon이 꺼져 있으면 시작 방법을 포함한 명확한 오류로 종료합니다. 자세한 경계와 비검증 범위는 [ADR 0014](docs/adr/0014-desktop-repository-rag-acceptance.md)에 기록했습니다.
 
 ### Full-stack acceptance 경계
 

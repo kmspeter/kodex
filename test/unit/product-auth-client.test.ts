@@ -226,6 +226,31 @@ describe('product auth browser contract', () => {
     await expect(client.logout()).rejects.toMatchObject({ kind: 'invalid-response' });
   });
 
+  it('preserves workspace and CSRF headers when Knowledge supplies a Headers instance', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse({ citations: [] }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await client.me();
+    await client.knowledge('/api/knowledge/query', workspaceId, {
+      method: 'POST',
+      headers: new Headers({ 'X-Acceptance-Probe': 'preserved' }),
+      body: JSON.stringify({ query: 'safe query' }),
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(new URL(rawUrl).searchParams.getAll('workspace_id')).toEqual([workspaceId]);
+    expect(headers.get('X-Kodex-Workspace-Id')).toBe(workspaceId);
+    expect(headers.get('X-CSRF-Token')).toBe(csrfToken);
+    expect(headers.get('Content-Type')).toBe('application/json');
+    expect(headers.get('X-Acceptance-Probe')).toBe('preserved');
+  });
+
   it('posts login and registration only to the product auth boundary', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(authBody()))

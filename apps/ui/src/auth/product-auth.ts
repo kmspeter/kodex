@@ -540,11 +540,15 @@ export class ProductAuthClient {
   async #request(pathname: string, init: RequestInit): Promise<Response> {
     let response: Response;
     try {
+      const headers = init.headers instanceof Headers || Array.isArray(init.headers)
+        ? new Headers(init.headers)
+        : { Accept: 'application/json', ...init.headers };
+      if (headers instanceof Headers && !headers.has('Accept')) headers.set('Accept', 'application/json');
       response = await this.#fetch(`${this.apiBase}${pathname}`, {
         ...init,
         credentials: 'include',
         cache: 'no-store',
-        headers: { Accept: 'application/json', ...init.headers },
+        headers,
       });
     } catch {
       throw new ProductAuthError('unavailable', 'The authentication API is unavailable.');

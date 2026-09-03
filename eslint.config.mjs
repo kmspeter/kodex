@@ -16,6 +16,17 @@ export default tseslint.config(
     },
   },
   {
+    files: ['apps/desktop/preload.cjs'],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'commonjs',
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
     files: ['**/*.{ts,tsx,mts}'],
     languageOptions: {
       ecmaVersion: 2024,
