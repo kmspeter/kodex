@@ -224,6 +224,8 @@ describe('product API configuration and cookies', () => {
       loginRateLimitMaxAttempts: 5,
       loginRateLimitWindowMs: 900_000,
       loginRateLimitBlockMs: 900_000,
+      workspaceInvitationPendingLimit: 100,
+      workspaceInvitationTtlMs: 604_800_000,
     });
     expect(config.allowedOrigins).toEqual(new Set([
       'http://127.0.0.1:5173',
@@ -245,6 +247,14 @@ describe('product API configuration and cookies', () => {
       AUTH_COOKIE_SECRET: 'A'.repeat(43),
       AUTH_LOGIN_RATE_LIMIT_BLOCK_SECONDS: '29',
     })).toThrow('between 30 and 86400');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      WORKSPACE_INVITATION_TTL_HOURS: '721',
+    })).toThrow('no greater than 720');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      WORKSPACE_INVITATION_PENDING_LIMIT: '501',
+    })).toThrow('no greater than 500');
     expect(() => productApiConfigFromEnv({
       NODE_ENV: 'production',
       AUTH_COOKIE_SECRET: 'A'.repeat(43),

@@ -33,6 +33,11 @@ function application(): WorkspaceApplication {
     joinedAt,
   };
   return {
+    acceptInvitation: vi.fn(async () => ({ id: workspaceId, name: 'Platform', role: 'member' as const, slug: 'workspace-platform' })),
+    createInvitation: vi.fn(),
+    listInvitations: vi.fn(async () => []),
+    previewInvitation: vi.fn(),
+    revokeInvitation: vi.fn(),
     createWorkspace: vi.fn(async () => ({
       id: workspaceId, name: 'Platform', role: 'owner' as const, slug: 'workspace-platform',
     })),
@@ -134,6 +139,84 @@ describe('workspace Product API boundary', () => {
         ok: false,
         error: { code: 'workspace_forbidden', message: 'Workspace access is not permitted.' },
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps invitation tokens in strict JSON bodies and applies auth, Origin, and CSRF boundaries', async () => {
+    const workspaces = application();
+    const inviteToken = 'C'.repeat(43);
+    const invitation = {
+      id: memberId,
+      workspaceId,
+      targetEmail: 'invitee@example.invalid',
+      role: 'member' as const,
+      createdByUserId: userId,
+      createdAt: new Date('2026-09-03T00:00:00.000Z'),
+      expiresAt: new Date('2026-09-10T00:00:00.000Z'),
+    };
+    vi.mocked(workspaces.createInvitation).mockResolvedValue({ invitation, token: inviteToken });
+    vi.mocked(workspaces.listInvitations).mockResolvedValue([invitation]);
+    vi.mocked(workspaces.previewInvitation).mockResolvedValue({
+      workspaceName: 'Platform', targetEmailHint: 'i***@example.invalid', role: 'member', expiresAt: invitation.expiresAt,
+    });
+    const config: ProductApiConfig = {
+      host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
+      cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 4_096,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(async () => context()), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
+    }, config, undefined, undefined, undefined, workspaces);
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const previewWithoutOrigin = await fetch(`${base}/api/invitations/preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: inviteToken }),
+      });
+      expect(previewWithoutOrigin.status).toBe(403);
+      expect(workspaces.previewInvitation).not.toHaveBeenCalled();
+
+      const preview = await fetch(`${base}/api/invitations/preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: JSON.stringify({ token: inviteToken }),
+      });
+      expect(preview.status).toBe(200);
+      expect(await preview.json()).toEqual({
+        workspaceName: 'Platform', targetEmailHint: 'i***@example.invalid', role: 'member', expiresAt: '2026-09-10T00:00:00.000Z',
+      });
+
+      const ownerRole = await fetch(`${base}/api/workspaces/${workspaceId}/invitations`, {
+        method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ email: 'invitee@example.invalid', role: 'owner' }),
+      });
+      expect(ownerRole.status).toBe(422);
+      expect(workspaces.createInvitation).not.toHaveBeenCalled();
+
+      const created = await fetch(`${base}/api/workspaces/${workspaceId}/invitations`, {
+        method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ email: 'invitee@example.invalid', role: 'member' }),
+      });
+      expect(created.status).toBe(201);
+      expect(await created.json()).toEqual({
+        invitation: {
+          createdAt: '2026-09-03T00:00:00.000Z', createdByUserId: userId, expiresAt: '2026-09-10T00:00:00.000Z',
+          id: memberId, role: 'member', targetEmail: 'invitee@example.invalid', workspaceId,
+        },
+        token: inviteToken,
+      });
+
+      const listed = await fetch(`${base}/api/workspaces/${workspaceId}/invitations`, { headers: { Cookie: cookie } });
+      expect(listed.status).toBe(200);
+      expect((await listed.json() as { invitations: unknown[] }).invitations).toHaveLength(1);
+
+      const acceptWithoutCsrf = await fetch(`${base}/api/invitations/accept`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: origin }, body: JSON.stringify({ token: inviteToken }),
+      });
+      expect(acceptWithoutCsrf.status).toBe(403);
+      const accepted = await fetch(`${base}/api/invitations/accept`, {
+        method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ token: inviteToken }),
+      });
+      expect(accepted.status).toBe(200);
+      expect(workspaces.acceptInvitation).toHaveBeenCalledWith(userId, inviteToken);
     } finally {
       await server.close();
     }

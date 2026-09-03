@@ -3,6 +3,9 @@
 - 상태: 승인
 - 날짜: 2026-09-03
 
+> 후속 결정: pending copy-link invitation은 ADR 0016에서 추가되었다. 이 문서의 existing-account 직접 추가
+> 계약과 last-owner 정책은 그대로 유지된다.
+
 ## 배경과 결정
 
 메모리 전용 workspace 전환은 이미 여러 membership을 안전하게 reconcile하지만 membership을 만드는 제품

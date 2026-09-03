@@ -85,7 +85,7 @@ source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uu
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
-`0001_initial_product_schema.sql`부터 `0005_default_embedding_hnsw.sql`까지는 변경하지 않습니다. 새 `0006_auth_lifecycle.sql`은 raw 식별자를 갖지 않는 HMAC-only 로그인 제한 table만 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`, RAG private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
+`0001_initial_product_schema.sql`부터 `0006_auth_lifecycle.sql`까지는 변경하지 않습니다. 새 `0007_workspace_invitations.sql`은 canonical 초대 대상 email과 hash-only invitation token 수명주기를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. 초대 계약은 `docs/adr/0016-hash-only-workspace-invitations.md`, 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`, RAG private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -121,6 +121,10 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `GET /api/workspaces/<uuid>/members`: 현재 member에게 canonical email, display name, role, joined time만 반환합니다.
 - `POST /api/workspaces/<uuid>/members`: owner/admin이 이미 가입한 정확한 email의 계정을 추가합니다. 초대 메일이나 token을 만드는 API가 아닙니다.
 - `PATCH|DELETE /api/workspaces/<uuid>/members/<user-uuid>`: 역할 변경/제거를 수행하며 보수적 admin 제한과 last-owner 불변식을 transaction row lock으로 강제합니다.
+- `POST|GET /api/workspaces/<uuid>/invitations`: owner는 admin/member/viewer, admin은 member/viewer copy-link 초대를 만들고 active pending 목록을 조회합니다. 생성 `201`만 raw token을 한 번 반환합니다.
+- `DELETE /api/workspaces/<uuid>/invitations/<invitation-uuid>`: 현재 manager membership을 다시 확인하고 pending 초대를 원자 취소합니다.
+- `POST /api/invitations/preview`: URL이 아닌 strict JSON `{ "token": "..." }` body로 unauthenticated masked workspace/email/role/expiry preview를 반환합니다.
+- `POST /api/invitations/accept`: authenticated session, Origin, CSRF와 canonical login email 일치를 확인해 membership 생성과 invitation 사용 처리를 원자 commit합니다.
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
 - `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다. `limit`은 최대 50이고 cursor는 브라우저가 해석하지 않는 불투명 토큰입니다.
 - `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다. 브라우저 DTO는 DB 내부 ID, source event 식별자, checksum/vector와 session/secret을 제외하고 payload를 서버에서 재필터링한 최대 4,000자 preview로 제한합니다.
@@ -181,7 +185,7 @@ session token은 32 random bytes이며 브라우저의 `kodex_product_session` H
 
 workspace 전환은 `AuthenticatedApp`와 `KodexClient`를 `(user ID, workspace ID)` key로 완전히 다시 만들므로 이전 WebSocket, pending RPC, event reducer, active thread/project/dialog와 RAG/history 화면 상태가 새 tenant에 섞이지 않습니다. 이전 client의 UI 연결과 pending RPC는 닫히지만 서버에서 이미 실행 중인 turn을 취소했다는 뜻은 아니며 해당 작업은 서버 정책에 따라 계속될 수 있습니다. Product knowledge/history 요청과 모든 Local Server HTTP 요청은 active workspace의 `X-Kodex-Workspace-Id`/`workspace_id`를 사용하고 WebSocket URL도 같은 비밀 아닌 `workspace_id`를 사용합니다. session bearer는 계속 HttpOnly cookie에만 있습니다. 이 UI 선택에 필요한 별도 workspace-switch API는 없습니다.
 
-Account menu의 **Workspace 관리**에서는 새 workspace 생성, 현재 member 목록, 기존 가입 계정 email 추가, 역할 변경과 제거를 Product API로 수행합니다. 새 workspace는 생성 직후 선택하며 모든 mutation 뒤 `/me`를 재검증합니다. owner는 전체 관리, admin은 member/viewer만 추가·변경·제거할 수 있고 owner/admin 권한에는 손댈 수 없습니다. 마지막 owner는 동시 요청에서도 강등/제거할 수 없으며 owner 이전은 다른 멤버를 먼저 owner로 승격한 뒤 기존 owner를 변경하는 두 단계입니다. Membership은 Saved DB History나 RAG 문서 공유를 의미하지 않으며 두 기능은 같은 workspace에서도 계속 사용자별 private scope입니다. 자세한 계약은 `docs/adr/0012-workspace-membership-management.md`에 있습니다.
+Account menu의 **Workspace 관리**에서는 새 workspace 생성, 현재 member 목록, copy-link 초대 생성/한 번 복사, pending 조회/취소, 역할 변경과 제거를 Product API로 수행합니다. raw invitation token은 32 random bytes이고 생성 응답과 fragment 메모리에만 존재하며 DB에는 domain-separated SHA-256만 저장됩니다. 앱 entrypoint는 `#invite=` fragment를 React 시작 전에 회수하고 URL에서 즉시 제거하며 로그인/가입 뒤 email 일치 수락과 `/me` 재검증을 수행합니다. owner는 admin/member/viewer를, admin은 member/viewer만 초대할 수 있고 owner 초대는 금지됩니다. 마지막 owner 불변식과 사용자별 private History/RAG scope는 그대로입니다. 자세한 계약은 `docs/adr/0012-workspace-membership-management.md`와 `docs/adr/0016-hash-only-workspace-invitations.md`에 있습니다.
 
 Account menu의 **Security**에서는 session 목록/개별 종료/다른 session 모두 종료, 현재 비밀번호 확인을 포함한 변경, 모든 기기 로그아웃을 수행합니다. 비밀번호 변경은 현재 session을 유지하고 다른 활성 session만 원자 폐기하며, 현재 session 개별 폐기와 모든 기기 로그아웃은 성공 즉시 UI를 unauthenticated 상태로 바꾸고 runtime/WebSocket을 unmount합니다. Local Server HTTP와 이미 열린 WebSocket은 같은 DB session을 기존 최대 5분/만료 중 빠른 재검증에서 각각 `401`/`1008`로 거부합니다.
 
@@ -234,7 +238,7 @@ npm run runtime:bundle
 # runtime\Kodex-win32-x64\Kodex.exe 실행
 ```
 
-bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0006, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
+bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0007, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
 
 ## 검증
 
@@ -263,6 +267,8 @@ npm run test:product-auth
 npm run test:tenant-auth
 # 독립 --rm pgvector에서 workspace 생성/역할/owner lock/audit와 Local Server 권한 폐기 검증
 npm run test:workspace-postgres
+# 독립 fresh DB와 0001~0006 upgrade DB에서 초대 token/권한/동시 수락/audit 검증
+npm run test:workspace-invitations-postgres
 # DATABASE_URL을 명시한 실제 history projection/outbox/API 검증
 npm run test:history-postgres
 # 독립 --rm pgvector 컨테이너를 만들고 항상 정리하는 실제 RAG 검증
@@ -275,7 +281,7 @@ npm run test:desktop-full-stack
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:workspace-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`만 upgrade한 뒤 Product API와 Local Server/WS 시나리오를 실행합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`만 upgrade하고, invitation harness는 fresh 0001~0007과 실제 0001~0006 ledger에서 0007 upgrade를 각각 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
 
@@ -294,15 +300,16 @@ npm run test:desktop-repository-rag
 | 경계 | 실제 실행 | acceptance 증거 |
 | --- | --- | --- |
 | 프론트 계약 | Product `register/logout/login/me`, Local `bootstrap/settings` HTTP | HttpOnly product cookie, CSRF, runnable workspace와 tenant provider 설정 |
-| Product API | build된 별도 server process | auth status, user/workspace-scoped Saved DB History list/detail |
-| Local Server | build된 별도 HTTP/WS server process | product session 재검증, replay, `thread/start`/`turn/start`, cross-tenant 거부 |
+| Product API | build된 별도 server process | auth, owner→B invitation/accept/`me`, user/workspace-scoped Saved DB History list/detail |
+| Local Server | build된 별도 HTTP/WS server process | invitation 전 shared workspace 거부, 수락 후 bootstrap/WS 허용, replay와 `thread/start`/`turn/start` |
 | agent | 저장소의 실제 `bin/codex.exe app-server` | keyless loopback Responses, 실제 shell tool call/output, 최종 assistant/`turn/completed` |
 | persistence | 임시 실제 PostgreSQL 17 + pgvector image | thread/turn/assistant/tool projection을 Product API에서 bounded polling |
 | 폐기 | 실제 Product logout | Product API `401`, 새 Local 연결 거부, 기존 WS code `1008` 종료 |
 
 ```text
 auth HTTP -> tenant Local HTTP -> Local WS -> real codex.exe -> loopback model/tool round trip
-          -> history outbox -> PostgreSQL -> Product history API -> B isolation -> A logout/revocation
+          -> history outbox -> PostgreSQL -> Product history API -> B invite/accept -> shared Local WS
+          -> same-workspace user-private history isolation -> A logout/revocation
 ```
 
 이 테스트는 실제 브라우저나 Electron renderer를 실행하지 않으므로 UI E2E가 아니라 프론트가 의존하는
@@ -340,7 +347,7 @@ Web Search, remote MCP, installer/package 결과는 검증하지 않습니다. �
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
-- Workspace 관리는 기존 가입 계정의 정확한 email 추가만 제공합니다. 이메일 초대/token, 가입 전 pending member, workspace rename/delete, member pagination과 분산 rate limit은 아직 제공하지 않습니다.
+- Workspace 초대 delivery는 명시적인 one-time copy-link만 제공합니다. 외부 SMTP/email delivery, reminder/resend, workspace rename/delete, member/invitation pagination, expired invitation retention job과 분산 preview/accept rate limit은 아직 제공하지 않습니다.
 - Password reset과 email verification은 외부 메일 전달/token 전달 인프라가 없어 제공하지 않습니다. register limit, distributed edge/WAF rate limit, trusted reverse proxy와 forwarded client IP 처리, 오래된 session row retention과 대규모 운영 cleanup job도 후속 범위입니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.

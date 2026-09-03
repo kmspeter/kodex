@@ -447,6 +447,25 @@ button { -webkit-tap-highlight-color: transparent; }
 .workspace-member-row span { color: var(--muted); font-size: 8.5px; }
 .workspace-permission-note, .workspace-management-error { border-radius: 7px; background: var(--panel-soft); padding: 9px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .workspace-management-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #9b3e38; }
+.workspace-subheading { margin: 14px 0 7px; color: var(--muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.workspace-invitation-list { display: grid; gap: 5px; }
+.workspace-invitation-row { display: grid; grid-template-columns: minmax(0,1fr) 30px; align-items: center; gap: 8px; border: 1px dashed var(--line-strong); border-radius: 8px; padding: 8px; }
+.workspace-invitation-row > div { display: grid; min-width: 0; gap: 2px; }
+.workspace-invitation-row strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-invitation-row span { color: var(--muted); font-size: 8.5px; }
+.invitation-created { display: grid; gap: 8px; margin-top: 9px; border: 1px solid #b8dac4; border-radius: 8px; background: #f1faf4; padding: 9px; }
+.invitation-created > div:first-child { display: grid; gap: 2px; }
+.invitation-created strong { font-size: 10px; }
+.invitation-created span { color: var(--muted); font-size: 8.5px; line-height: 1.45; }
+.invitation-copy-row { display: grid; grid-template-columns: minmax(0,1fr) auto 30px; align-items: center; gap: 6px; }
+.invitation-copy-row input { min-width: 0; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0 7px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 8px; }
+.invitation-copy-fallback { color: #8a5b1a !important; }
+.invitation-auth-note { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: 8px; border: 1px solid #b8dac4; border-radius: 8px; background: #f1faf4; padding: 9px; color: var(--green); }
+.invitation-auth-note > div { display: grid; gap: 2px; }
+.invitation-auth-note strong { font-size: 10px; }
+.invitation-auth-note span, .invitation-auth-note small { color: var(--muted); font-size: 8.5px; }
+.invitation-accept-card { position: relative; }
+.invitation-dismiss { position: absolute; top: 12px; right: 12px; }
 .security-body { display: grid; gap: 18px; }
 .security-section + .security-section { border-top: 1px solid var(--line); padding-top: 14px; }
 .security-password-form { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; align-items: end; gap: 8px; }

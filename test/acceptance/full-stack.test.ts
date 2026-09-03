@@ -447,6 +447,7 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
   let loopback: ResponsesLoopbackFixture | undefined;
   let socketA: SocketClient | undefined;
   let socketB: SocketClient | undefined;
+  let socketBShared: SocketClient | undefined;
   try {
     productProcess = startProcess('Product API', productMain, {
       ...commonEnv,
@@ -562,8 +563,9 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
     );
     await pollForHistory(productBaseUrl, sessionA, thread.id, turn.id, userAOutbox);
 
+    const emailB = `full-stack-b-${randomUUID()}@example.invalid`;
     const sessionB = await postAuth(productBaseUrl, origin, 'register', {
-      email: `full-stack-b-${randomUUID()}@example.invalid`,
+      email: emailB,
       password,
       displayName: 'Acceptance User B',
     });
@@ -573,38 +575,52 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
     if (typeof localSessionB !== 'string') throw new Error('User B Local bootstrap did not return a session proof.');
     socketB = await connectSocket(localPort, origin, sessionB, localSessionB);
 
+    const deniedBeforeInvitation = await bootstrapLocal(localBaseUrl, origin, sessionB, sessionA.workspaceId);
+    expect(deniedBeforeInvitation.response.status).toBe(403);
+    await expectSocketRejected(localPort, origin, sessionB, localSessionB, sessionA.workspaceId, 403);
+    const invitationResponse = await fetch(`${productBaseUrl}/api/workspaces/${sessionA.workspaceId}/invitations`, {
+      method: 'POST',
+      headers: {
+        Origin: origin, Cookie: sessionA.cookie, 'X-CSRF-Token': sessionA.csrfToken, 'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: emailB, role: 'member' }),
+    });
+    expect(invitationResponse.status).toBe(201);
+    const invitationBody = record(await invitationResponse.json(), 'Product invitation create');
+    if (typeof invitationBody.token !== 'string') throw new Error('Product invitation did not return its one-time token.');
+    const acceptedInvitation = await fetch(`${productBaseUrl}/api/invitations/accept`, {
+      method: 'POST',
+      headers: {
+        Origin: origin, Cookie: sessionB.cookie, 'X-CSRF-Token': sessionB.csrfToken, 'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: invitationBody.token }),
+    });
+    expect(acceptedInvitation.status).toBe(200);
+    const meB = record(await (await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: sessionB.cookie } })).json(), 'User B /me after invitation');
+    expect(Array.isArray(meB.workspaces) && meB.workspaces.some((entry) => record(entry, 'User B workspace').id === sessionA.workspaceId)).toBe(true);
+    const sharedBootstrapB = await bootstrapLocal(localBaseUrl, origin, sessionB, sessionA.workspaceId);
+    expect(sharedBootstrapB.response.status).toBe(200);
+    if (typeof sharedBootstrapB.body.sessionToken !== 'string') throw new Error('Invited user Local bootstrap did not return a session proof.');
+    socketBShared = await connectSocket(localPort, origin, sessionB, sharedBootstrapB.body.sessionToken, sessionA.workspaceId);
+
     const tenantRoot = path.join(temporaryRoot, 'data', 'tenants', 'users');
     const userARoot = path.join(tenantRoot, sessionA.userId, 'workspaces', sessionA.workspaceId);
     const userBRoot = path.join(tenantRoot, sessionB.userId, 'workspaces', sessionB.workspaceId);
+    const userBSharedRoot = path.join(tenantRoot, sessionB.userId, 'workspaces', sessionA.workspaceId);
     expect(path.resolve(userARoot)).not.toBe(path.resolve(userBRoot));
     expect((await stat(userARoot)).isDirectory()).toBe(true);
     expect((await stat(userBRoot)).isDirectory()).toBe(true);
+    expect((await stat(userBSharedRoot)).isDirectory()).toBe(true);
 
-    const bList = await historyGet(productBaseUrl, sessionB, '/api/history/threads?limit=50');
+    const bList = await historyGet(productBaseUrl, sessionB, '/api/history/threads?limit=50', sessionA.workspaceId);
     expect(bList.status).toBe(200);
     expect(await bList.json()).toMatchObject({ threads: [] });
     expect((await historyGet(
       productBaseUrl,
       sessionB,
       `/api/history/threads/${encodeURIComponent(thread.id)}?limit=50`,
+      sessionA.workspaceId,
     )).status).toBe(404);
-    expect((await historyGet(
-      productBaseUrl,
-      sessionB,
-      '/api/history/threads?limit=50',
-      sessionA.workspaceId,
-    )).status).toBe(403);
-
-    const crossBootstrap = await bootstrapLocal(localBaseUrl, origin, sessionB, sessionA.workspaceId);
-    expect(crossBootstrap.response.status).toBe(403);
-    await expectSocketRejected(
-      localPort,
-      origin,
-      sessionB,
-      localSessionToken,
-      sessionA.workspaceId,
-      403,
-    );
 
     const existingSocketClosed = new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Existing Local WebSocket was not revoked within 10 seconds after logout.')), 10_000);
@@ -626,6 +642,7 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
   } finally {
     await closeSocket(socketA?.socket);
     await closeSocket(socketB?.socket);
+    await closeSocket(socketBShared?.socket);
     await loopback?.close();
     await stopProcess(localProcess);
     await stopProcess(productProcess);

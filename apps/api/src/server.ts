@@ -7,6 +7,7 @@ import {
   PRODUCT_HISTORY_PREVIEW_CHARACTERS,
   PRODUCT_WORKSPACE_HEADER_NAME,
   PRODUCT_WORKSPACE_QUERY_PARAM,
+  workspaceInvitationRoles,
   workspaceRoles,
   type ProductAuthResponseDto,
   type ProductSessionDto,
@@ -15,6 +16,7 @@ import {
   type ProductHistoryThreadPageDto,
   type ProductHistoryThreadSummaryDto,
   type WorkspaceRole,
+  type WorkspaceInvitationRole,
 } from '@kodex/product-contract';
 import type {
   AuthContext,
@@ -36,6 +38,7 @@ import {
   KnowledgeCursorError,
   KnowledgeNotFoundError,
   KnowledgeOperationError,
+  WorkspaceInvitationError,
   WorkspaceOperationError,
 } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
@@ -257,6 +260,18 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     json(response, status, { ok: false, error: { code, message } });
     return;
   }
+  if (error instanceof WorkspaceInvitationError) {
+    const responses = {
+      conflict: [409, 'invitation_conflict', 'The invitation conflicts with an existing invitation or membership.'],
+      forbidden: [403, 'invitation_forbidden', 'Invitation access is not permitted.'],
+      invalid: [410, 'invitation_unavailable', 'The invitation is invalid or no longer available.'],
+      limit: [409, 'invitation_limit', 'The workspace has reached its pending invitation limit.'],
+      not_found: [404, 'not_found', 'The invitation was not found.'],
+    } as const;
+    const [status, code, message] = responses[error.code];
+    json(response, status, { ok: false, error: { code, message } });
+    return;
+  }
   process.stderr.write('Product API request failed without exposing internal details.\n');
   json(response, 500, {
     ok: false,
@@ -461,12 +476,55 @@ export class ProductApiServer {
         response.end();
         return;
       }
+      if (url.pathname === '/api/invitations/preview' && request.method === 'POST') {
+        verifyOrigin(request, this.config.allowedOrigins);
+        requireJson(request);
+        const { token } = validateInvitationTokenBody(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 200, publicInvitationPreview(await this.#requireWorkspaces().previewInvitation(token)));
+        return;
+      }
+      if (url.pathname === '/api/invitations/accept' && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        requireJson(request);
+        const { token } = validateInvitationTokenBody(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 200, publicWorkspace(await this.#requireWorkspaces().acceptInvitation(context.user.id, token)));
+        return;
+      }
       if (url.pathname === '/api/workspaces' && request.method === 'POST') {
         const { context } = await this.#workspaceMutationContext(request);
         const application = this.#requireWorkspaces();
         requireJson(request);
         const input = validateCreateWorkspace(await readJsonBody(request, this.config.maxBodyBytes));
         json(response, 201, publicWorkspace(await application.createWorkspace(context.user.id, input.name)));
+        return;
+      }
+      const workspaceInvitationsMatch = /^\/api\/workspaces\/([^/]+)\/invitations$/u.exec(url.pathname);
+      if (workspaceInvitationsMatch && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        const workspaceId = decodeUuidPath(workspaceInvitationsMatch[1]);
+        const invitations = await this.#requireWorkspaces().listInvitations(context.user.id, workspaceId);
+        json(response, 200, { invitations: invitations.map(publicWorkspaceInvitation) });
+        return;
+      }
+      if (workspaceInvitationsMatch && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceInvitationsMatch[1]);
+        requireJson(request);
+        const input = validateCreateWorkspaceInvitation(await readJsonBody(request, this.config.maxBodyBytes));
+        const created = await this.#requireWorkspaces().createInvitation(
+          context.user.id, workspaceId, input.email, input.role,
+        );
+        json(response, 201, { invitation: publicWorkspaceInvitation(created.invitation), token: created.token });
+        return;
+      }
+      const workspaceInvitationMatch = /^\/api\/workspaces\/([^/]+)\/invitations\/([^/]+)$/u.exec(url.pathname);
+      if (workspaceInvitationMatch && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceInvitationMatch[1]);
+        const invitationId = decodeUuidPath(workspaceInvitationMatch[2]);
+        await this.#requireWorkspaces().revokeInvitation(context.user.id, workspaceId, invitationId);
+        response.statusCode = 204;
+        response.end();
         return;
       }
       const workspaceMembersMatch = /^\/api\/workspaces\/([^/]+)\/members$/u.exec(url.pathname);
@@ -930,6 +988,13 @@ function workspaceRole(value: unknown): WorkspaceRole {
   return value as WorkspaceRole;
 }
 
+function invitationRole(value: unknown): WorkspaceInvitationRole {
+  if (typeof value !== 'string' || !workspaceInvitationRoles.includes(value as WorkspaceInvitationRole)) {
+    return invalidWorkspaceInput();
+  }
+  return value as WorkspaceInvitationRole;
+}
+
 function workspaceEmail(value: unknown): string {
   if (typeof value !== 'string') return invalidWorkspaceInput();
   const email = value.trim().toLowerCase();
@@ -949,6 +1014,18 @@ function validateCreateWorkspace(value: unknown): { name: string } {
 function validateAddWorkspaceMember(value: unknown): { email: string; role: WorkspaceRole } {
   if (!isRecord(value) || !exactKeys(value, ['email', 'role'])) return invalidWorkspaceInput();
   return { email: workspaceEmail(value.email), role: workspaceRole(value.role) };
+}
+
+function validateCreateWorkspaceInvitation(value: unknown): { email: string; role: WorkspaceInvitationRole } {
+  if (!isRecord(value) || !exactKeys(value, ['email', 'role'])) return invalidWorkspaceInput();
+  return { email: workspaceEmail(value.email), role: invitationRole(value.role) };
+}
+
+function validateInvitationTokenBody(value: unknown): { token: string } {
+  if (!isRecord(value) || !exactKeys(value, ['token']) || typeof value.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(value.token)) {
+    throw new HttpError(422, 'validation_failed', 'Invitation input is invalid.');
+  }
+  return { token: value.token };
 }
 
 function validateWorkspaceRoleUpdate(value: unknown): { role: WorkspaceRole } {
@@ -973,6 +1050,40 @@ function publicWorkspaceMember(entry: {
     joinedAt: entry.joinedAt.toISOString(),
     role: entry.role,
     userId: entry.userId,
+  };
+}
+
+function publicWorkspaceInvitation(entry: {
+  createdAt: Date;
+  createdByUserId: string | null;
+  expiresAt: Date;
+  id: string;
+  role: WorkspaceInvitationRole;
+  targetEmail: string;
+  workspaceId: string;
+}): Record<string, unknown> {
+  return {
+    createdAt: entry.createdAt.toISOString(),
+    createdByUserId: entry.createdByUserId,
+    expiresAt: entry.expiresAt.toISOString(),
+    id: entry.id,
+    role: entry.role,
+    targetEmail: entry.targetEmail,
+    workspaceId: entry.workspaceId,
+  };
+}
+
+function publicInvitationPreview(entry: {
+  expiresAt: Date;
+  role: WorkspaceInvitationRole;
+  targetEmailHint: string;
+  workspaceName: string;
+}): Record<string, unknown> {
+  return {
+    expiresAt: entry.expiresAt.toISOString(),
+    role: entry.role,
+    targetEmailHint: entry.targetEmailHint,
+    workspaceName: entry.workspaceName,
   };
 }
 

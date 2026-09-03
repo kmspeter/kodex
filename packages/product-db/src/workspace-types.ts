@@ -1,5 +1,7 @@
 import type { WorkspaceRole } from './auth-types.js';
 
+export type WorkspaceInvitationRole = Exclude<WorkspaceRole, 'owner'>;
+
 export interface WorkspaceMember {
   displayName: string | null;
   email: string;
@@ -15,16 +17,52 @@ export interface WorkspaceRecord {
   slug: string;
 }
 
+export interface WorkspaceInvitation {
+  createdAt: Date;
+  createdByUserId: string | null;
+  expiresAt: Date;
+  id: string;
+  role: WorkspaceInvitationRole;
+  targetEmail: string;
+  workspaceId: string;
+}
+
+export interface CreatedWorkspaceInvitation {
+  invitation: WorkspaceInvitation;
+  token: string;
+}
+
+export interface WorkspaceInvitationPreview {
+  expiresAt: Date;
+  role: WorkspaceInvitationRole;
+  targetEmailHint: string;
+  workspaceName: string;
+}
+
 export type WorkspaceOperationErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
   | 'last_owner';
 
+export type WorkspaceInvitationErrorCode =
+  | 'conflict'
+  | 'forbidden'
+  | 'invalid'
+  | 'limit'
+  | 'not_found';
+
 export class WorkspaceOperationError extends Error {
   constructor(readonly code: WorkspaceOperationErrorCode) {
     super(code);
     this.name = 'WorkspaceOperationError';
+  }
+}
+
+export class WorkspaceInvitationError extends Error {
+  constructor(readonly code: WorkspaceInvitationErrorCode) {
+    super(code);
+    this.name = 'WorkspaceInvitationError';
   }
 }
 
@@ -34,4 +72,9 @@ export interface WorkspaceApplication {
   listMembers(actorUserId: string, workspaceId: string): Promise<WorkspaceMember[]>;
   removeMember(actorUserId: string, workspaceId: string, targetUserId: string): Promise<void>;
   updateMemberRole(actorUserId: string, workspaceId: string, targetUserId: string, role: WorkspaceRole): Promise<WorkspaceMember>;
+  acceptInvitation(actorUserId: string, token: string): Promise<WorkspaceRecord>;
+  createInvitation(actorUserId: string, workspaceId: string, email: string, role: WorkspaceInvitationRole): Promise<CreatedWorkspaceInvitation>;
+  listInvitations(actorUserId: string, workspaceId: string): Promise<WorkspaceInvitation[]>;
+  previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
+  revokeInvitation(actorUserId: string, workspaceId: string, invitationId: string): Promise<void>;
 }

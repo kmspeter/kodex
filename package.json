@@ -25,6 +25,7 @@
     "test:auth-lifecycle-postgres": "node scripts/test-auth-lifecycle-postgres.mjs",
     "test:tenant-auth": "npm run build && vitest run --config vitest.tenant-auth.config.ts",
     "test:workspace-postgres": "node scripts/test-workspace-postgres.mjs",
+    "test:workspace-invitations-postgres": "node scripts/test-workspace-invitations-postgres.mjs",
     "test:history-postgres": "npm run build && vitest run --config vitest.history-postgres.config.ts",
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",
     "test:full-stack": "node scripts/test-full-stack.mjs",

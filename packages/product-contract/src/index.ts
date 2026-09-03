@@ -5,6 +5,8 @@ export const PRODUCT_WORKSPACE_QUERY_PARAM = 'workspace_id';
 
 export const workspaceRoles = ['owner', 'admin', 'member', 'viewer'] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
+export const workspaceInvitationRoles = ['admin', 'member', 'viewer'] as const;
+export type WorkspaceInvitationRole = (typeof workspaceInvitationRoles)[number];
 
 export const runtimeWorkspaceRoles = ['owner', 'admin', 'member'] as const;
 export type RuntimeWorkspaceRole = (typeof runtimeWorkspaceRoles)[number];
@@ -37,6 +39,32 @@ export interface ProductWorkspaceMemberDto {
 
 export interface ProductWorkspaceMembersDto {
   members: ProductWorkspaceMemberDto[];
+}
+
+export interface ProductWorkspaceInvitationDto {
+  createdAt: string;
+  createdByUserId: string | null;
+  expiresAt: string;
+  id: string;
+  role: WorkspaceInvitationRole;
+  targetEmail: string;
+  workspaceId: string;
+}
+
+export interface ProductWorkspaceInvitationsDto {
+  invitations: ProductWorkspaceInvitationDto[];
+}
+
+export interface ProductCreatedWorkspaceInvitationDto {
+  invitation: ProductWorkspaceInvitationDto;
+  token: string;
+}
+
+export interface ProductWorkspaceInvitationPreviewDto {
+  expiresAt: string;
+  role: WorkspaceInvitationRole;
+  targetEmailHint: string;
+  workspaceName: string;
 }
 
 export interface ProductAuthContextDto {
@@ -252,6 +280,64 @@ export function parseProductWorkspaceMembers(value: unknown): ProductWorkspaceMe
     || value.members.length > 10_000
   ) throw new Error('Invalid workspace members response.');
   return { members: value.members.map(parseProductWorkspaceMember) };
+}
+
+export function parseProductWorkspaceInvitation(value: unknown): ProductWorkspaceInvitationDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, [
+      'createdAt', 'createdByUserId', 'expiresAt', 'id', 'role', 'targetEmail', 'workspaceId',
+    ])
+    || !isUuid(value.id)
+    || !isUuid(value.workspaceId)
+    || (value.createdByUserId !== null && !isUuid(value.createdByUserId))
+    || !workspaceEmail(value.targetEmail)
+    || !workspaceInvitationRoles.includes(value.role as WorkspaceInvitationRole)
+    || !workspaceDate(value.createdAt)
+    || !workspaceDate(value.expiresAt)
+    || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)
+  ) throw new Error('Invalid workspace invitation response.');
+  return value as unknown as ProductWorkspaceInvitationDto;
+}
+
+/** Strict pending-list parser; token/hash/secret fields are rejected by exact-key checks. */
+export function parseProductWorkspaceInvitations(value: unknown): ProductWorkspaceInvitationsDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['invitations'])
+    || !Array.isArray(value.invitations)
+    || value.invitations.length > 500
+  ) throw new Error('Invalid workspace invitation list response.');
+  return { invitations: value.invitations.map(parseProductWorkspaceInvitation) };
+}
+
+/** The only browser DTO allowed to contain a raw invitation token. */
+export function parseProductCreatedWorkspaceInvitation(value: unknown): ProductCreatedWorkspaceInvitationDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['invitation', 'token'])
+    || typeof value.token !== 'string'
+    || !/^[A-Za-z0-9_-]{43}$/u.test(value.token)
+  ) throw new Error('Invalid created workspace invitation response.');
+  return { invitation: parseProductWorkspaceInvitation(value.invitation), token: value.token };
+}
+
+export function parseProductWorkspaceInvitationPreview(value: unknown): ProductWorkspaceInvitationPreviewDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['expiresAt', 'role', 'targetEmailHint', 'workspaceName'])
+    || !workspaceDate(value.expiresAt)
+    || !workspaceInvitationRoles.includes(value.role as WorkspaceInvitationRole)
+    || typeof value.targetEmailHint !== 'string'
+    || value.targetEmailHint.length < 3
+    || value.targetEmailHint.length > 320
+    || !value.targetEmailHint.includes('*@')
+    || typeof value.workspaceName !== 'string'
+    || Array.from(value.workspaceName).length < 1
+    || Array.from(value.workspaceName).length > 100
+    || value.workspaceName !== value.workspaceName.trim()
+  ) throw new Error('Invalid workspace invitation preview response.');
+  return value as unknown as ProductWorkspaceInvitationPreviewDto;
 }
 
 function historyRecord(value: unknown): value is Record<string, unknown> {

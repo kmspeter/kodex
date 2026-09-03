@@ -10,6 +10,8 @@ export interface ProductApiConfig {
   port: number;
   secureCookies: boolean;
   sessionTtlMs: number;
+  workspaceInvitationPendingLimit?: number;
+  workspaceInvitationTtlMs?: number;
 }
 
 export class ProductApiConfigurationError extends Error {
@@ -195,6 +197,20 @@ export function productApiConfigFromEnv(
       262_144,
       1_048_576,
     ),
+    workspaceInvitationPendingLimit: boundedInteger(
+      env.WORKSPACE_INVITATION_PENDING_LIMIT,
+      'WORKSPACE_INVITATION_PENDING_LIMIT',
+      100,
+      1,
+      500,
+    ),
+    workspaceInvitationTtlMs: boundedInteger(
+      env.WORKSPACE_INVITATION_TTL_HOURS,
+      'WORKSPACE_INVITATION_TTL_HOURS',
+      168,
+      1,
+      720,
+    ) * 60 * 60 * 1_000,
   };
 }
 

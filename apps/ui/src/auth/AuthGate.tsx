@@ -6,13 +6,14 @@ import {
   useRef,
   useState,
 } from 'react';
-import { AlertTriangle, LoaderCircle, LockKeyhole, RefreshCw } from 'lucide-react';
+import { AlertTriangle, LoaderCircle, LockKeyhole, Mail, RefreshCw, UserPlus, X } from 'lucide-react';
 import { KodexMark } from '../components/Brand';
 import {
   ProductAuthClient,
   ProductAuthConfigurationError,
   ProductAuthError,
   type ProductAuthContext,
+  type ProductWorkspaceInvitationPreview,
 } from './product-auth';
 
 type AuthState =
@@ -63,7 +64,13 @@ interface ProductAuthGateProps {
     updateContext: (context: ProductAuthContext) => void,
   ) => ReactNode;
   client?: ProductAuthClient;
+  initialInvitationToken?: string | null;
 }
+
+type InvitationPreviewState =
+  | { status: 'checking' }
+  | { status: 'ready'; value: ProductWorkspaceInvitationPreview }
+  | { status: 'unavailable'; message: string };
 
 function unavailableMessage(error: unknown): string {
   if (error instanceof ProductAuthConfigurationError) return error.message;
@@ -83,7 +90,7 @@ function AuthUnavailable(props: { message: string; onRetry: () => void }) {
   </section></main>;
 }
 
-export function ProductAuthGate({ children, client: providedClient }: ProductAuthGateProps) {
+export function ProductAuthGate({ children, client: providedClient, initialInvitationToken = null }: ProductAuthGateProps) {
   const [clientResult] = useState(() => {
     try {
       return { client: providedClient ?? new ProductAuthClient(), error: null };
@@ -99,6 +106,10 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
   const [attempt, setAttempt] = useState(0);
   const [loggingOut, setLoggingOut] = useState(false);
   const [revalidationControl] = useState(() => new RevalidationControl());
+  const [invitationToken, setInvitationToken] = useState(initialInvitationToken);
+  const [invitationAttempt, setInvitationAttempt] = useState(0);
+  const [invitationPreview, setInvitationPreview] = useState<InvitationPreviewState>({ status: 'checking' });
+  const [invitationOutcome, setInvitationOutcome] = useState('');
   const authenticatedContext = state.status === 'authenticated' ? state.context : null;
 
   useEffect(() => {
@@ -131,6 +142,24 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
       controller.abort();
     };
   }, [attempt, client]);
+
+  useEffect(() => {
+    if (!client || !invitationToken) return;
+    let active = true;
+    setInvitationPreview({ status: 'checking' });
+    void client.previewWorkspaceInvitation(invitationToken).then((value) => {
+      if (active) setInvitationPreview({ status: 'ready', value });
+    }).catch((error: unknown) => {
+      if (!active) return;
+      if (error instanceof ProductAuthError && error.kind === 'unavailable') {
+        setInvitationPreview({ status: 'unavailable', message: '초대 정보를 불러올 수 없습니다. 잠시 후 다시 시도하세요.' });
+      } else {
+        setInvitationToken(null);
+        setInvitationOutcome('이 초대는 유효하지 않거나 이미 만료·취소·사용되었습니다.');
+      }
+    });
+    return () => { active = false; };
+  }, [client, invitationAttempt, invitationToken]);
 
   useEffect(() => {
     if (!client || !authenticatedContext) {
@@ -253,6 +282,22 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
     />;
   }
 
+  if (invitationOutcome) {
+    return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="invitation-outcome-title">
+      <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+      <div className="auth-status-icon is-error"><AlertTriangle size={20} /></div>
+      <h1 id="invitation-outcome-title">Workspace 초대를 처리할 수 없습니다</h1>
+      <p role="alert">{invitationOutcome}</p>
+      <button className="auth-submit" type="button" onClick={() => setInvitationOutcome('')}>계속</button>
+    </section></main>;
+  }
+  if (invitationToken && invitationPreview.status === 'checking') {
+    return <main className="boot-screen"><KodexMark /><LoaderCircle className="spin" size={20} /><p>Workspace 초대를 확인하는 중…</p></main>;
+  }
+  if (invitationToken && invitationPreview.status === 'unavailable') {
+    return <AuthUnavailable message={invitationPreview.message} onRetry={() => setInvitationAttempt((value) => value + 1)} />;
+  }
+
   if (state.status === 'checking') {
     return <main className="boot-screen"><KodexMark /><LoaderCircle className="spin" size={20} /><p>{state.message}</p></main>;
   }
@@ -260,7 +305,27 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
     return <AuthUnavailable message={state.message} onRetry={() => setAttempt((value) => value + 1)} />;
   }
   if (state.status === 'unauthenticated') {
-    return <AuthForm client={client} onAuthenticated={(context) => setState({ status: 'authenticated', context })} />;
+    return <AuthForm
+      client={client}
+      invitation={invitationToken && invitationPreview.status === 'ready' ? invitationPreview.value : undefined}
+      onAuthenticated={(context) => setState({ status: 'authenticated', context })}
+    />;
+  }
+  if (invitationToken && invitationPreview.status === 'ready') {
+    return <InvitationAcceptance
+      client={client}
+      preview={invitationPreview.value}
+      token={invitationToken}
+      onDismiss={() => setInvitationToken(null)}
+      onFailed={() => {
+        setInvitationToken(null);
+        setInvitationOutcome('초대를 수락하지 못했습니다. 로그인 계정의 이메일이 초대 대상과 일치하는지 확인하세요.');
+      }}
+      onAccepted={(context) => {
+        setInvitationToken(null);
+        setState({ status: 'authenticated', context });
+      }}
+    />;
   }
   return children(
     state.context,
@@ -286,6 +351,7 @@ export function validateRegistrationPassword(value: string): string | null {
 
 export function AuthForm(props: {
   client: Pick<ProductAuthClient, 'login' | 'register'>;
+  invitation?: ProductWorkspaceInvitationPreview;
   onAuthenticated: (context: ProductAuthContext) => void;
 }) {
   const [mode, setMode] = useState<AuthMode>('login');
@@ -364,6 +430,7 @@ export function AuthForm(props: {
 
   return <main className="auth-screen"><section className="auth-card" aria-labelledby="auth-title">
     <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+    {props.invitation && <div className="invitation-auth-note"><Mail size={17} /><div><strong>{props.invitation.workspaceName} 초대</strong><span>{props.invitation.targetEmailHint} · {props.invitation.role}</span><small>로그인하거나 가입한 뒤 이 화면에서 초대를 수락합니다.</small></div></div>}
     <div className="auth-heading"><div className="auth-status-icon"><LockKeyhole size={19} /></div><div>
       <h1 id="auth-title">{mode === 'login' ? 'Kodex에 로그인' : 'Kodex 계정 만들기'}</h1>
       <p>계정 확인 후 로컬 에이전트 작업공간을 시작합니다.</p>
@@ -381,5 +448,41 @@ export function AuthForm(props: {
       <button className="auth-submit" type="submit" disabled={busy}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '확인 중…' : mode === 'login' ? '로그인' : '계정 만들기'}</button>
     </form>
     <p className="auth-security-note">세션은 브라우저의 HttpOnly 쿠키로만 관리되며 비밀번호를 기기에 저장하지 않습니다.</p>
+  </section></main>;
+}
+
+function InvitationAcceptance(props: {
+  client: ProductAuthClient;
+  onAccepted: (context: ProductAuthContext) => void;
+  onDismiss: () => void;
+  onFailed: () => void;
+  preview: ProductWorkspaceInvitationPreview;
+  token: string;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function accept(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    const token = props.token;
+    try {
+      const accepted = await props.client.acceptWorkspaceInvitation(token);
+      const refreshed = await props.client.me();
+      const membership = refreshed.workspaces.find((workspace) => workspace.id === accepted.id);
+      if (!membership) throw new ProductAuthError('invalid-response', 'Accepted workspace membership was not returned.');
+      props.onAccepted({ ...refreshed, defaultWorkspace: membership });
+    } catch {
+      props.onFailed();
+    }
+  }
+
+  return <main className="auth-screen"><section className="auth-card invitation-accept-card" aria-labelledby="invitation-accept-title" aria-busy={busy}>
+    <button className="icon-button invitation-dismiss" type="button" aria-label="초대 닫기" disabled={busy} onClick={props.onDismiss}><X size={15} /></button>
+    <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+    <div className="auth-status-icon"><UserPlus size={20} /></div>
+    <h1 id="invitation-accept-title">{props.preview.workspaceName} 참여</h1>
+    <p><strong>{props.preview.targetEmailHint}</strong> 대상으로 <strong>{props.preview.role}</strong> 역할이 요청되었습니다.</p>
+    <p className="auth-help">만료: {new Date(props.preview.expiresAt).toLocaleString()}</p>
+    <button className="auth-submit" type="button" disabled={busy} onClick={() => void accept()}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '수락하는 중…' : '초대 수락'}</button>
   </section></main>;
 }

@@ -137,10 +137,22 @@ export {
   type RetrievalResult,
 } from './knowledge-types.js';
 export { ragConfigFromEnv, type RagConfig } from './rag-config.js';
-export { PostgresWorkspaceRepository } from './workspace-repository.js';
 export {
+  hashWorkspaceInvitationToken,
+  PostgresWorkspaceRepository,
+  WORKSPACE_INVITATION_TOKEN_BYTES,
+  WORKSPACE_INVITATION_TOKEN_PATTERN,
+  type WorkspaceInvitationOptions,
+} from './workspace-repository.js';
+export {
+  WorkspaceInvitationError,
   WorkspaceOperationError,
+  type CreatedWorkspaceInvitation,
   type WorkspaceApplication,
+  type WorkspaceInvitation,
+  type WorkspaceInvitationErrorCode,
+  type WorkspaceInvitationPreview,
+  type WorkspaceInvitationRole,
   type WorkspaceMember,
   type WorkspaceOperationErrorCode,
   type WorkspaceRecord,

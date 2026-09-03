@@ -37,8 +37,8 @@ type ActivePopover = 'header-account' | 'header-open' | 'header-more' | 'compose
 type KodexClientFactory = (workspaceId: string) => KodexClient;
 const createKodexClient: KodexClientFactory = (workspaceId) => new KodexClient({ workspaceId });
 
-export function App() {
-  return <ProductAuthGate>{(account, logout, loggingOut, authClient, updateContext) => <ProductWorkspaceApp
+export function App(props: { invitationToken?: string | null } = {}) {
+  return <ProductAuthGate initialInvitationToken={props.invitationToken}>{(account, logout, loggingOut, authClient, updateContext) => <ProductWorkspaceApp
     account={account}
     authClient={authClient}
     loggingOut={loggingOut}

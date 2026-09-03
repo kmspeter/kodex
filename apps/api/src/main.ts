@@ -68,7 +68,10 @@ try {
     new PostgresHistoryRepository(database),
     knowledgeRuntime.service,
     { check: async () => { await database!.query('SELECT 1'); } },
-    new PostgresWorkspaceRepository(database),
+    new PostgresWorkspaceRepository(database, {
+      pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
+      ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
+    }),
   );
   const port = await server.listen();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);

@@ -1,10 +1,13 @@
 import {
   canUseWorkspaceRuntime,
   isUuid,
+  parseProductCreatedWorkspaceInvitation,
   parseProductHistoryThreadDetail,
   parseProductHistoryThreadPage,
   parseProductSessions,
   parseProductWorkspace,
+  parseProductWorkspaceInvitationPreview,
+  parseProductWorkspaceInvitations,
   parseProductWorkspaceMember,
   parseProductWorkspaceMembers,
   PRODUCT_HISTORY_DEFAULT_LIMIT,
@@ -16,15 +19,22 @@ import {
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
   type ProductSessionDto,
+  type ProductCreatedWorkspaceInvitationDto,
   type ProductUserDto,
   type ProductWorkspaceMemberDto,
+  type ProductWorkspaceInvitationDto,
+  type ProductWorkspaceInvitationPreviewDto,
   type ProductWorkspaceDto,
   type WorkspaceRole,
+  type WorkspaceInvitationRole,
 } from '@kodex/product-contract';
 
 export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
 export type ProductWorkspaceMember = ProductWorkspaceMemberDto;
+export type ProductWorkspaceInvitation = ProductWorkspaceInvitationDto;
+export type ProductWorkspaceInvitationPreview = ProductWorkspaceInvitationPreviewDto;
+export type CreatedProductWorkspaceInvitation = ProductCreatedWorkspaceInvitationDto;
 export type ProductAuthContext = ProductAuthContextDto;
 export type ProductSession = ProductSessionDto;
 
@@ -437,6 +447,69 @@ export class ProductAuthClient {
     if (response.status !== 204) throw new ProductAuthError('invalid-response', 'The member delete response was invalid.', response.status);
   }
 
+  async workspaceInvitations(workspaceId: string): Promise<ProductWorkspaceInvitation[]> {
+    const response = await this.#request(this.#workspacePath(workspaceId, '/invitations'), { method: 'GET' });
+    try {
+      return parseProductWorkspaceInvitations(await this.#json(response)).invitations;
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid invitation list.');
+    }
+  }
+
+  async createWorkspaceInvitation(
+    workspaceId: string,
+    email: string,
+    role: WorkspaceInvitationRole,
+  ): Promise<CreatedProductWorkspaceInvitation> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, '/invitations'), 'POST', { email, role },
+    );
+    if (response.status !== 201) {
+      throw new ProductAuthError('invalid-response', 'The invitation create response was invalid.', response.status);
+    }
+    try {
+      return parseProductCreatedWorkspaceInvitation(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid created invitation.');
+    }
+  }
+
+  async revokeWorkspaceInvitation(workspaceId: string, invitationId: string): Promise<void> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, `/invitations/${this.#uuid(invitationId)}`), 'DELETE', undefined,
+    );
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The invitation revoke response was invalid.', response.status);
+    }
+  }
+
+  async previewWorkspaceInvitation(token: string): Promise<ProductWorkspaceInvitationPreview> {
+    const response = await this.#request('/api/invitations/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: this.#invitationToken(token) }),
+    });
+    try {
+      return parseProductWorkspaceInvitationPreview(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The invitation API returned an invalid preview.');
+    }
+  }
+
+  async acceptWorkspaceInvitation(token: string): Promise<ProductWorkspace> {
+    const response = await this.#authMutation('/api/invitations/accept', 'POST', {
+      token: this.#invitationToken(token),
+    });
+    if (response.status !== 200) {
+      throw new ProductAuthError('invalid-response', 'The invitation accept response was invalid.', response.status);
+    }
+    try {
+      return parseProductWorkspace(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The invitation API returned an invalid workspace.');
+    }
+  }
+
   async knowledge<T>(
     pathname: string,
     workspaceId: string,
@@ -509,6 +582,13 @@ export class ProductAuthClient {
   #uuid(value: string): string {
     if (!isUuid(value)) throw new ProductAuthError('rejected', 'Workspace request scope is invalid.');
     return encodeURIComponent(value);
+  }
+
+  #invitationToken(value: string): string {
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(value)) {
+      throw new ProductAuthError('rejected', 'Invitation token is invalid.');
+    }
+    return value;
   }
 
   #workspacePath(workspaceId: string, suffix: string): string {

@@ -47,12 +47,17 @@ afterEach(async () => {
 });
 
 describe('workspace management dialog', () => {
-  it('creates, adds an existing account, and revalidates /me after each mutation', async () => {
+  it('creates a workspace and shows a newly-created invitation link exactly once', async () => {
     const refreshed = { ...base, workspaces: [...base.workspaces, { id: createdId, name: 'New Team', slug: 'workspace-new', role: 'owner' as const }] };
+    const invitation = {
+      id: '40000000-0000-4000-8000-000000000001', workspaceId, targetEmail: 'member@example.com',
+      role: 'member' as const, createdByUserId: ownerId, createdAt: '2026-09-01T02:00:00.000Z', expiresAt: '2026-09-08T02:00:00.000Z',
+    };
     const client = {
       workspaceMembers: vi.fn().mockResolvedValue(members),
+      workspaceInvitations: vi.fn().mockResolvedValue([]),
       createWorkspace: vi.fn().mockResolvedValue({ id: createdId, name: 'New Team', slug: 'workspace-new', role: 'owner' }),
-      addWorkspaceMember: vi.fn().mockResolvedValue(members[1]),
+      createWorkspaceInvitation: vi.fn().mockResolvedValue({ invitation, token: 'A'.repeat(43) }),
       updateWorkspaceMember: vi.fn(), removeWorkspaceMember: vi.fn(),
       me: vi.fn().mockResolvedValue(refreshed),
     } as unknown as ProductAuthClient;
@@ -61,6 +66,7 @@ describe('workspace management dialog', () => {
       root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={onRefresh} />);
       await flush();
     });
+    expect(Array.from(container.querySelector<HTMLSelectElement>('[aria-label="초대할 역할"]')!.options).map((entry) => entry.value)).toEqual(['admin', 'member', 'viewer']);
 
     const name = container.querySelector<HTMLInputElement>('input[placeholder="예: Platform Team"]')!;
     await act(async () => { setInput(name, 'New Team'); });
@@ -72,14 +78,40 @@ describe('workspace management dialog', () => {
     const email = container.querySelector<HTMLInputElement>('input[type="email"]')!;
     await act(async () => { setInput(email, 'member@example.com'); });
     await act(async () => { container.querySelector<HTMLFormElement>('.member-add-form')!.requestSubmit(); await flush(); });
-    expect(client.addWorkspaceMember).toHaveBeenCalledWith(workspaceId, 'member@example.com', 'member');
-    expect(client.me).toHaveBeenCalledTimes(2);
-    expect(onRefresh).toHaveBeenLastCalledWith(refreshed, undefined);
+    expect(client.createWorkspaceInvitation).toHaveBeenCalledWith(workspaceId, 'member@example.com', 'member');
+    expect(client.me).toHaveBeenCalledTimes(1);
+    const link = container.querySelector<HTMLInputElement>('[aria-label="새 workspace 초대 링크"]');
+    expect(link?.value).toBe(`${window.location.origin}/#invite=${'A'.repeat(43)}`);
+    const dismiss = container.querySelector<HTMLButtonElement>('[aria-label="초대 링크 닫기"]')!;
+    await act(async () => { dismiss.click(); });
+    expect(container.querySelector('[aria-label="새 workspace 초대 링크"]')).toBeNull();
+  });
+
+  it('offers manual selection when clipboard access fails', async () => {
+    const invitation = {
+      id: '40000000-0000-4000-8000-000000000001', workspaceId, targetEmail: 'member@example.com',
+      role: 'viewer' as const, createdByUserId: ownerId, createdAt: '2026-09-01T02:00:00.000Z', expiresAt: '2026-09-08T02:00:00.000Z',
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue(members), workspaceInvitations: vi.fn().mockResolvedValue([]),
+      createWorkspaceInvitation: vi.fn().mockResolvedValue({ invitation, token: 'B'.repeat(43) }),
+    } as unknown as ProductAuthClient;
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+    const email = container.querySelector<HTMLInputElement>('input[type="email"]')!;
+    await act(async () => { setInput(email, 'member@example.com'); });
+    await act(async () => { container.querySelector<HTMLFormElement>('.member-add-form')!.requestSubmit(); await flush(); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('.invitation-copy-row .secondary-action')!.click(); await flush(); });
+    expect(container.textContent).toContain('선택된 링크를 직접 복사하세요');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="새 workspace 초대 링크"]')?.selectionStart).toBe(0);
   });
 
   it('shows member/viewer permission guidance and disables every management control', async () => {
     const memberAccount = { ...base, workspaces: [{ ...base.workspaces[0], role: 'member' as const }] };
-    const client = { workspaceMembers: vi.fn().mockResolvedValue(members) } as unknown as ProductAuthClient;
+    const client = { workspaceMembers: vi.fn().mockResolvedValue(members), workspaceInvitations: vi.fn() } as unknown as ProductAuthClient;
     await act(async () => {
       root.render(<WorkspaceManagementDialog account={memberAccount} activeWorkspace={memberAccount.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
       await flush();

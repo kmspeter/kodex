@@ -15,7 +15,7 @@ const migrationsModule = await import(pathToFileURL(path.join(
 )).href);
 const migrations = await migrationsModule.loadMigrations();
 if (
-  migrations.length !== 6
+  migrations.length !== 7
   || path.resolve(migrationsModule.defaultMigrationsDirectory)
     !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')
 ) {
