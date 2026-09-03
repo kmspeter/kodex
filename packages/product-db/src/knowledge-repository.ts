@@ -24,6 +24,7 @@ interface DocumentRow {
   index_configuration_checksum: Buffer | null;
   source_document_id: string;
   source_id: string;
+  source_type: string;
   title: string | null;
   updated_at: Date;
 }
@@ -34,6 +35,7 @@ interface CitationRow {
   document_id: string;
   document_title: string | null;
   score: number;
+  source_type: string;
 }
 
 const ANN_CANDIDATE_MULTIPLIER = 8;
@@ -57,13 +59,18 @@ const DEFAULT_ANN_SEARCH_SQL = `
     LIMIT $5
   )
   SELECT chunk.id AS chunk_id, chunk.content, document.id AS document_id,
-         document.title AS document_title, 1 - nearest.distance AS score
+         document.title AS document_title, source.source_type,
+         1 - nearest.distance AS score
   FROM nearest
   JOIN document_chunks AS chunk ON chunk.id = nearest.chunk_id
   JOIN documents AS document
     ON document.id = chunk.document_id
    AND document.workspace_id = chunk.workspace_id
    AND document.created_by_user_id = chunk.created_by_user_id
+  JOIN knowledge_sources AS source
+    ON source.id = document.source_id
+   AND source.workspace_id = document.workspace_id
+   AND source.created_by_user_id = document.created_by_user_id
   ORDER BY nearest.distance ASC, nearest.chunk_id ASC
   LIMIT $6
   FOR KEY SHARE OF chunk, document
@@ -72,19 +79,24 @@ const DEFAULT_ANN_SEARCH_SQL = `
 const GENERIC_EXACT_SEARCH_SQL = `
   WITH compatible AS MATERIALIZED (
     SELECT chunk.id AS chunk_id, chunk.content, chunk.embedding,
-           document.id AS document_id, document.title AS document_title
+           document.id AS document_id, document.title AS document_title,
+           source.source_type
     FROM document_chunks AS chunk
     JOIN documents AS document
       ON document.id = chunk.document_id
      AND document.workspace_id = chunk.workspace_id
      AND document.created_by_user_id = chunk.created_by_user_id
+    JOIN knowledge_sources AS source
+      ON source.id = document.source_id
+     AND source.workspace_id = document.workspace_id
+     AND source.created_by_user_id = document.created_by_user_id
     WHERE chunk.workspace_id = $2
       AND chunk.created_by_user_id = $3
       AND chunk.embedding_model = $4
       AND chunk.embedding_dimensions = $5
   )
   SELECT compatible.chunk_id, compatible.content, compatible.document_id,
-         compatible.document_title,
+         compatible.document_title, compatible.source_type,
          1 - (compatible.embedding <=> $1::vector) AS score
   FROM compatible
   JOIN document_chunks AS locked_chunk ON locked_chunk.id = compatible.chunk_id
@@ -137,6 +149,7 @@ function documentRecord(row: DocumentRow): StoredDocument {
     id: row.id,
     sourceId: row.source_id,
     sourceDocumentId: row.source_document_id,
+    sourceType: row.source_type,
     title: row.title,
     contentChecksum: row.content_checksum,
     indexConfigurationChecksum: row.index_configuration_checksum,
@@ -252,11 +265,56 @@ export class PostgresKnowledgeRepository {
     validateScope(scope);
     const text = `
       SELECT id, source_id, source_document_id, title, content_checksum,
-             index_configuration_checksum, created_at, updated_at
+             index_configuration_checksum, created_at, updated_at,
+             (SELECT source_type FROM knowledge_sources WHERE id = documents.source_id) AS source_type
       FROM documents
       WHERE id = $1 AND workspace_id = $2 AND created_by_user_id = $3
     `;
     const values = [documentId, scope.workspaceId, scope.userId];
+    const result = client
+      ? await client.query<DocumentRow>(text, values)
+      : await this.database.query<DocumentRow>(text, values);
+    return result.rows[0] ? documentRecord(result.rows[0]) : undefined;
+  }
+
+  async getDocumentBySourceIdentity(
+    scope: KnowledgeScope,
+    sourceId: string,
+    sourceDocumentId: string,
+  ): Promise<StoredDocument | undefined> {
+    return this.#getDocumentBySourceIdentity(scope, sourceId, sourceDocumentId);
+  }
+
+  async getDocumentBySourceIdentityWithClient(
+    client: PoolClient,
+    scope: KnowledgeScope,
+    sourceId: string,
+    sourceDocumentId: string,
+  ): Promise<StoredDocument | undefined> {
+    return this.#getDocumentBySourceIdentity(scope, sourceId, sourceDocumentId, client);
+  }
+
+  async #getDocumentBySourceIdentity(
+    scope: KnowledgeScope,
+    sourceId: string,
+    sourceDocumentId: string,
+    client?: PoolClient,
+  ): Promise<StoredDocument | undefined> {
+    validateScope(scope);
+    const text = `
+      SELECT document.id, document.source_id, document.source_document_id,
+             document.title, document.content_checksum,
+             document.index_configuration_checksum, document.created_at,
+             document.updated_at, source.source_type
+      FROM documents AS document
+      JOIN knowledge_sources AS source
+        ON source.id = document.source_id
+       AND source.workspace_id = document.workspace_id
+       AND source.created_by_user_id = document.created_by_user_id
+      WHERE document.source_id = $1 AND document.source_document_id = $2
+        AND document.workspace_id = $3 AND document.created_by_user_id = $4
+    `;
+    const values = [sourceId, sourceDocumentId, scope.workspaceId, scope.userId];
     const result = client
       ? await client.query<DocumentRow>(text, values)
       : await this.database.query<DocumentRow>(text, values);
@@ -278,12 +336,18 @@ export class PostgresKnowledgeRepository {
   ): Promise<KnowledgeDocumentRecord[]> {
     validateScope(scope);
     const result = await this.database.query<DocumentRow>(`
-      SELECT id, source_id, source_document_id, title, content_checksum,
-             index_configuration_checksum, created_at, updated_at
-      FROM documents
-      WHERE workspace_id = $1 AND created_by_user_id = $2
-        AND ($3::timestamptz IS NULL OR (updated_at, id) < ($3::timestamptz, $4::uuid))
-      ORDER BY updated_at DESC, id DESC
+      SELECT document.id, document.source_id, document.source_document_id,
+             document.title, document.content_checksum,
+             document.index_configuration_checksum, document.created_at,
+             document.updated_at, source.source_type
+      FROM documents AS document
+      JOIN knowledge_sources AS source
+        ON source.id = document.source_id
+       AND source.workspace_id = document.workspace_id
+       AND source.created_by_user_id = document.created_by_user_id
+      WHERE document.workspace_id = $1 AND document.created_by_user_id = $2
+        AND ($3::timestamptz IS NULL OR (document.updated_at, document.id) < ($3::timestamptz, $4::uuid))
+      ORDER BY document.updated_at DESC, document.id DESC
       LIMIT $5
     `, [scope.workspaceId, scope.userId, options.beforeUpdatedAt ?? null, options.beforeId ?? null, options.limit]);
     return result.rows.map(documentRecord);
@@ -299,6 +363,7 @@ export class PostgresKnowledgeRepository {
     validateScope(scope);
     return this.database.transactionWithClient(client, async (transactionClient) => {
       const result = await transactionClient.query<DocumentRow>(`
+        WITH upserted AS (
         INSERT INTO documents (
           id, workspace_id, created_by_user_id, source_id, source_document_id,
           title, mime_type, content_checksum, index_configuration_checksum, content_text
@@ -315,6 +380,10 @@ export class PostgresKnowledgeRepository {
           AND documents.id = EXCLUDED.id
         RETURNING id, source_id, source_document_id, title, content_checksum,
                   index_configuration_checksum, created_at, updated_at
+        )
+        SELECT upserted.*, source.source_type
+        FROM upserted
+        JOIN knowledge_sources AS source ON source.id = upserted.source_id
       `, [
         input.documentId, scope.workspaceId, scope.userId, input.sourceId,
         input.sourceDocumentId, input.title, input.contentChecksum,
@@ -361,10 +430,15 @@ export class PostgresKnowledgeRepository {
   ): Promise<StoredDocument> {
     validateScope(scope);
     const result = await client.query<DocumentRow>(`
+      WITH updated AS (
       UPDATE documents SET title = $1, updated_at = now()
       WHERE id = $2 AND workspace_id = $3 AND created_by_user_id = $4
       RETURNING id, source_id, source_document_id, title, content_checksum,
                 index_configuration_checksum, created_at, updated_at
+      )
+      SELECT updated.*, source.source_type
+      FROM updated
+      JOIN knowledge_sources AS source ON source.id = updated.source_id
     `, [title, documentId, scope.workspaceId, scope.userId]);
     if (!result.rows[0]) throw new KnowledgeNotFoundError();
     return documentRecord(result.rows[0]);
@@ -445,7 +519,11 @@ export class PostgresKnowledgeRepository {
         `, [
           scope.workspaceId, scope.userId, input.runId, candidate.chunk_id,
           rank, score, candidate.content,
-          JSON.stringify({ documentId: candidate.document_id, documentTitle: candidate.document_title }),
+          JSON.stringify({
+            documentId: candidate.document_id,
+            documentTitle: candidate.document_title,
+            sourceType: candidate.source_type,
+          }),
         ]);
         citations.push({
           chunkId: candidate.chunk_id,
@@ -454,6 +532,7 @@ export class PostgresKnowledgeRepository {
           documentTitle: candidate.document_title,
           rank,
           score,
+          sourceType: candidate.source_type,
         });
       }
       return citations;

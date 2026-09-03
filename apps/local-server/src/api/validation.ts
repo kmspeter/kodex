@@ -1,5 +1,6 @@
 import type { ClientRequest, RequestId, ServerRequest } from '@kodex/codex-protocol';
 import type { KodexSettings } from '@kodex/kodex-api';
+import { isUuid } from '@kodex/product-contract';
 
 type ObjectValue = Record<string, unknown>;
 
@@ -99,6 +100,62 @@ export function validateIdBody(value: unknown, resource: string): { id: string }
   if (!isObject(value)) fail(`${resource} body must be an object.`);
   exactKeys(value, ['id'], resource);
   return { id: stringValue(value.id, `${resource}.id`, 200) };
+}
+
+export function validateRepositoryPreview(value: unknown): { projectId: string } {
+  if (!isObject(value)) fail('repository preview body must be an object.');
+  exactKeys(value, ['projectId'], 'repositoryPreview');
+  if (!isUuid(value.projectId)) fail('repositoryPreview.projectId must be a UUID.');
+  return { projectId: value.projectId };
+}
+
+function hasUnsafeRepositoryPathCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x1F
+      || (code >= 0x7F && code <= 0x9F)
+      || (code >= 0x202A && code <= 0x202E)
+      || (code >= 0x2066 && code <= 0x2069);
+  });
+}
+
+function repositoryRelativePath(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || value.length < 1
+    || value.length > 1_000
+    || value.includes('\\')
+    || value.includes('\0')
+    || value !== value.normalize('NFC')
+    || hasUnsafeRepositoryPathCharacter(value)
+    || value.startsWith('/')
+    || /^[A-Za-z]:/u.test(value)
+  ) fail('repositoryConfirm.paths contains an invalid relative path.');
+  const segments = value.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    fail('repositoryConfirm.paths contains an invalid relative path.');
+  }
+  return value;
+}
+
+export function validateRepositoryConfirm(value: unknown): {
+  paths: string[];
+  previewToken: string;
+  projectId: string;
+} {
+  if (!isObject(value)) fail('repository confirm body must be an object.');
+  exactKeys(value, ['previewToken', 'projectId', 'paths'], 'repositoryConfirm');
+  if (!isUuid(value.previewToken) || !isUuid(value.projectId)) {
+    fail('repositoryConfirm tokens must be UUIDs.');
+  }
+  if (!Array.isArray(value.paths) || value.paths.length < 1 || value.paths.length > 50) {
+    fail('repositoryConfirm.paths must contain between 1 and 50 paths.');
+  }
+  const paths = value.paths.map(repositoryRelativePath);
+  if (new Set(paths).size !== paths.length || paths.reduce((sum, entry) => sum + entry.length, 0) > 50_000) {
+    fail('repositoryConfirm.paths is invalid or too large.');
+  }
+  return { previewToken: value.previewToken, projectId: value.projectId, paths };
 }
 
 export interface AutomationInput { name: string; prompt: string; intervalMinutes: number; projectId?: string }

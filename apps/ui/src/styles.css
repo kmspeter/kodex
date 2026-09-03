@@ -749,6 +749,23 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .saved-history-warning { margin: 0; border-radius: 6px; background: #fff6de; padding: 8px; color: #755b19; font-size: 8.5px; }
 .history-more { margin: 9px; }
 .knowledge-dialog { display: flex; flex-direction: column; gap: 12px; }
+.repository-knowledge { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel-soft); padding: 11px; }
+.repository-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.repository-heading h4 { margin: 0 0 4px; font-size: 11px; }
+.repository-heading p,.repository-deletion-note { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.repository-policy,.repository-exclusions { display: flex; flex-wrap: wrap; gap: 5px; }
+.repository-policy span,.repository-exclusions span { border: 1px solid var(--line); border-radius: 999px; background: #fff; padding: 3px 6px; color: var(--muted); font-size: 8px; }
+.repository-exclusions span { background: #fff8ee; }
+.repository-file-list { display: flex; max-height: 190px; flex-direction: column; gap: 4px; overflow: auto; }
+.repository-file-list label { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 6px 7px; font-size: 9px; }
+.repository-file-list label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repository-file-list code { color: var(--muted); font-size: 8px; }
+.repository-consent { display: flex; align-items: flex-start; gap: 7px; border-top: 1px solid var(--line); padding-top: 8px; color: var(--text); font-size: 9px; line-height: 1.45; }
+.repository-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.repository-actions .repository-status { margin-right: auto; }
+.repository-status { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted); font-size: 9px; }
+.repository-result { display: flex; flex-direction: column; gap: 3px; border: 1px solid #b8dac4; border-radius: 7px; background: #f1faf4; padding: 8px; font-size: 8.5px; }
+.repository-result strong { font-size: 10px; }
 .knowledge-form { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-soft); padding: 10px; }
 .knowledge-form label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 9px; }
 .knowledge-form label:first-child { grid-column: 1 / -1; }

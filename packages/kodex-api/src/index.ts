@@ -126,6 +126,49 @@ export interface GitStatus {
   totals: { files: number; added: number; removed: number };
 }
 
+export type RepositoryPreviewExclusionReason =
+  | 'binary_or_invalid_utf8'
+  | 'credential_or_secret'
+  | 'default_directory'
+  | 'git_ignored'
+  | 'oversized'
+  | 'preview_limit'
+  | 'unsafe_link'
+  | 'unsupported_file';
+
+export interface RepositoryPreviewFile {
+  path: string;
+  sizeBytes: number;
+  status: 'eligible';
+}
+
+export interface RepositoryPreviewResponse {
+  expiresAt: string;
+  excluded: Array<{ count: number; reason: RepositoryPreviewExclusionReason }>;
+  files: RepositoryPreviewFile[];
+  limits: {
+    maxFileBytes: number;
+    maxSelectedFiles: number;
+    maxTotalBytes: number;
+    maxTotalCharacters: number;
+  };
+  previewToken: string;
+  project: { id: string; name: string };
+  truncated: boolean;
+}
+
+export interface RepositoryIndexResponse {
+  files: Array<{
+    chunkCount: number;
+    documentId: string;
+    path: string;
+    status: 'indexed' | 'unchanged';
+  }>;
+  indexed: number;
+  project: { id: string; name: string };
+  unchanged: number;
+}
+
 export type ClientRpc = ClientRequest;
 
 export type ClientMethod = ClientRequest['method'];

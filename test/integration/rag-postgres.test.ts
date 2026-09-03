@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { PRODUCT_WORKSPACE_HEADER_NAME } from '@kodex/product-contract';
 import {
   AuthService,
@@ -19,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProductApiConfig } from '../../apps/api/src/config.js';
 import { createCsrfToken, csrfCookieName, sessionCookieName } from '../../apps/api/src/cookies.js';
 import { ProductApiServer } from '../../apps/api/src/server.js';
+import { RepositoryIndexer } from '../../apps/local-server/src/rag/repository-indexer.js';
 
 const runId = randomUUID();
 const userA = randomUUID();
@@ -180,6 +184,70 @@ describe('real pgvector private RAG integration', () => {
     `, [result.runId, workspaceA, userA]);
     expect(persisted.rows[0]).toMatchObject({ status: 'completed' });
     expect(Number(persisted.rows[0].citation_count)).toBe(result.citations.length);
+  });
+
+  it('persists repository-file identity, private scope, checksum reindex, source-aware citations, and explicit delete', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-rag-repository-pg-'));
+    const filename = path.join(root, 'repository-reference.ts');
+    const project = {
+      id: randomUUID(), name: 'safe label', path: root, createdAt: 0, lastOpenedAt: 0,
+    };
+    const indexer = new RepositoryIndexer(service);
+    try {
+      await writeFile(filename, 'alpha repository identity initial\n');
+      const firstPreview = await indexer.preview(scopeA, project);
+      expect(firstPreview.files).toEqual([
+        { path: 'repository-reference.ts', sizeBytes: 34, status: 'eligible' },
+      ]);
+      const first = await indexer.confirm(scopeA, project, {
+        previewToken: firstPreview.previewToken,
+        projectId: project.id,
+        paths: ['repository-reference.ts'],
+      });
+      expect(first.files[0]).toMatchObject({ status: 'indexed' });
+      const documentId = first.files[0]!.documentId;
+
+      const unchangedPreview = await indexer.preview(scopeA, project);
+      const unchanged = await indexer.confirm(scopeA, project, {
+        previewToken: unchangedPreview.previewToken,
+        projectId: project.id,
+        paths: ['repository-reference.ts'],
+      });
+      expect(unchanged.files[0]).toMatchObject({ documentId, status: 'unchanged' });
+
+      await writeFile(filename, 'alpha repository identity changed checksum and content\n');
+      const changedPreview = await indexer.preview(scopeA, project);
+      const changed = await indexer.confirm(scopeA, project, {
+        previewToken: changedPreview.previewToken,
+        projectId: project.id,
+        paths: ['repository-reference.ts'],
+      });
+      expect(changed.files[0]).toMatchObject({ documentId, status: 'indexed' });
+
+      const stored = await repository.getDocument(scopeA, documentId);
+      expect(stored).toMatchObject({
+        id: documentId,
+        sourceDocumentId: 'repository-reference.ts',
+        sourceType: 'repository_file',
+      });
+      await expect(service.indexTextDocument(scopeB, {
+        sourceId: stored!.sourceId,
+        sourceDocumentId: 'repository-reference.ts',
+        title: 'foreign attempt',
+        content: 'alpha foreign IDOR attempt',
+      })).rejects.toMatchObject({ name: 'KnowledgeNotFoundError' });
+      const retrieved = await service.retrieve(scopeA, 'alpha repository identity', { topK: 20, threshold: -1 });
+      expect(retrieved.citations).toContainEqual(expect.objectContaining({
+        documentId,
+        documentTitle: 'safe label / repository-reference.ts',
+        sourceType: 'repository_file',
+      }));
+
+      await service.deleteDocument(scopeA, documentId);
+      await expect(repository.getDocument(scopeA, documentId)).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('installs the default-model HNSW expression index and records migration 0005 once', async () => {
@@ -424,6 +492,29 @@ describe('real pgvector private RAG integration', () => {
     expect(results.filter((entry) => entry.skipped)).toHaveLength(1);
     expect(localProvider.calls).toHaveLength(1);
     expect(await repository.countChunks(scopeA, documentId)).toBe(1);
+  });
+
+  it('serializes first-time repository source/path upserts to one stable document', async () => {
+    const localProvider = new FakeEmbeddingProvider('fake-repository-concurrent-v1');
+    const localService = new KnowledgeService(repository, localProvider, config);
+    const source = await localService.upsertSource(scopeA, {
+      externalKey: `repository:concurrent-${randomUUID()}`,
+      name: 'Concurrent repository',
+      sourceType: 'repository_file',
+    });
+    const input = {
+      sourceId: source.id,
+      sourceDocumentId: 'src/concurrent.ts',
+      title: 'Concurrent repository / src/concurrent.ts',
+      content: 'alpha concurrent repository source identity',
+    };
+    const results = await Promise.all([
+      localService.indexTextDocument(scopeA, input),
+      localService.indexTextDocument(scopeA, input),
+    ]);
+    expect(results.filter((entry) => entry.skipped)).toHaveLength(1);
+    expect(new Set(results.map((entry) => entry.document.id)).size).toBe(1);
+    expect(localProvider.calls).toHaveLength(1);
   });
 
   it('indexes, updates, and deletes through one advisory-lock client with pool max 1', async () => {

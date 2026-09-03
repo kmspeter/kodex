@@ -37,6 +37,7 @@ function citationLine(citation: RetrievalCitation, content: string): string {
     chunk_id: citation.chunkId,
     title: citation.documentTitle,
     score: Number(citation.score.toFixed(6)),
+    source_type: citation.sourceType,
     content,
   });
 }

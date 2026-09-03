@@ -18,6 +18,7 @@ export interface IndexTextDocumentInput {
   content: string;
   documentId?: string;
   sourceId?: string;
+  sourceDocumentId?: string;
   title: string;
 }
 
@@ -103,10 +104,15 @@ export class KnowledgeService {
     scope: KnowledgeScope,
     input: IndexTextDocumentInput,
   ): Promise<IndexTextDocumentResult> {
+    if (input.sourceDocumentId && !input.sourceId) {
+      throw new KnowledgeNotFoundError();
+    }
     const requestedId = input.documentId ?? randomUUID();
     let before = input.documentId
       ? await this.repository.getDocument(scope, input.documentId)
-      : undefined;
+      : input.sourceId && input.sourceDocumentId
+        ? await this.repository.getDocumentBySourceIdentity(scope, input.sourceId, input.sourceDocumentId)
+        : undefined;
     if (input.documentId && !before && await this.repository.documentIdExists(input.documentId)) {
       // Another same-owner request may have created the document between the
       // scoped lookup and the global UUID collision check. Re-read the scoped
@@ -125,12 +131,18 @@ export class KnowledgeService {
         });
     if (!source) throw new KnowledgeNotFoundError();
     if (before && input.sourceId && input.sourceId !== before.sourceId) throw new KnowledgeNotFoundError();
-    const sourceDocumentId = before?.sourceDocumentId ?? requestedId;
+    const sourceDocumentId = before?.sourceDocumentId ?? input.sourceDocumentId ?? requestedId;
     const identity = `${source.id}:${sourceDocumentId}`;
     return this.repository.withDocumentLock(scope, identity, async (client) => {
       const current = input.documentId
         ? await this.repository.getDocumentWithClient(client, scope, input.documentId)
-        : undefined;
+        : input.sourceId && input.sourceDocumentId
+          ? await this.repository.getDocumentBySourceIdentityWithClient(
+            client, scope, input.sourceId, input.sourceDocumentId,
+          )
+          : before
+            ? await this.repository.getDocumentWithClient(client, scope, before.id)
+            : undefined;
       if (before && !current) throw new KnowledgeNotFoundError();
       const checksum = contentChecksum(input.content);
       const configurationChecksum = indexConfigurationChecksum(

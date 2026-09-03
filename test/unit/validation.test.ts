@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ALLOWED_METHODS } from '../../apps/local-server/src/runtime';
 import {
   validateAutomationInput, validateClientRequest, validateProjectMutation, validateServerRequestResult,
-  validateSettingsPatch, validateSocketMessage,
+  validateRepositoryConfirm, validateRepositoryPreview, validateSettingsPatch, validateSocketMessage,
 } from '../../apps/local-server/src/api/validation';
 
 describe('HTTP and WebSocket runtime validation', () => {
@@ -16,6 +16,20 @@ describe('HTTP and WebSocket runtime validation', () => {
     expect(validateProjectMutation({ id: 'project-1' })).toEqual({ id: 'project-1' });
     expect(() => validateProjectMutation({ id: 'project-1', path: 'D:/other' })).toThrow('cannot include');
     expect(() => validateAutomationInput({ prompt: 'x', intervalMinutes: 0 })).toThrow('1 to 10080');
+  });
+
+  it('requires exact bounded repository preview and confirm DTOs with portable relative paths', () => {
+    const projectId = '30000000-0000-4000-8000-000000000001';
+    const previewToken = '40000000-0000-4000-8000-000000000001';
+    expect(validateRepositoryPreview({ projectId })).toEqual({ projectId });
+    expect(validateRepositoryConfirm({ previewToken, projectId, paths: ['src/index.ts'] }))
+      .toEqual({ previewToken, projectId, paths: ['src/index.ts'] });
+    expect(() => validateRepositoryPreview({ projectId, root: 'D:/secret' })).toThrow('not supported');
+    expect(() => validateRepositoryConfirm({ previewToken, projectId, paths: ['../secret'] })).toThrow('invalid relative path');
+    expect(() => validateRepositoryConfirm({ previewToken, projectId, paths: ['D:/secret'] })).toThrow('invalid relative path');
+    expect(() => validateRepositoryConfirm({ previewToken, projectId, paths: ['src\\index.ts'] })).toThrow('invalid relative path');
+    expect(() => validateRepositoryConfirm({ previewToken, projectId, paths: ['src/index.ts'], userId: projectId })).toThrow('not supported');
+    expect(() => validateRepositoryConfirm({ previewToken, projectId, paths: Array.from({ length: 51 }, (_, index) => `src/${index}.ts`) })).toThrow('between 1 and 50');
   });
 
   it('validates RPC methods, envelopes, cursors, and approval results', () => {

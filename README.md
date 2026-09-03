@@ -2,7 +2,7 @@
 
 Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 App Server를 로컬에서 실행하는 Windows 앱입니다. UI, Local Server, 공식 Codex 전체 소스, 실행 파일, thread와 설정은 사용자의 컴퓨터에 있습니다. PostgreSQL 제품 session과 workspace membership은 필수이며, 인증되기 전에는 UI뿐 아니라 Local Server 자체가 HTTP/WebSocket/Codex runtime 접근을 거부합니다.
 
-Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 생성 모델을 직접 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결합니다. 예외적으로 private RAG를 명시적으로 켜면 등록 문서 chunk, Knowledge 검색 미리보기 질의, 일반 turn의 첫 text 질의 embedding을 공식 Embeddings API에 직접 요청합니다. 자동화 prompt는 별도 opt-in일 때만 포함됩니다.
+Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 생성 모델을 직접 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결합니다. 예외적으로 private RAG를 명시적으로 켜면 등록 문서 chunk, 사용자가 preview에서 선택하고 다시 동의한 repository 파일 chunk, Knowledge 검색 미리보기 질의, 일반 turn의 첫 text 질의 embedding을 공식 Embeddings API에 직접 요청합니다. 자동화 prompt는 별도 opt-in일 때만 포함됩니다.
 
 ## 구조
 
@@ -83,7 +83,7 @@ source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uu
 
 ## 제품 PostgreSQL, tenant runtime, 내구성 history와 private RAG (6단계, 필수)
 
-`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. 자세한 결정은 `docs/adr/0001-product-database-boundary.md`부터 `docs/adr/0009-memory-workspace-switching.md`까지에 있습니다.
+`packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
 `0001_initial_product_schema.sql`부터 `0004_user_scoped_rag.sql`까지는 변경하지 않습니다. `0005_default_embedding_hnsw.sql`은 기본 embedding 조합 전용 HNSW index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. RAG의 private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
 
@@ -124,17 +124,41 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `DELETE /api/knowledge/documents/<uuid>?workspace_id=<uuid>`: 현재 사용자 소유 문서만 삭제하며 추측한 다른 사용자 ID는 `404`입니다.
 - `POST /api/knowledge/query?workspace_id=<uuid>`: `{ "query", "topK"?, "threshold"? }`로 cosine 검색 preview와 document/chunk citation, score를 반환합니다. raw query/document embedding은 반환하지 않습니다.
 
+Repository 파일 API는 Product API가 아니라 tenant Local Server에 있습니다. 둘 다 active authenticated
+workspace header, Local Server session/CSRF를 요구합니다.
+
+- `POST /api/knowledge/repository/preview`: exact body `{ "projectId": "<active-local-project-uuid>" }`. 현재 active project 안의 후보를 검사하고 일회용 token, 상대 경로, byte size/status, 제외 reason별 count와 상한만 반환합니다. 파일 내용과 absolute root는 반환하지 않습니다.
+- `POST /api/knowledge/repository/confirm`: exact body `{ "previewToken", "projectId", "paths": ["relative/path"] }`. 같은 private scope/active project의 현재 preview allowlist만 다시 검증해 저장하고 파일별 `indexed`/`unchanged`, document ID와 chunk count를 반환합니다.
+
 Knowledge mutation과 POST query는 auth와 별도로 정확한 Origin, session/CSRF cookie, `X-CSRF-Token`, URL/header workspace 일치를 모두 요구합니다. read도 매 요청 session과 membership을 다시 확인합니다. 동일 workspace owner/admin도 다른 사용자의 knowledge에는 접근하지 못합니다.
 
 ### Knowledge/RAG 개인정보 및 실행 정책
 
 RAG는 기본 비활성입니다. `KODEX_RAG_ENABLED=true`와 서버 전용 `OPENAI_API_KEY`를 함께 설정해야 활성화됩니다. 활성화하면 (1) 등록 문서를 나눈 chunk, (2) Knowledge 화면에서 사용자가 명시적으로 실행한 검색 미리보기 질의, (3) 일반 agent `turn/start` 입력의 첫 text 질의가 OpenAI Embeddings API로 전송됩니다. `KODEX_RAG_AUTOMATIONS_ENABLED=true`도 설정한 경우에만 자동화 prompt의 첫 text 질의가 추가로 전송됩니다.
 
-repository/source tree, clipboard, 전체 Codex thread/history는 자동 scan하거나 전송하지 않습니다. 개인정보·소스·사내 문서를 넣거나 질의하기 전에 조직의 외부 전송 정책을 확인하세요. Codex 생성 provider를 UI에서 Local로 바꿔도 RAG provider는 현재 OpenAI Embeddings API이므로, local model만 쓴다고 생각한 상태에서 `KODEX_RAG_ENABLED`를 켜지 않도록 주의해야 합니다. `OPENAI_API_KEY`와 Authorization header는 Product API/Local Server 메모리에만 있고 browser, DB, 로그, API JSON에 포함되지 않습니다.
+repository/source tree, clipboard, 전체 Codex thread/history는 자동 scan하거나 전송하지 않습니다. Repository 인덱싱은 Knowledge/RAG 화면에서 **후보 확인 → 상대 경로 선택 → 외부 embedding/저장 동의 → confirm**을 거쳐야 하며 Local Server만 active project root의 파일을 읽습니다. 개인정보·소스·사내 문서를 넣거나 질의하기 전에 조직의 외부 전송 정책을 확인하세요. Codex 생성 provider를 UI에서 Local로 바꿔도 RAG provider는 현재 OpenAI Embeddings API이므로, local model만 쓴다고 생각한 상태에서 `KODEX_RAG_ENABLED`를 켜지 않도록 주의해야 합니다. `OPENAI_API_KEY`와 Authorization header는 Product API/Local Server 메모리에만 있고 browser, DB, 로그, API JSON에 포함되지 않습니다.
+
+Repository preview는 `.git`, `node_modules`, `dist/build/coverage`, `.kodex-data`, link/reparse
+entry, non-file, binary/invalid UTF-8, oversized 파일과 `.env`/대표 credential·key 이름을 기본 제외하고
+Git ignore를 존중합니다. Git ignore 검증 실패는 git worktree에서 fail-closed합니다. 이름 기반 secret
+제외는 DLP가 아니며 source 안의 token이나 비표준 이름 secret을 모두 찾지 못합니다. Preview에는 파일
+내용이 아니라 상대 경로, bounded size/status와 제외 count만 표시되므로 사용자가 경로를 검토해야 합니다.
 
 활성화 시 기본 설정은 `text-embedding-3-small`, 1,536 dimensions, Unicode 1,600자 chunk/200자 overlap, cosine top-5, threshold 0.25, context 6,000자, 문서 60,000 code points입니다. Product API 본문 한도 기본값은 262,144 bytes로 4-byte Unicode 문서와 JSON 여유 공간을 수용합니다. `KODEX_RAG_DOCUMENT_MAX_CHARACTERS`를 늘리면 `PRODUCT_API_MAX_BODY_BYTES`도 늘려야 하며, 안전하지 않은 조합은 시작 시 설정 오류가 됩니다(본문 hard maximum 1,048,576 bytes). `.env.example`의 `OPENAI_EMBEDDING_*`, `KODEX_RAG_*`로 제한 안에서 조정합니다. 429·일시 5xx·네트워크 오류·timeout만 제한된 횟수로 재시도하고, 영구 provider 거부와 malformed 응답은 재시도하지 않습니다. 어떤 embedding/DB 오류도 agent turn 자체를 막지 않습니다.
 
+Repository 운영 상한은 preview당 5,000 filesystem entry, 후보 500개/읽기 16 MiB, token TTL
+10분/동시 256개입니다. Confirm은 최대 50개, 파일당 256 KiB, 합계 2 MiB와 500,000 Unicode
+code point이며 파일별 `KODEX_RAG_DOCUMENT_MAX_CHARACTERS`도 적용합니다. Token은 user+workspace+active
+project+real root에 묶인 일회용 값이고 confirm에서 metadata/type/realpath/size/UTF-8을 다시 검사합니다.
+Project 또는 private scope가 바뀌거나 파일이 preview 뒤 바뀌면 새 preview가 필요합니다.
+
 일반 `turn/start`는 첫 text query를 검색합니다. 결과는 document/chunk ID가 있는 bounded JSON block으로 원래 user input 뒤에 추가되며, block 자체가 untrusted reference이고 지시가 아니라는 경계를 포함합니다. 문서 속 prompt injection은 system/developer 권한으로 승격되지 않습니다. 결과 없음/실패는 원래 turn을 그대로 실행합니다. `turn/steer`에는 적용하지 않고 automation도 기본 미적용이며 `KODEX_RAG_AUTOMATIONS_ENABLED=true`에서만 사용합니다.
+
+Repository source는 private scope 안의 `repository:<local-project-uuid>`, document identity는 normalized
+relative path입니다. 기존 checksum이 같으면 embedding을 건너뛰고 변경 시 같은 document ID를 원자
+재색인합니다. Citation은 `repository_file` source type과 bounded project label/relative-path title로
+구분하며 absolute local path나 전체 파일을 agent/UI에 전달하지 않습니다. 선택 해제 또는 디스크 삭제는
+기존 RAG 문서를 자동 삭제하지 않습니다. 문서 목록의 명시적 삭제만 document/chunk를 제거합니다.
 
 dimensionless vector schema는 여러 model/dimension을 행별 지원합니다. 그중 정확히 `text-embedding-3-small` + 1,536 dimensions인 기본 조합만 `(embedding::vector(1536)) vector_cosine_ops` partial HNSW index를 사용할 수 있는 approximate cosine 경로로 검색합니다. PostgreSQL planner가 작은 corpus에 sequential scan이 더 싸다고 판단하면 이를 존중하며 제품 코드는 index scan을 강제하지 않습니다. 다른 모델 또는 차원은 기존 owner/model/dimension prefilter 뒤 exact generic cosine 검색으로 fallback하므로 모든 RAG 검색이 ANN인 것은 아닙니다.
 
@@ -301,7 +325,7 @@ Web Search, remote MCP, installer/package 결과는 검증하지 않습니다. �
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
-- RAG는 현재 수동 text 문서 등록과 명시적 미리보기/turn 질의를 지원합니다. 기본 `text-embedding-3-small`/1,536 조합은 planner 선택에 따라 HNSW ANN을 사용할 수 있고, 그 밖의 모델/차원은 exact cosine fallback입니다. repository connector, shared knowledge와 retention은 후속 작업입니다.
+- RAG는 수동 text 등록, 명시적 동의 기반 active repository 파일 인덱싱과 미리보기/turn 질의를 지원합니다. 기본 `text-embedding-3-small`/1,536 조합은 planner 선택에 따라 HNSW ANN을 사용할 수 있고, 그 밖의 모델/차원은 exact cosine fallback입니다. Shared knowledge, 자동 repository 동기화와 retention은 후속 작업입니다.
 - Portable runtime은 외부 PostgreSQL의 설치·기동·백업·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 

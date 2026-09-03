@@ -809,12 +809,14 @@ function publicKnowledgeDocument(document: {
   createdAt: Date;
   id: string;
   sourceId: string;
+  sourceType: string;
   title: string | null;
   updatedAt: Date;
 }): Record<string, unknown> {
   return {
     id: document.id,
     sourceId: document.sourceId,
+    sourceType: document.sourceType,
     title: document.title,
     createdAt: document.createdAt.toISOString(),
     updatedAt: document.updatedAt.toISOString(),

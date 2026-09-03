@@ -29,7 +29,7 @@ function knowledgeApplication(): KnowledgeApplication {
     indexTextDocument: vi.fn(async (_scope, input) => ({
       document: {
         id: input.documentId!, sourceId: '40000000-0000-4000-8000-000000000001',
-        sourceDocumentId: input.documentId!, title: input.title,
+        sourceDocumentId: input.documentId!, sourceType: 'manual_text', title: input.title,
         contentChecksum: Buffer.alloc(32), indexConfigurationChecksum: Buffer.alloc(32),
         createdAt: new Date('2026-08-31T00:00:00.000Z'), updatedAt: new Date('2026-08-31T00:00:00.000Z'),
       },
@@ -76,6 +76,7 @@ describe('knowledge Product API security and validation', () => {
         document: {
           id: documentId,
           sourceId: '40000000-0000-4000-8000-000000000001',
+          sourceType: 'manual_text',
           title: 'Private note',
           createdAt: '2026-08-31T00:00:00.000Z',
           updatedAt: '2026-08-31T00:00:00.000Z',

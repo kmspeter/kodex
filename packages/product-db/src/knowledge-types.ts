@@ -16,6 +16,7 @@ export interface KnowledgeDocumentRecord {
   createdAt: Date;
   id: string;
   sourceId: string;
+  sourceType: string;
   title: string | null;
   updatedAt: Date;
 }
@@ -32,6 +33,7 @@ export interface RetrievalCitation {
   documentTitle: string | null;
   rank: number;
   score: number;
+  sourceType: string;
 }
 
 export interface RetrievalResult {

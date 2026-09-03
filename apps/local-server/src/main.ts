@@ -12,6 +12,7 @@ import { LocalHttpServer } from './api/http-server.js';
 import { parseProductApiOrigins } from './api/security.js';
 import { DatabaseProductAuthorizer } from './auth/product-authorization.js';
 import { RuntimeManager } from './runtime-manager.js';
+import { RepositoryIndexer } from './rag/repository-indexer.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -122,6 +123,9 @@ try {
       'KODEX_AUTH_REVALIDATE_MS',
     ),
     productApiOrigins,
+    repositoryIndexer: knowledgeRuntime.service
+      ? new RepositoryIndexer(knowledgeRuntime.service, Date.now, {}, [configuredDataRoot])
+      : undefined,
     uiRoot,
     securityLog: (event) => process.stderr.write(`Kodex Local Server security event: ${event.kind} status=${event.status}\n`),
   });

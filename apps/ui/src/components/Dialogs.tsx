@@ -1,7 +1,10 @@
 import type { AppInfo, ConfigReadResponse, McpServerStatus, PluginListResponse, SkillsListEntry, Thread } from '@kodex/codex-protocol';
-import type { AutomationRecord, BootstrapResponse, KodexSettings, ProjectRecord } from '@kodex/kodex-api';
+import type {
+  AutomationRecord, BootstrapResponse, KodexSettings, ProjectRecord,
+  RepositoryIndexResponse, RepositoryPreviewResponse,
+} from '@kodex/kodex-api';
 import { ArchiveRestore, BookOpenText, Box, Clock3, LoaderCircle, Network, Play, Plus, Search, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react';
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ProductAuthClient } from '../auth/product-auth';
 import { KodexMark } from './Brand';
 import { SavedHistoryDialog } from './SavedHistoryDialog';
@@ -36,6 +39,7 @@ export function Dialogs(props: {
   onRemoveProject: (project: ProjectRecord) => Promise<void>;
   onUnarchive: (thread: Thread) => Promise<void>;
   onKnowledgeRequest: <T>(pathname: string, init?: RequestInit) => Promise<T>;
+  onLocalRequest: <T>(pathname: string, init?: RequestInit) => Promise<T>;
 }) {
   const { dialog, onClose } = props;
   const dialogRef = useRef<HTMLElement>(null);
@@ -98,7 +102,11 @@ export function Dialogs(props: {
     {props.dialog === 'skills' && <SkillsDialog skills={props.skills} apps={props.apps} plugins={props.plugins} mcpServers={props.mcpServers} />}
     {props.dialog === 'archived' && <ArchivedDialog threads={props.archivedThreads} onUnarchive={props.onUnarchive} pendingAction={pendingAction} runAction={runAction} />}
     {props.dialog === 'history' && <SavedHistoryDialog client={props.authClient} workspaceId={props.workspaceId} />}
-    {props.dialog === 'knowledge' && <KnowledgeDialog request={props.onKnowledgeRequest} />}
+    {props.dialog === 'knowledge' && <KnowledgeDialog
+      project={props.bootstrap.activeProject}
+      request={props.onKnowledgeRequest}
+      localRequest={props.onLocalRequest}
+    />}
     {props.dialog === 'settings' && <SettingsDialog {...props} pendingAction={pendingAction} runAction={runAction} />}
   </section></div>;
 }
@@ -107,6 +115,7 @@ interface KnowledgeDocumentDto {
   createdAt: string;
   id: string;
   sourceId: string;
+  sourceType: string;
   title: string | null;
   updatedAt: string;
 }
@@ -118,12 +127,15 @@ interface KnowledgeCitationDto {
   documentTitle: string | null;
   rank: number;
   score: number;
+  sourceType: string;
 }
 
 function KnowledgeDialog(props: {
+  project: ProjectRecord;
   request: <T>(pathname: string, init?: RequestInit) => Promise<T>;
+  localRequest: <T>(pathname: string, init?: RequestInit) => Promise<T>;
 }) {
-  const { request } = props;
+  const { localRequest, project, request } = props;
   const [documents, setDocuments] = useState<KnowledgeDocumentDto[]>([]);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -135,6 +147,14 @@ function KnowledgeDialog(props: {
   const [hasSearched, setHasSearched] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [repositoryPreview, setRepositoryPreview] = useState<RepositoryPreviewResponse | null>(null);
+  const [repositoryResult, setRepositoryResult] = useState<RepositoryIndexResponse | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
+  const [repositoryConsent, setRepositoryConsent] = useState(false);
+  const [repositoryPhase, setRepositoryPhase] = useState<'idle' | 'previewing' | 'ready' | 'indexing' | 'complete' | 'cancelled'>('idle');
+  const repositoryAbortRef = useRef<AbortController | null>(null);
+  const activeProjectIdRef = useRef(project.id);
+  useLayoutEffect(() => { activeProjectIdRef.current = project.id; }, [project.id]);
 
   const refresh = useCallback(async (): Promise<void> => {
     const result = await request<{ data: KnowledgeDocumentDto[] }>('/api/knowledge/documents?limit=100');
@@ -148,6 +168,102 @@ function KnowledgeDialog(props: {
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [refresh]);
+
+  useEffect(() => {
+    repositoryAbortRef.current?.abort();
+    repositoryAbortRef.current = null;
+    setRepositoryPreview(null);
+    setRepositoryResult(null);
+    setSelectedPaths(new Set());
+    setRepositoryConsent(false);
+    setRepositoryPhase('idle');
+    return () => repositoryAbortRef.current?.abort();
+  }, [project.id]);
+
+  async function previewRepository(): Promise<void> {
+    if (repositoryPhase === 'previewing' || repositoryPhase === 'indexing') return;
+    const controller = new AbortController();
+    repositoryAbortRef.current = controller;
+    setRepositoryPhase('previewing');
+    setRepositoryPreview(null);
+    setRepositoryResult(null);
+    setSelectedPaths(new Set());
+    setRepositoryConsent(false);
+    setError('');
+    try {
+      const preview = await localRequest<RepositoryPreviewResponse>('/api/knowledge/repository/preview', {
+        method: 'POST',
+        body: JSON.stringify({ projectId: project.id }),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || activeProjectIdRef.current !== project.id) return;
+      setRepositoryPreview(preview);
+      setRepositoryPhase('ready');
+    } catch (reason) {
+      if (controller.signal.aborted) setRepositoryPhase('cancelled');
+      else {
+        setRepositoryPhase('idle');
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (repositoryAbortRef.current === controller) repositoryAbortRef.current = null;
+    }
+  }
+
+  async function confirmRepository(): Promise<void> {
+    if (!repositoryPreview || !repositoryConsent || selectedPaths.size < 1 || repositoryPhase !== 'ready') return;
+    const controller = new AbortController();
+    repositoryAbortRef.current = controller;
+    setRepositoryPhase('indexing');
+    setError('');
+    try {
+      const result = await localRequest<RepositoryIndexResponse>('/api/knowledge/repository/confirm', {
+        method: 'POST',
+        body: JSON.stringify({
+          previewToken: repositoryPreview.previewToken,
+          projectId: project.id,
+          paths: repositoryPreview.files.filter((file) => selectedPaths.has(file.path)).map((file) => file.path),
+        }),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || activeProjectIdRef.current !== project.id) return;
+      setRepositoryResult(result);
+      setRepositoryPhase('complete');
+      setRepositoryConsent(false);
+      await refresh();
+    } catch (reason) {
+      if (controller.signal.aborted) setRepositoryPhase('cancelled');
+      else {
+        setRepositoryPhase('idle');
+        setRepositoryPreview(null);
+        setSelectedPaths(new Set());
+        setRepositoryConsent(false);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (repositoryAbortRef.current === controller) repositoryAbortRef.current = null;
+    }
+  }
+
+  function cancelRepository(): void {
+    repositoryAbortRef.current?.abort();
+    repositoryAbortRef.current = null;
+    setRepositoryPhase('cancelled');
+    setRepositoryPreview(null);
+    setSelectedPaths(new Set());
+    setRepositoryConsent(false);
+  }
+
+  function toggleRepositoryPath(relativePath: string): void {
+    if (!repositoryPreview || repositoryPhase !== 'ready') return;
+    setSelectedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(relativePath)) next.delete(relativePath);
+      else if (next.size < repositoryPreview.limits.maxSelectedFiles) next.add(relativePath);
+      return next;
+    });
+    setRepositoryConsent(false);
+  }
 
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -207,16 +323,32 @@ function KnowledgeDialog(props: {
   return <div className="dialog-body knowledge-dialog">
     <div className="dialog-intro"><div className="dialog-icon"><BookOpenText size={20} /></div><div><h3>Private user knowledge</h3><p>RAG를 켜면 등록 문서 chunk, 이 화면의 검색 미리보기 질의, 일반 agent turn의 첫 text 질의가 OpenAI Embeddings API로 전송됩니다. 자동화 prompt는 별도 opt-in일 때만 전송됩니다. Codex 생성 provider를 Local로 바꿔도 RAG provider는 OpenAI이며, repository/source tree·clipboard·전체 Codex history는 자동 전송하지 않습니다. 문서는 같은 workspace의 다른 사용자와 공유되지 않습니다.</p></div></div>
     {error && <p className="knowledge-error" role="alert">{error}</p>}
+    <section className="repository-knowledge" aria-label="Repository indexing">
+      <div className="repository-heading"><div><h4>현재 project 파일 인덱싱</h4><p><strong>{project.name}</strong>의 후보 경로와 크기만 먼저 표시합니다. 자동 인덱싱하지 않으며 선택한 파일만 확인 후 처리합니다.</p></div><button className="secondary-action" type="button" disabled={repositoryPhase === 'previewing' || repositoryPhase === 'indexing'} onClick={() => void previewRepository()}>{repositoryPhase === 'previewing' ? <LoaderCircle className="spin" size={12} /> : <Search size={12} />} {repositoryPreview ? '후보 다시 확인' : '후보 파일 확인'}</button></div>
+      {repositoryPhase === 'previewing' && <div className="repository-actions"><p className="repository-status" role="status"><LoaderCircle className="spin" size={12} /> 후보 경로와 안전 상태를 확인하는 중…</p><button className="secondary-action" type="button" onClick={cancelRepository}>취소</button></div>}
+      {repositoryPhase === 'cancelled' && <p className="repository-status" role="status">요청 표시를 취소했습니다. 서버에서 이미 시작된 파일은 완료될 수 있으므로 문서 목록을 다시 확인하고, 재시도하려면 새 preview를 만드세요.</p>}
+      {repositoryPreview && <>
+        <div className="repository-policy"><span>후보 {repositoryPreview.files.length}개</span><span>최대 선택 {repositoryPreview.limits.maxSelectedFiles}개</span><span>총 {Math.floor(repositoryPreview.limits.maxTotalBytes / 1024)} KiB 이하</span>{repositoryPreview.truncated && <span>탐색 상한 도달</span>}</div>
+        {repositoryPreview.excluded.length > 0 && <div className="repository-exclusions" aria-label="제외 요약">{repositoryPreview.excluded.map((entry) => <span key={entry.reason}>{entry.reason}: {entry.count}</span>)}</div>}
+        <div className="repository-file-list" aria-label="Repository candidate files">{repositoryPreview.files.map((file) => <label key={file.path}><input type="checkbox" checked={selectedPaths.has(file.path)} disabled={repositoryPhase !== 'ready'} onChange={() => toggleRepositoryPath(file.path)} /><span title={file.path}>{file.path}</span><code>{file.sizeBytes.toLocaleString('ko-KR')} B · eligible</code></label>)}{repositoryPreview.files.length === 0 && <p className="dialog-empty">안전 정책을 통과한 후보 파일이 없습니다.</p>}</div>
+        <label className="repository-consent"><input type="checkbox" checked={repositoryConsent} disabled={repositoryPhase !== 'ready' || selectedPaths.size === 0} onChange={(event) => setRepositoryConsent(event.target.checked)} /><span>선택한 {selectedPaths.size}개 파일의 텍스트가 private RAG chunk와 embedding으로 저장·전송될 수 있음을 확인합니다.</span></label>
+        <div className="repository-actions"><button className="primary-action" type="button" disabled={repositoryPhase !== 'ready' || !repositoryConsent || selectedPaths.size === 0} onClick={() => void confirmRepository()}>{repositoryPhase === 'indexing' && <LoaderCircle className="spin" size={12} />} 선택 파일 인덱싱</button>{(repositoryPhase === 'previewing' || repositoryPhase === 'indexing') && <button className="secondary-action" type="button" onClick={cancelRepository}>취소</button>}</div>
+      </>}
+      {repositoryPhase === 'indexing' && <p className="repository-status" role="status"><LoaderCircle className="spin" size={12} /> 선택 파일을 다시 검증하고 chunk/embedding을 저장하는 중…</p>}
+      {repositoryResult && <div className="repository-result" role="status"><strong>인덱싱 완료</strong><span>저장/갱신 {repositoryResult.indexed}개 · 변경 없음 {repositoryResult.unchanged}개</span>{repositoryResult.files.map((file) => <span key={file.path}>{file.path} · {file.status} · {file.chunkCount} chunks</span>)}</div>}
+      <p className="repository-deletion-note">선택 해제되거나 디스크에서 삭제된 파일은 자동으로 RAG에서 제거되지 않습니다. 아래 ‘내 문서’의 삭제 버튼으로 명시적으로 제거하세요.</p>
+    </section>
+    <h4 className="dialog-section-title">수동 텍스트 등록</h4>
     <form className="knowledge-form" onSubmit={(event) => void save(event)}>
       <label>문서 제목<input maxLength={200} required disabled={saving} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>텍스트 원문<textarea required disabled={saving} value={content} onChange={(event) => setContent(event.target.value)} placeholder="검색에 사용할 텍스트를 붙여 넣으세요." /></label>
       <button className="primary-action" type="submit" disabled={saving || !title.trim() || !content.trim()}>{saving && <LoaderCircle className="spin" size={12} />} {saving ? '임베딩 중…' : '문서 등록'}</button>
     </form>
     <h4 className="dialog-section-title">내 문서</h4>
-    <div className="knowledge-list" aria-busy={loading}>{loading && <p className="dialog-empty"><LoaderCircle className="spin" size={13} /> 문서를 불러오는 중…</p>}{!loading && documents.map((document) => <div className="knowledge-row" key={document.id}><div><strong>{document.title ?? '제목 없음'}</strong><span>{new Date(document.updatedAt).toLocaleString('ko-KR')}</span></div><button className="icon-button" aria-label={`${document.title ?? '문서'} 삭제`} disabled={deletingId !== null} onClick={() => void remove(document)}>{deletingId === document.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}</button></div>)}{!loading && documents.length === 0 && <p className="dialog-empty">등록된 문서가 없습니다.</p>}</div>
+    <div className="knowledge-list" aria-busy={loading}>{loading && <p className="dialog-empty"><LoaderCircle className="spin" size={13} /> 문서를 불러오는 중…</p>}{!loading && documents.map((document) => <div className="knowledge-row" key={document.id}><div><strong>{document.title ?? '제목 없음'}</strong><span>{document.sourceType === 'repository_file' ? 'Repository file · 명시적 삭제만 적용' : 'Manual text'} · {new Date(document.updatedAt).toLocaleString('ko-KR')}</span></div><button className="icon-button" aria-label={`${document.title ?? '문서'} RAG에서 명시적으로 삭제`} disabled={deletingId !== null} onClick={() => void remove(document)}>{deletingId === document.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}</button></div>)}{!loading && documents.length === 0 && <p className="dialog-empty">등록된 문서가 없습니다.</p>}</div>
     <h4 className="dialog-section-title">검색 미리보기</h4>
     <form className="knowledge-search" onSubmit={(event) => void search(event)}><input aria-label="Knowledge 검색어" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="문서에서 찾을 내용을 입력하세요." disabled={searching} /><button className="secondary-action" type="submit" disabled={searching || !query.trim()}>{searching ? <LoaderCircle className="spin" size={12} /> : <Search size={12} />} 검색</button></form>
-    <div className="citation-list" aria-live="polite">{citations.map((citation) => <article className="citation-row" key={citation.chunkId}><header><strong>{citation.documentTitle ?? citation.documentId}</strong><span>#{citation.rank} · {citation.score.toFixed(4)}</span></header><p>{citation.content}</p><code>document:{citation.documentId} · chunk:{citation.chunkId}</code></article>)}{!searching && hasSearched && citations.length === 0 && <p className="dialog-empty">기준 점수 이상의 검색 결과가 없습니다.</p>}</div>
+    <div className="citation-list" aria-live="polite">{citations.map((citation) => <article className="citation-row" key={citation.chunkId}><header><strong>{citation.documentTitle ?? citation.documentId}</strong><span>{citation.sourceType === 'repository_file' ? 'repository' : 'manual'} · #{citation.rank} · {citation.score.toFixed(4)}</span></header><p>{citation.content}</p><code>document:{citation.documentId} · chunk:{citation.chunkId}</code></article>)}{!searching && hasSearched && citations.length === 0 && <p className="dialog-empty">기준 점수 이상의 검색 결과가 없습니다.</p>}</div>
   </div>;
 }
 

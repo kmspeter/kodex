@@ -22,8 +22,10 @@ import {
 } from '../runtime-manager.js';
 import { LocalSecurity, LocalSecurityError, parseProductApiOrigins } from './security.js';
 import {
-  validateAutomationInput, validateIdBody, validateProjectMutation, validateSettingsPatch, validateSocketMessage,
+  validateAutomationInput, validateIdBody, validateProjectMutation, validateRepositoryConfirm,
+  validateRepositoryPreview, validateSettingsPatch, validateSocketMessage,
 } from './validation.js';
+import { RepositoryIndexError, type RepositoryIndexer } from '../rag/repository-indexer.js';
 
 export interface LocalHttpServerOptions {
   allowedOrigins: Set<string>;
@@ -31,6 +33,7 @@ export interface LocalHttpServerOptions {
   host: '127.0.0.1';
   port: number;
   productApiOrigins?: ReadonlySet<string>;
+  repositoryIndexer?: RepositoryIndexer;
   securityLog?: (event: { kind: 'http_rejected' | 'ws_revalidation_failed' | 'ws_upgrade_rejected'; status: number }) => void;
   uiRoot?: string;
 }
@@ -138,6 +141,9 @@ interface ClientConnection {
 }
 
 function publicError(error: unknown): { code: string; message: string; status: number } {
+  if (error instanceof RepositoryIndexError) {
+    return { code: error.code, message: error.publicMessage, status: error.status };
+  }
   if (error instanceof ProductAuthorizationError || error instanceof LocalSecurityError || error instanceof RuntimeCapacityError) {
     return { code: error.code, message: error.message, status: error.status };
   }
@@ -409,7 +415,7 @@ export class LocalHttpServer {
         const authorization = await this.authorizer.authorizeRequest(request, request.headers[PRODUCT_WORKSPACE_HEADER_NAME.toLowerCase()]);
         const lease = await this.runtimeManager.acquire(authorization);
         try {
-          await this.#routeApi(lease.runtime, request, response, url);
+          await this.#routeApi(lease.runtime, lease.scope, request, response, url);
         } finally {
           lease.release();
         }
@@ -432,7 +438,13 @@ export class LocalHttpServer {
     }
   }
 
-  async #routeApi(runtime: KodexRuntime, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  async #routeApi(
+    runtime: KodexRuntime,
+    scope: { userId: string; workspaceId: string },
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ): Promise<void> {
     if (url.pathname === '/api/bootstrap' && request.method === 'GET') {
       this.security.setSessionCookie(response);
       json(response, 200, await runtime.bootstrap(`http://127.0.0.1:${this.options.port}`, this.security.csrfToken, this.security.sessionToken));
@@ -452,6 +464,30 @@ export class LocalHttpServer {
     if (url.pathname === '/api/projects' && request.method === 'DELETE') {
       const body = validateIdBody(await readJsonBody(request, this.security.maxBodyBytes), 'project');
       await runtime.projects.remove(body.id); json(response, 200, {}); return;
+    }
+    if (url.pathname === '/api/knowledge/repository/preview' && request.method === 'POST') {
+      if (!this.options.repositoryIndexer) {
+        throw new RepositoryIndexError(503, 'repository_index_unavailable', 'Repository indexing is disabled.');
+      }
+      const body = validateRepositoryPreview(await readJsonBody(request, this.security.maxBodyBytes));
+      const project = await runtime.projects.active();
+      if (project.id !== body.projectId) {
+        throw new RepositoryIndexError(409, 'project_changed', 'The active project changed. Create a new preview.');
+      }
+      json(response, 200, await this.options.repositoryIndexer.preview(scope, project));
+      return;
+    }
+    if (url.pathname === '/api/knowledge/repository/confirm' && request.method === 'POST') {
+      if (!this.options.repositoryIndexer) {
+        throw new RepositoryIndexError(503, 'repository_index_unavailable', 'Repository indexing is disabled.');
+      }
+      const body = validateRepositoryConfirm(await readJsonBody(request, this.security.maxBodyBytes));
+      const project = await runtime.projects.active();
+      if (project.id !== body.projectId) {
+        throw new RepositoryIndexError(409, 'project_changed', 'The active project changed. Create a new preview.');
+      }
+      json(response, 200, await this.options.repositoryIndexer.confirm(scope, project, body));
+      return;
     }
     if (url.pathname === '/api/automations' && request.method === 'GET') { json(response, 200, { data: await runtime.store.listAutomations() }); return; }
     if (url.pathname === '/api/automations' && request.method === 'POST') {
