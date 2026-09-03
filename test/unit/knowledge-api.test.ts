@@ -48,6 +48,7 @@ describe('knowledge Product API security and validation', () => {
     const config: ProductApiConfig = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 4_096,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
     const server = new ProductApiServer({
       authenticate: vi.fn(async () => authContext()),
@@ -105,6 +106,7 @@ describe('knowledge Product API security and validation', () => {
     const config: ProductApiConfig = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 262_144,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
     const server = new ProductApiServer({
       authenticate: vi.fn(async () => authContext()),
@@ -142,6 +144,7 @@ describe('knowledge Product API security and validation', () => {
     const config: ProductApiConfig = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 262_144,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
     const auth = {
       authenticate: vi.fn(async () => authContext()),

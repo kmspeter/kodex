@@ -22,6 +22,7 @@
     "test:handshake": "vitest run --config vitest.opt-in.config.ts test/integration/real-app-server.test.ts",
     "test:product-db": "npm run build --workspace @kodex/product-db && vitest run --config vitest.product-db.config.ts",
     "test:product-auth": "npm run build --workspace @kodex/product-db && npm run build --workspace @kodex/product-api && vitest run --config vitest.product-auth.config.ts",
+    "test:auth-lifecycle-postgres": "node scripts/test-auth-lifecycle-postgres.mjs",
     "test:tenant-auth": "npm run build && vitest run --config vitest.tenant-auth.config.ts",
     "test:workspace-postgres": "node scripts/test-workspace-postgres.mjs",
     "test:history-postgres": "npm run build && vitest run --config vitest.history-postgres.config.ts",

@@ -3,6 +3,7 @@ import {
   Argon2idPasswordHasher,
   AuthService,
   PostgresAuthRepository,
+  PostgresLoginRateLimiter,
   PostgresWorkspaceRepository,
   requireProductDatabaseFromEnv,
   type ProductDatabase,
@@ -48,8 +49,17 @@ describe('real PostgreSQL workspace membership product flow', () => {
     const config: ProductApiConfig = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: Buffer.alloc(32, 31), secureCookies: false, sessionTtlMs: 3_600_000, maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
-    const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), { sessionTtlMs: config.sessionTtlMs });
+    const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
+      sessionTtlMs: config.sessionTtlMs,
+      loginRateLimitSecret: config.cookieSecret,
+      loginRateLimiter: new PostgresLoginRateLimiter(database, {
+        maxAttempts: config.loginRateLimitMaxAttempts,
+        windowMs: config.loginRateLimitWindowMs,
+        blockMs: config.loginRateLimitBlockMs,
+      }),
+    });
     server = new ProductApiServer(auth, config, undefined, undefined, undefined, new PostgresWorkspaceRepository(database));
     baseUrl = `http://127.0.0.1:${await server.listen()}`;
   });

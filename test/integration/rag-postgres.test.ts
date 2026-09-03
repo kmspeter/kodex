@@ -8,6 +8,7 @@ import {
   KnowledgeOperationError,
   KnowledgeService,
   PostgresAuthRepository,
+  PostgresLoginRateLimiter,
   PostgresKnowledgeRepository,
   createProductDatabase,
   hashSessionToken,
@@ -624,7 +625,13 @@ describe('real pgvector private RAG integration', () => {
 
   it('rechecks revoked sessions and removed memberships on every Product API RAG request', async () => {
     const authRepository = new PostgresAuthRepository(database);
-    const auth = await AuthService.create(authRepository, passwordHasher(), { dummyPasswordHash: 'fake:dummy' });
+    const auth = await AuthService.create(authRepository, passwordHasher(), {
+      dummyPasswordHash: 'fake:dummy',
+      loginRateLimitSecret: Buffer.alloc(32, 27),
+      loginRateLimiter: new PostgresLoginRateLimiter(database, {
+        maxAttempts: 5, windowMs: 900_000, blockMs: 900_000,
+      }),
+    });
     const tokenOne = `rag-session-${randomUUID()}`;
     const tokenTwo = `rag-session-${randomUUID()}`;
     const sessionOne = randomUUID();
@@ -638,6 +645,7 @@ describe('real pgvector private RAG integration', () => {
       allowedOrigins: new Set(['http://127.0.0.1:5173']),
       cookieSecret: Buffer.alloc(32, 27), secureCookies: false,
       sessionTtlMs: 60_000, maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
     const server = new ProductApiServer(auth, apiConfig, undefined, service);
     const port = await server.listen();

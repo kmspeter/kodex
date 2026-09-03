@@ -50,6 +50,20 @@ export interface ProductAuthResponseDto extends ProductAuthContextDto {
   csrfToken: string;
 }
 
+export interface ProductSessionDto {
+  createdAt: string;
+  current: boolean;
+  expiresAt: string;
+  id: string;
+  lastSeenAt: string | null;
+  revoked: boolean;
+  revokedAt: string | null;
+}
+
+export interface ProductSessionsDto {
+  sessions: ProductSessionDto[];
+}
+
 export const PRODUCT_HISTORY_DEFAULT_LIMIT = 25;
 export const PRODUCT_HISTORY_MAX_LIMIT = 50;
 export const PRODUCT_HISTORY_PREVIEW_CHARACTERS = 4_000;
@@ -149,6 +163,44 @@ function workspaceDate(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function nullableWorkspaceDate(value: unknown): value is string | null {
+  return value === null || workspaceDate(value);
+}
+
+export function parseProductSession(value: unknown): ProductSessionDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, [
+      'createdAt', 'current', 'expiresAt', 'id', 'lastSeenAt', 'revoked', 'revokedAt',
+    ])
+    || !isUuid(value.id)
+    || typeof value.current !== 'boolean'
+    || !workspaceDate(value.createdAt)
+    || !nullableWorkspaceDate(value.lastSeenAt)
+    || !workspaceDate(value.expiresAt)
+    || typeof value.revoked !== 'boolean'
+    || !nullableWorkspaceDate(value.revokedAt)
+    || value.revoked !== (value.revokedAt !== null)
+  ) throw new Error('Invalid product session response.');
+  return value as unknown as ProductSessionDto;
+}
+
+/** Strict browser-boundary parser; rejects secret fields and oversized session lists. */
+export function parseProductSessions(value: unknown): ProductSessionsDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['sessions'])
+    || !Array.isArray(value.sessions)
+    || value.sessions.length > 100
+  ) throw new Error('Invalid product sessions response.');
+  const sessions = value.sessions.map(parseProductSession);
+  const current = sessions.filter((session) => session.current);
+  if (current.length !== 1 || current[0].revoked) {
+    throw new Error('Invalid current product session response.');
+  }
+  return { sessions };
 }
 
 function workspaceEmail(value: unknown): value is string {

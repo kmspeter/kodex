@@ -29,6 +29,7 @@ import { RequestCard } from './components/RequestCard';
 import { Sidebar } from './components/Sidebar';
 import { WorkspaceHeader } from './components/WorkspaceHeader';
 import { WorkspaceManagementDialog } from './components/WorkspaceManagementDialog';
+import { SecurityDialog } from './components/SecurityDialog';
 import { eventReducer, initialEventState } from './state/events';
 
 const EMPTY_GIT: GitStatus = { isRepository: false, branch: '', files: [], totals: { files: 0, added: 0, removed: 0 } };
@@ -57,6 +58,7 @@ export function ProductWorkspaceApp(props: {
   const [selection, setSelection] = useState<ProductRuntimeWorkspaceSelection | null>(null);
   const [transitionTargetId, setTransitionTargetId] = useState<string | null>(null);
   const [managingWorkspace, setManagingWorkspace] = useState(false);
+  const [managingSecurity, setManagingSecurity] = useState(false);
   const account = props.account;
   const reconciledSelection = reconcileProductRuntimeWorkspace(account, selection);
   const workspace = reconciledSelection
@@ -84,8 +86,9 @@ export function ProductWorkspaceApp(props: {
         ? '현재 membership은 읽기 전용입니다. Kodex runtime을 시작하려면 owner, admin 또는 member 역할이 필요합니다.'
         : '계정은 인증되었지만 활성 membership이 없어 로컬 runtime을 시작하지 않았습니다. Workspace 관리자에게 접근 권한을 요청하세요.'}</p>
       <button className="auth-submit" type="button" onClick={() => setManagingWorkspace(true)}>새 workspace 만들기</button>
+      <button className="secondary-action" type="button" onClick={() => setManagingSecurity(true)}>Security</button>
       <button className="secondary-action" type="button" disabled={props.loggingOut} onClick={() => void props.onLogout()}>로그아웃</button>
-    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); }} />}</>;
+    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
   }
   return <><AuthenticatedApp
     key={`${props.account.user.id}:${workspace.id}`}
@@ -100,8 +103,9 @@ export function ProductWorkspaceApp(props: {
       setSelection({ userId: account.user.id, workspaceId: nextWorkspaceId });
     }}
     onManageWorkspace={() => setManagingWorkspace(true)}
+    onManageSecurity={() => setManagingSecurity(true)}
     workspaceId={workspace.id}
-  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} />}</>;
+  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
 }
 
 function AuthenticatedApp(props: {
@@ -113,6 +117,7 @@ function AuthenticatedApp(props: {
   loggingOut: boolean;
   onLogout: () => Promise<void>;
   onManageWorkspace: () => void;
+  onManageSecurity: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
   workspaceId: string;
 }) {
@@ -448,7 +453,7 @@ function AuthenticatedApp(props: {
   return <main className={`app-shell ${sidebarOpen ? '' : 'sidebar-collapsed'} ${detailsOpen ? 'details-visible' : ''}`}>
     <Sidebar open={sidebarOpen} connection={connection} threads={events.threads} activeThreadId={events.activeThread?.id ?? null} projects={bootstrap.projects} activeProjectId={bootstrap.activeProject.id} onClose={() => setSidebarVisibility(false)} onNew={() => { setPopover(null); threadSelectionGenerationRef.current += 1; dispatch({ type: 'thread-selected', thread: null }); }} onSelectThread={(thread) => { setPopover(null); void selectThread(thread); }} onSelectProject={(project) => { setPopover(null); void selectProject(project); }} onDialog={(next) => void openDialog(next)} />
     <section className="workspace-shell">
-      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} menu={visiblePopover === 'header-open' ? 'open' : visiblePopover === 'header-more' ? 'more' : visiblePopover === 'header-account' ? 'account' : null} networkEnabled={bootstrap.settings.network.shell} account={props.account} activeWorkspace={props.activeWorkspace} loggingOut={props.loggingOut} onMenu={(next) => { if (next && detailsOpenRef.current) return; setPopover(next ? `header-${next}` : null); }} onOpenSidebar={() => setSidebarVisibility(true)} onToggleDetails={toggleDetailsPanel} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onLogout={() => void props.onLogout()} onManageWorkspace={props.onManageWorkspace} onSelectWorkspace={(workspaceId) => { setPopover(null); props.onSelectWorkspace(workspaceId); }} onToast={setToast} />
+      <WorkspaceHeader sidebarOpen={sidebarOpen} thread={events.activeThread} project={bootstrap.activeProject} git={git} detailsOpen={detailsOpen} menu={visiblePopover === 'header-open' ? 'open' : visiblePopover === 'header-more' ? 'more' : visiblePopover === 'header-account' ? 'account' : null} networkEnabled={bootstrap.settings.network.shell} account={props.account} activeWorkspace={props.activeWorkspace} loggingOut={props.loggingOut} onMenu={(next) => { if (next && detailsOpenRef.current) return; setPopover(next ? `header-${next}` : null); }} onOpenSidebar={() => setSidebarVisibility(true)} onToggleDetails={toggleDetailsPanel} onArchive={() => void archiveActive()} onFork={() => void forkActive()} onRename={() => void renameActive()} onLogout={() => void props.onLogout()} onManageWorkspace={props.onManageWorkspace} onManageSecurity={props.onManageSecurity} onSelectWorkspace={(workspaceId) => { setPopover(null); props.onSelectWorkspace(workspaceId); }} onToast={setToast} />
       <section className="workspace-body"><section className="conversation-pane"><div className="conversation-scroll"><div className="conversation-inner">
         {!engineReady && <div className="setup-card"><ShieldCheck size={20} /><div><strong>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY 설정이 필요합니다' : bootstrap.engine.state === 'missing-binary' ? '로컬 Codex 빌드가 필요합니다' : 'Codex App Server를 시작할 수 없습니다'}</strong><p>{bootstrap.engine.message}</p><code>{bootstrap.engine.state === 'missing-key' ? 'OPENAI_API_KEY=your_openai_api_key_here' : bootstrap.engine.state === 'missing-binary' ? 'npm run codex:build' : 'App Server failed locally'}</code><span>키는 Local Server와 선택된 provider를 실행하는 App Server 자식 프로세스에만 존재하며 브라우저로 전달되지 않습니다.</span>{bootstrap.engine.state === 'failed' && <button className="secondary-action" onClick={() => void client.http('/api/engine/restart', { method: 'POST', body: '{}' }).then((engine) => setBootstrap((current) => current ? { ...current, engine: engine as BootstrapResponse['engine'] } : current)).catch((error: unknown) => setToast(error instanceof Error ? error.message : String(error)))}>Restart App Server</button>}</div></div>}
         {!events.activeThread && engineReady && <div className="empty-thread"><KodexMark compact /><h2>What would you like Kodex to build?</h2><p>{bootstrap.activeProject.path}</p><div className="suggestion-grid"><button onClick={() => setDraft('이 코드베이스의 구조와 핵심 흐름을 설명해줘')}><Code2 size={14} /> Explain this codebase</button><button onClick={() => setDraft('현재 로컬 변경 사항에서 버그와 회귀 가능성을 검토해줘')}><GitCommitHorizontal size={14} /> Review current changes</button><button onClick={() => setDraft('실패하는 테스트를 찾아 원인을 진단해줘')}><SquareTerminal size={14} /> Diagnose failing tests</button><button onClick={() => setDraft('필요하면 공식 Web Search와 허용된 네트워크 도구를 사용해 이 프로젝트를 개선해줘')}><ShieldCheck size={14} /> Improve with tools</button></div></div>}

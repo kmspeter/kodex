@@ -3,6 +3,7 @@ import {
   isUuid,
   parseProductHistoryThreadDetail,
   parseProductHistoryThreadPage,
+  parseProductSessions,
   parseProductWorkspace,
   parseProductWorkspaceMember,
   parseProductWorkspaceMembers,
@@ -14,6 +15,7 @@ import {
   type ProductAuthContextDto,
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
+  type ProductSessionDto,
   type ProductUserDto,
   type ProductWorkspaceMemberDto,
   type ProductWorkspaceDto,
@@ -24,6 +26,7 @@ export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
 export type ProductWorkspaceMember = ProductWorkspaceMemberDto;
 export type ProductAuthContext = ProductAuthContextDto;
+export type ProductSession = ProductSessionDto;
 
 export interface ProductRuntimeWorkspaceSelection {
   userId: string;
@@ -344,6 +347,55 @@ export class ProductAuthClient {
     this.#csrfToken = null;
   }
 
+  async sessions(): Promise<ProductSession[]> {
+    const response = await this.#request('/api/auth/sessions', { method: 'GET' });
+    try {
+      return parseProductSessions(await this.#json(response)).sessions;
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The account security API returned an invalid session list.');
+    }
+  }
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    const response = await this.#authMutation('/api/auth/password', 'PATCH', {
+      currentPassword,
+      newPassword,
+    });
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The password change response was invalid.', response.status);
+    }
+  }
+
+  async revokeSession(session: Pick<ProductSession, 'current' | 'id'>): Promise<void> {
+    if (!isUuid(session.id) || typeof session.current !== 'boolean') {
+      throw new ProductAuthError('rejected', 'Session request scope is invalid.');
+    }
+    const response = await this.#authMutation(
+      `/api/auth/sessions/${encodeURIComponent(session.id)}`,
+      'DELETE',
+      undefined,
+    );
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The session revoke response was invalid.', response.status);
+    }
+    if (session.current) this.#invalidateSession();
+  }
+
+  async revokeOtherSessions(): Promise<void> {
+    const response = await this.#authMutation('/api/auth/sessions', 'DELETE', undefined);
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The session revoke response was invalid.', response.status);
+    }
+  }
+
+  async logoutAll(): Promise<void> {
+    const response = await this.#authMutation('/api/auth/logout-all', 'POST', {});
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The logout-all response was invalid.', response.status);
+    }
+    this.#invalidateSession();
+  }
+
   async createWorkspace(name: string): Promise<ProductWorkspace> {
     const response = await this.#workspaceMutation('/api/workspaces', 'POST', { name });
     if (response.status !== 201) throw new ProductAuthError('invalid-response', 'The workspace create response was invalid.', response.status);
@@ -468,6 +520,14 @@ export class ProductAuthClient {
     method: 'DELETE' | 'PATCH' | 'POST',
     body: Record<string, unknown> | undefined,
   ): Promise<Response> {
+    return this.#authMutation(pathname, method, body);
+  }
+
+  async #authMutation(
+    pathname: string,
+    method: 'DELETE' | 'PATCH' | 'POST',
+    body: Record<string, unknown> | undefined,
+  ): Promise<Response> {
     if (!this.#csrfToken) throw new ProductAuthError('unauthenticated', 'Authentication is required.');
     const response = await this.#request(pathname, {
       method,
@@ -478,6 +538,11 @@ export class ProductAuthClient {
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     return response;
+  }
+
+  #invalidateSession(): void {
+    this.#csrfToken = null;
+    for (const listener of this.#unauthenticatedListeners) listener();
   }
 
   async #parseWorkspaceMember(response: Response): Promise<ProductWorkspaceMember> {
@@ -557,8 +622,7 @@ export class ProductAuthClient {
 
     const error = parseErrorResponse(await this.#json(response));
     if (response.status === 401 && error.code === 'unauthenticated') {
-      this.#csrfToken = null;
-      for (const listener of this.#unauthenticatedListeners) listener();
+      this.#invalidateSession();
       throw new ProductAuthError('unauthenticated', error.message, response.status, error.code);
     }
     if (response.status >= 500) {

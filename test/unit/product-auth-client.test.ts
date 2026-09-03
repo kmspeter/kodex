@@ -226,6 +226,64 @@ describe('product auth browser contract', () => {
     await expect(client.logout()).rejects.toMatchObject({ kind: 'invalid-response' });
   });
 
+  it('strictly parses safe session DTOs and sends CSRF on every security mutation', async () => {
+    const session = {
+      id: '10000000-0000-4000-8000-000000000001',
+      current: true,
+      createdAt: '2026-08-31T00:00:00.000Z',
+      lastSeenAt: null,
+      expiresAt: '2026-08-31T12:00:00.000Z',
+      revoked: false,
+      revokedAt: null,
+    };
+    const other = { ...session, id: '10000000-0000-4000-8000-000000000002', current: false };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [session, other] }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const invalidated = vi.fn();
+    client.onUnauthenticated(invalidated);
+    await client.me();
+    await expect(client.sessions()).resolves.toEqual([session, other]);
+    await client.changePassword('current password', 'new password long enough');
+    await client.revokeOtherSessions();
+    await client.revokeSession(other);
+    await client.logoutAll();
+
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:47832/api/auth/sessions',
+      'http://127.0.0.1:47832/api/auth/password',
+      'http://127.0.0.1:47832/api/auth/sessions',
+      `http://127.0.0.1:47832/api/auth/sessions/${other.id}`,
+      'http://127.0.0.1:47832/api/auth/logout-all',
+    ]);
+    for (const [, init] of fetchMock.mock.calls.slice(2)) {
+      expect(new Headers(init.headers).get('X-CSRF-Token')).toBe(csrfToken);
+      expect(init).toMatchObject({ credentials: 'include', cache: 'no-store' });
+    }
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      currentPassword: 'current password',
+      newPassword: 'new password long enough',
+    });
+    expect(invalidated).toHaveBeenCalledOnce();
+
+    const malformed = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({
+        sessions: [{ ...session, tokenHash: 'forbidden' }],
+      })),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await expect(malformed.sessions()).rejects.toMatchObject({ kind: 'invalid-response' });
+  });
+
   it('preserves workspace and CSRF headers when Knowledge supplies a Headers instance', async () => {
     const workspaceId = '20000000-0000-4000-8000-000000000001';
     const fetchMock = vi.fn()

@@ -5,6 +5,7 @@ import {
   AuthService,
   PostgresAuthRepository,
   PostgresHistoryRepository,
+  PostgresLoginRateLimiter,
   PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
@@ -52,6 +53,12 @@ try {
   const repository = new PostgresAuthRepository(database);
   const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
     sessionTtlMs: config.sessionTtlMs,
+    loginRateLimitSecret: config.cookieSecret,
+    loginRateLimiter: new PostgresLoginRateLimiter(database, {
+      maxAttempts: config.loginRateLimitMaxAttempts,
+      windowMs: config.loginRateLimitWindowMs,
+      blockMs: config.loginRateLimitBlockMs,
+    }),
   });
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   validateKnowledgeBodyCapacity(config, knowledgeRuntime.config);

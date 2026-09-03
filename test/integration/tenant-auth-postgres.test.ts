@@ -57,6 +57,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
   let viewerWorkspace: string;
   let sessionIdA: string;
   let sessionIdB: string;
+  let passwordHashA: string;
   const tokenA = token();
   const tokenB = token();
   const expiredToken = token();
@@ -68,6 +69,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     await database.migrate();
     repository = new PostgresAuthRepository(database);
     const passwordHash = await new Argon2idPasswordHasher().hash('integration-only-password');
+    passwordHashA = passwordHash;
     const expiresAt = new Date(Date.now() + 60 * 60_000);
     const accountA = await repository.registerAccount({
       email: `${runPrefix}-a@example.invalid`, displayName: null, passwordHash,
@@ -212,7 +214,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     second.release();
   });
 
-  it('blocks WS cross-tenant upgrades, isolates events, and closes after DB session revocation', async () => {
+  it('blocks WS cross-tenant upgrades, isolates events, and revalidates password/session revocation', async () => {
     const establishedA = await bootstrap(tokenA, workspaceA);
     const establishedB = await bootstrap(tokenB, workspaceB);
     const establishedSharedB = await bootstrap(tokenB, sharedWorkspace);
@@ -241,6 +243,15 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     const socketA = await socket(tokenA, workspaceA, establishedA.body.sessionToken);
     const socketB = await socket(tokenB, workspaceB, establishedB.body.sessionToken);
     const sharedSocketB = await socket(tokenB, sharedWorkspace, establishedSharedB.body.sessionToken);
+    const otherTokenA = token();
+    await repository.createSession({
+      userId: userA,
+      credentialHash: passwordHashA,
+      tokenHash: hashSessionToken(otherTokenA),
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+    });
+    const establishedOtherA = await bootstrap(otherTokenA, workspaceA);
+    const otherSocketA = await socket(otherTokenA, workspaceA, establishedOtherA.body.sessionToken);
     try {
       const authA = (await repository.findAuthContext(hashSessionToken(tokenA)))!;
       const lease = await manager.acquire({
@@ -253,8 +264,21 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(socketB.messages.some((message) => message.type === 'engine')).toBe(false);
 
+      const passwordRevoked = new Promise<number>((resolve) => otherSocketA.webSocket.once('close', (code) => resolve(code)));
+      const hasher = new Argon2idPasswordHasher();
+      await repository.changePassword({
+        userId: userA,
+        currentSessionId: sessionIdA,
+        nextPasswordHash: await hasher.hash('integration-password-after-change'),
+        verifyCurrentPassword: (storedHash) => hasher.verify(storedHash, 'integration-only-password'),
+      });
+      await expect(passwordRevoked).resolves.toBe(1008);
+      expect((await localRequest(otherTokenA, workspaceA)).status).toBe(401);
+      expect((await localRequest(tokenA, workspaceA)).status).toBe(200);
+      expect(socketA.webSocket.readyState).toBe(WebSocket.OPEN);
+
       const closed = new Promise<number>((resolve) => socketA.webSocket.once('close', (code) => resolve(code)));
-      await database.query('UPDATE auth_sessions SET revoked_at = now() WHERE token_hash = $1', [hashSessionToken(tokenA)]);
+      await repository.revokeSessionById(userA, sessionIdA, sessionIdA);
       await expect(closed).resolves.toBe(1008);
       expect(socketB.webSocket.readyState).toBe(WebSocket.OPEN);
 
@@ -280,6 +304,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
       );
     } finally {
       socketA.webSocket.close();
+      otherSocketA.webSocket.close();
       socketB.webSocket.close();
       sharedSocketB.webSocket.close();
     }

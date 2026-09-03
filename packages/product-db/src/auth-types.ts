@@ -23,6 +23,15 @@ export interface AuthContext {
   user: AuthUser;
 }
 
+export interface AuthSession {
+  createdAt: Date;
+  current: boolean;
+  expiresAt: Date;
+  id: string;
+  lastSeenAt: Date | null;
+  revokedAt: Date | null;
+}
+
 export class WorkspaceAuthorizationError extends Error {
   constructor() {
     super('Workspace access is not permitted');

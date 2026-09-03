@@ -1,6 +1,7 @@
 import type { ProductDatabase } from './database.js';
 import type {
   AuthContext,
+  AuthSession,
   AuthUser,
   WorkspaceMembership,
   WorkspaceRole,
@@ -27,24 +28,58 @@ export interface LoginCredential {
 }
 
 export interface CreateSessionInput {
+  credentialHash: string;
   expiresAt: Date;
   tokenHash: Buffer;
   userId: string;
 }
 
 export interface AuthRepository {
+  changePassword(input: ChangePasswordInput): Promise<number>;
   createSession(input: CreateSessionInput): Promise<AuthContext>;
   findAuthContext(tokenHash: Buffer): Promise<AuthContext | undefined>;
   findLoginCredential(email: string): Promise<LoginCredential | undefined>;
+  listSessions(userId: string, currentSessionId: string): Promise<AuthSession[]>;
   registerAccount(input: RegisterAccountInput): Promise<RegistrationRecord>;
+  revokeAllSessions(userId: string, currentSessionId: string): Promise<number>;
+  revokeOtherSessions(userId: string, currentSessionId: string): Promise<number>;
   revokeSession(tokenHash: Buffer): Promise<boolean>;
+  revokeSessionById(userId: string, sessionId: string, currentSessionId: string): Promise<boolean>;
   updatePasswordHash(userId: string, previousHash: string, nextHash: string): Promise<void>;
+}
+
+export interface ChangePasswordInput {
+  currentSessionId: string;
+  nextPasswordHash: string;
+  userId: string;
+  verifyCurrentPassword(passwordHash: string): Promise<boolean>;
 }
 
 export class RegistrationConflictError extends Error {
   constructor() {
     super('Registration could not be completed');
     this.name = 'RegistrationConflictError';
+  }
+}
+
+export class PasswordChangeRejectedError extends Error {
+  constructor() {
+    super('Password could not be changed');
+    this.name = 'PasswordChangeRejectedError';
+  }
+}
+
+export class SessionNotFoundError extends Error {
+  constructor() {
+    super('Session was not found');
+    this.name = 'SessionNotFoundError';
+  }
+}
+
+export class LoginCredentialChangedError extends Error {
+  constructor() {
+    super('Login credential changed during authentication');
+    this.name = 'LoginCredentialChangedError';
   }
 }
 
@@ -73,6 +108,14 @@ interface SessionContextRow extends UserRow {
 
 interface CredentialRow extends UserRow {
   password_hash: string;
+}
+
+interface SessionRow {
+  created_at: Date;
+  expires_at: Date;
+  id: string;
+  last_seen_at: Date | null;
+  revoked_at: Date | null;
 }
 
 function userFromRow(row: UserRow): AuthUser {
@@ -195,13 +238,81 @@ export class PostgresAuthRepository implements AuthRepository {
     return row ? { user: userFromRow(row), passwordHash: row.password_hash } : undefined;
   }
 
+  async changePassword(input: ChangePasswordInput): Promise<number> {
+    return this.database.transaction(async (client) => {
+      const account = await client.query(
+        `SELECT id FROM users
+         WHERE id = $1 AND status = 'active' AND deleted_at IS NULL
+         FOR UPDATE`,
+        [input.userId],
+      );
+      if ((account.rowCount ?? 0) !== 1) throw new PasswordChangeRejectedError();
+      const currentSession = await client.query(
+        `SELECT id FROM auth_sessions
+         WHERE id = $1 AND user_id = $2
+           AND revoked_at IS NULL AND expires_at > now()
+         FOR UPDATE`,
+        [input.currentSessionId, input.userId],
+      );
+      if ((currentSession.rowCount ?? 0) !== 1) throw new PasswordChangeRejectedError();
+      const credential = await client.query<{ password_hash: string }>(
+        `SELECT password_hash
+         FROM password_credentials
+         WHERE user_id = $1
+         FOR UPDATE`,
+        [input.userId],
+      );
+      const row = credential.rows[0];
+      if (!row || !await input.verifyCurrentPassword(row.password_hash)) {
+        throw new PasswordChangeRejectedError();
+      }
+
+      await client.query(
+        `UPDATE password_credentials
+         SET password_hash = $2, updated_at = now()
+         WHERE user_id = $1`,
+        [input.userId, input.nextPasswordHash],
+      );
+      const revoked = await client.query(
+        `UPDATE auth_sessions
+         SET revoked_at = COALESCE(revoked_at, now())
+         WHERE user_id = $1
+           AND id <> $2
+           AND revoked_at IS NULL
+           AND expires_at > now()`,
+        [input.userId, input.currentSessionId],
+      );
+      await client.query(
+        `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, details)
+         VALUES ($1, 'password_changed', 'account', $2, $3::jsonb)`,
+        [
+          input.userId,
+          input.userId,
+          JSON.stringify({ revokedSessionCount: revoked.rowCount ?? 0 }),
+        ],
+      );
+      return revoked.rowCount ?? 0;
+    });
+  }
+
   async createSession(input: CreateSessionInput): Promise<AuthContext> {
-    const sessionResult = await this.database.query<{ expires_at: Date; id: string }>(
-      `INSERT INTO auth_sessions (user_id, token_hash, expires_at)
-       VALUES ($1, $2, $3)
-       RETURNING id, expires_at`,
-      [input.userId, input.tokenHash, input.expiresAt],
-    );
+    const sessionResult = await this.database.transaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR KEY SHARE', [input.userId]);
+      const credential = await client.query(
+        `SELECT user_id
+         FROM password_credentials
+         WHERE user_id = $1 AND password_hash = $2
+         FOR SHARE`,
+        [input.userId, input.credentialHash],
+      );
+      if ((credential.rowCount ?? 0) !== 1) throw new LoginCredentialChangedError();
+      return client.query<{ expires_at: Date; id: string }>(
+        `INSERT INTO auth_sessions (user_id, token_hash, expires_at)
+         VALUES ($1, $2, $3)
+         RETURNING id, expires_at`,
+        [input.userId, input.tokenHash, input.expiresAt],
+      );
+    });
     const context = await this.findAuthContext(input.tokenHash);
     if (!context) {
       throw new Error(`New session ${sessionResult.rows[0].id} could not be read`);
@@ -250,15 +361,93 @@ export class PostgresAuthRepository implements AuthRepository {
     return context;
   }
 
-  async revokeSession(tokenHash: Buffer): Promise<boolean> {
-    const result = await this.database.query(
-      `UPDATE auth_sessions
-       SET revoked_at = COALESCE(revoked_at, now())
-       WHERE token_hash = $1
-         AND revoked_at IS NULL`,
-      [tokenHash],
+  async listSessions(userId: string, currentSessionId: string): Promise<AuthSession[]> {
+    const result = await this.database.query<SessionRow>(
+      `SELECT id, created_at, last_seen_at, expires_at, revoked_at
+       FROM auth_sessions
+       WHERE user_id = $1
+       ORDER BY (id = $2) DESC, created_at DESC, id DESC
+       LIMIT 100`,
+      [userId, currentSessionId],
     );
-    return (result.rowCount ?? 0) > 0;
+    return result.rows.map((row) => ({
+      id: row.id,
+      current: row.id === currentSessionId,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at,
+    }));
+  }
+
+  async revokeSession(tokenHash: Buffer): Promise<boolean> {
+    return this.database.transaction(async (client) => {
+      const candidate = await client.query<{ user_id: string }>(
+        'SELECT user_id FROM auth_sessions WHERE token_hash = $1',
+        [tokenHash],
+      );
+      if (!candidate.rows[0]) return false;
+      await client.query('SELECT id FROM users WHERE id = $1 FOR KEY SHARE', [candidate.rows[0].user_id]);
+      const session = await client.query<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM auth_sessions WHERE token_hash = $1 FOR UPDATE`,
+        [tokenHash],
+      );
+      const row = session.rows[0];
+      if (!row) return false;
+      const result = await client.query(
+        `UPDATE auth_sessions
+         SET revoked_at = COALESCE(revoked_at, now())
+         WHERE id = $1 AND revoked_at IS NULL`,
+        [row.id],
+      );
+      if ((result.rowCount ?? 0) > 0) {
+        await client.query(
+          `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, details)
+           VALUES ($1, 'session_revoked', 'auth_session', $2, '{"reason":"logout"}'::jsonb)`,
+          [row.user_id, row.id],
+        );
+      }
+      return (result.rowCount ?? 0) > 0;
+    });
+  }
+
+  async revokeSessionById(
+    userId: string,
+    sessionId: string,
+    currentSessionId: string,
+  ): Promise<boolean> {
+    return this.database.transaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR KEY SHARE', [userId]);
+      const session = await client.query<{ id: string; revoked_at: Date | null }>(
+        `SELECT id, revoked_at
+         FROM auth_sessions
+         WHERE id = $1 AND user_id = $2
+         FOR UPDATE`,
+        [sessionId, userId],
+      );
+      const row = session.rows[0];
+      if (!row) throw new SessionNotFoundError();
+      if (row.revoked_at === null) {
+        await client.query(
+          'UPDATE auth_sessions SET revoked_at = now() WHERE id = $1',
+          [sessionId],
+        );
+        await client.query(
+          `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, details)
+           VALUES ($1, 'session_revoked', 'auth_session', $2, $3::jsonb)`,
+          [userId, sessionId, JSON.stringify({ current: sessionId === currentSessionId })],
+        );
+      }
+      return sessionId === currentSessionId;
+    });
+  }
+
+  async revokeOtherSessions(userId: string, currentSessionId: string): Promise<number> {
+    return this.#revokeSessions(userId, currentSessionId, false);
+  }
+
+  async revokeAllSessions(userId: string, currentSessionId: string): Promise<number> {
+    return this.#revokeSessions(userId, currentSessionId, true);
   }
 
   async updatePasswordHash(
@@ -272,5 +461,37 @@ export class PostgresAuthRepository implements AuthRepository {
        WHERE user_id = $1 AND password_hash = $2`,
       [userId, previousHash, nextHash],
     );
+  }
+
+  async #revokeSessions(
+    userId: string,
+    currentSessionId: string,
+    includeCurrent: boolean,
+  ): Promise<number> {
+    return this.database.transaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+      const result = await client.query(
+        `UPDATE auth_sessions
+         SET revoked_at = COALESCE(revoked_at, now())
+         WHERE user_id = $1
+           AND ($3::boolean OR id <> $2)
+           AND revoked_at IS NULL`,
+        [userId, currentSessionId, includeCurrent],
+      );
+      await client.query(
+        `INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, details)
+         VALUES ($1, $2, 'account', $3, $4::jsonb)`,
+        [
+          userId,
+          includeCurrent ? 'logout_all' : 'session_revoked',
+          userId,
+          JSON.stringify({
+            scope: includeCurrent ? 'all' : 'other',
+            revokedSessionCount: result.rowCount ?? 0,
+          }),
+        ],
+      );
+      return result.rowCount ?? 0;
+    });
   }
 }

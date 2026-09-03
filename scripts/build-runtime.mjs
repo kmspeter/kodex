@@ -122,13 +122,14 @@ for (const relative of [
   'node_modules/@kodex/product-db/migrations/0001_initial_product_schema.sql',
   'node_modules/@kodex/product-db/migrations/0004_user_scoped_rag.sql',
   'node_modules/@kodex/product-db/migrations/0005_default_embedding_hnsw.sql',
+  'node_modules/@kodex/product-db/migrations/0006_auth_lifecycle.sql',
   'node_modules/argon2/prebuilds/win32-x64/argon2.glibc.node',
 ]) await required(path.relative(root, path.join(appRoot, relative)));
 
 await import(pathToFileURL(path.join(appRoot, 'product-api', 'server.js')).href);
 const migrationsModule = await import(pathToFileURL(path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'dist', 'migrations.js')).href);
 const migrations = await migrationsModule.loadMigrations();
-if (migrations.length !== 5 || path.resolve(migrationsModule.defaultMigrationsDirectory) !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')) {
+if (migrations.length !== 6 || path.resolve(migrationsModule.defaultMigrationsDirectory) !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')) {
   throw new Error('Bundled Product DB migrations did not resolve to the packaged migration directory.');
 }
 const verificationEnvironment = {

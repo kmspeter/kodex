@@ -152,6 +152,7 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
       host: '127.0.0.1', port: 0, allowedHosts: new Set(),
       allowedOrigins: new Set([allowedOrigin]), cookieSecret: Buffer.alloc(32, 7),
       secureCookies: false, sessionTtlMs: 60 * 60_000, maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
     api = new ProductApiServer(new RepositoryAuthApplication(repository), config, history);
     const port = await api.listen();

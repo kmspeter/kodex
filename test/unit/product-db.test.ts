@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(5);
+    expect(migrations).toHaveLength(6);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -169,5 +169,11 @@ describe('product database migration SQL', () => {
     expect(annSql).toContain("embedding_model = 'text-embedding-3-small'");
     expect(annSql).toContain('embedding_dimensions = 1536');
     expect(annSql).not.toMatch(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS/iu);
+
+    const lifecycleSql = migrations[5].sql;
+    expect(migrations[5].version).toBe(6);
+    expect(lifecycleSql).toContain('CREATE TABLE auth_login_rate_limits (');
+    expect(lifecycleSql).toContain('octet_length(bucket_hash) = 32');
+    expect(lifecycleSql).not.toMatch(/\b(email|password|ip_address|user_agent|session_token)\s+(?:text|inet)/iu);
   });
 });

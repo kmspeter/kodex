@@ -9,6 +9,7 @@ import {
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthResponseDto,
+  type ProductSessionDto,
   type ProductHistoryPreviewDto,
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
@@ -17,6 +18,7 @@ import {
 } from '@kodex/product-contract';
 import type {
   AuthContext,
+  AuthSession,
   AuthSessionResult,
   HistoryReader,
   HistoryScope,
@@ -49,9 +51,14 @@ import {
 
 export interface AuthApplication {
   authenticate(token: string | undefined): Promise<AuthContext>;
-  login(value: unknown): Promise<AuthSessionResult>;
+  changePassword?(context: AuthContext, value: unknown): Promise<number>;
+  listSessions?(context: AuthContext): Promise<AuthSession[]>;
+  login(value: unknown, request: { directAddress: string }): Promise<AuthSessionResult>;
   logout(token: string | undefined): Promise<void>;
   register(value: unknown): Promise<AuthSessionResult>;
+  revokeAllSessions?(context: AuthContext): Promise<number>;
+  revokeOtherSessions?(context: AuthContext): Promise<number>;
+  revokeSession?(context: AuthContext, sessionId: string): Promise<boolean>;
 }
 
 export interface KnowledgeApplication {
@@ -172,6 +179,18 @@ function authResponse(result: AuthSessionResult, csrfToken: string): ProductAuth
   };
 }
 
+function publicSession(session: AuthSession): ProductSessionDto {
+  return {
+    id: session.id,
+    current: session.current,
+    createdAt: session.createdAt.toISOString(),
+    lastSeenAt: session.lastSeenAt?.toISOString() ?? null,
+    expiresAt: session.expiresAt.toISOString(),
+    revoked: session.revokedAt !== null,
+    revokedAt: session.revokedAt?.toISOString() ?? null,
+  };
+}
+
 function errorResponse(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) {
     json(response, error.status, {
@@ -181,9 +200,20 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     return;
   }
   if (error instanceof AuthServiceError) {
+    if (error.code === 'rate_limited') {
+      const retryAfter = Math.max(1, Math.min(error.retryAfterSeconds ?? 1, 86_400));
+      response.setHeader('Retry-After', String(retryAfter));
+      json(response, 429, {
+        ok: false,
+        error: { code: 'rate_limited', message: 'Too many login attempts. Try again later.' },
+      });
+      return;
+    }
     const responses = {
       invalid_request: [400, 'invalid_request', 'Request credentials do not meet the required format.'],
       invalid_credentials: [401, 'invalid_credentials', 'Email or password is invalid.'],
+      not_found: [404, 'not_found', 'Not found.'],
+      password_change_failed: [400, 'password_change_failed', 'Password could not be changed.'],
       registration_failed: [400, 'registration_failed', 'Account could not be created.'],
       unauthenticated: [401, 'unauthenticated', 'Authentication is required.'],
     } as const;
@@ -339,6 +369,7 @@ export class ProductApiServer {
         requireJson(request);
         const result = await this.auth.login(
           await readJsonBody(request, this.config.maxBodyBytes),
+          { directAddress: request.socket.remoteAddress ?? 'unavailable' },
         );
         response.setHeader('Set-Cookie', createSessionCookies(
           result.token,
@@ -386,6 +417,48 @@ export class ProductApiServer {
           context,
           createCsrfToken(sessionToken, this.config.cookieSecret),
         ));
+        return;
+      }
+      if (url.pathname === '/api/auth/sessions' && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        if (!this.auth.listSessions) throw new HttpError(503, 'auth_unavailable', 'Account security is temporarily unavailable.');
+        json(response, 200, { sessions: (await this.auth.listSessions(context)).map(publicSession) });
+        return;
+      }
+      if (url.pathname === '/api/auth/sessions' && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        if (!this.auth.revokeOtherSessions) throw new HttpError(503, 'auth_unavailable', 'Account security is temporarily unavailable.');
+        await this.auth.revokeOtherSessions(context);
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const authSessionMatch = /^\/api\/auth\/sessions\/([^/]+)$/u.exec(url.pathname);
+      if (authSessionMatch && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        if (!this.auth.revokeSession) throw new HttpError(503, 'auth_unavailable', 'Account security is temporarily unavailable.');
+        const current = await this.auth.revokeSession(context, decodeUuidPath(authSessionMatch[1]));
+        if (current) response.setHeader('Set-Cookie', clearSessionCookies(this.config.secureCookies));
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (url.pathname === '/api/auth/password' && request.method === 'PATCH') {
+        const { context } = await this.#workspaceMutationContext(request);
+        if (!this.auth.changePassword) throw new HttpError(503, 'auth_unavailable', 'Account security is temporarily unavailable.');
+        requireJson(request);
+        await this.auth.changePassword(context, await readJsonBody(request, this.config.maxBodyBytes));
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      if (url.pathname === '/api/auth/logout-all' && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        if (!this.auth.revokeAllSessions) throw new HttpError(503, 'auth_unavailable', 'Account security is temporarily unavailable.');
+        await this.auth.revokeAllSessions(context);
+        response.setHeader('Set-Cookie', clearSessionCookies(this.config.secureCookies));
+        response.statusCode = 204;
+        response.end();
         return;
       }
       if (url.pathname === '/api/workspaces' && request.method === 'POST') {

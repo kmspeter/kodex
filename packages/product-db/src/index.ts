@@ -21,8 +21,12 @@ export {
 } from './migrations.js';
 export {
   PostgresAuthRepository,
+  LoginCredentialChangedError,
+  PasswordChangeRejectedError,
   RegistrationConflictError,
+  SessionNotFoundError,
   type AuthRepository,
+  type ChangePasswordInput,
   type CreateSessionInput,
   type LoginCredential,
   type RegisterAccountInput,
@@ -32,20 +36,29 @@ export {
   AuthService,
   AuthServiceError,
   hashSessionToken,
+  loginRateLimitBucket,
   normalizeEmail,
   type AuthErrorCode,
   type AuthServiceOptions,
   type AuthSessionResult,
+  type LoginRequestContext,
 } from './auth-service.js';
 export {
   requireWorkspaceRole,
   workspaceRoles,
   WorkspaceAuthorizationError,
   type AuthContext,
+  type AuthSession,
   type AuthUser,
   type WorkspaceMembership,
   type WorkspaceRole,
 } from './auth-types.js';
+export {
+  PostgresLoginRateLimiter,
+  type LoginRateLimiter,
+  type LoginRateLimitPolicy,
+  type LoginRateLimitResult,
+} from './login-rate-limiter.js';
 export {
   Argon2idPasswordHasher,
   argon2idParameters,

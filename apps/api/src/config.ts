@@ -3,6 +3,9 @@ export interface ProductApiConfig {
   allowedOrigins: Set<string>;
   cookieSecret: Buffer;
   host: string;
+  loginRateLimitBlockMs: number;
+  loginRateLimitMaxAttempts: number;
+  loginRateLimitWindowMs: number;
   maxBodyBytes: number;
   port: number;
   secureCookies: boolean;
@@ -34,6 +37,20 @@ function positiveInteger(
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > maximum) {
     return configurationError(`${name} must be a positive integer no greater than ${maximum}`);
+  }
+  return parsed;
+}
+
+function boundedInteger(
+  value: string | undefined,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = positiveInteger(value, name, fallback, maximum);
+  if (parsed < minimum) {
+    return configurationError(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return parsed;
 }
@@ -151,6 +168,27 @@ export function productApiConfigFromEnv(
     cookieSecret: parseCookieSecret(env.AUTH_COOKIE_SECRET),
     secureCookies,
     sessionTtlMs: sessionTtlSeconds * 1_000,
+    loginRateLimitMaxAttempts: boundedInteger(
+      env.AUTH_LOGIN_RATE_LIMIT_ATTEMPTS,
+      'AUTH_LOGIN_RATE_LIMIT_ATTEMPTS',
+      5,
+      2,
+      20,
+    ),
+    loginRateLimitWindowMs: boundedInteger(
+      env.AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+      'AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS',
+      900,
+      60,
+      3_600,
+    ) * 1_000,
+    loginRateLimitBlockMs: boundedInteger(
+      env.AUTH_LOGIN_RATE_LIMIT_BLOCK_SECONDS,
+      'AUTH_LOGIN_RATE_LIMIT_BLOCK_SECONDS',
+      900,
+      30,
+      86_400,
+    ) * 1_000,
     maxBodyBytes: positiveInteger(
       env.PRODUCT_API_MAX_BODY_BYTES,
       'PRODUCT_API_MAX_BODY_BYTES',

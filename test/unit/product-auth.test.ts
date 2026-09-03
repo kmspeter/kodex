@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { AuthServiceError as RuntimeAuthServiceError } from '@kodex/product-db';
 import { describe, expect, it, vi } from 'vitest';
 import {
   productApiConfigFromEnv,
@@ -17,11 +18,13 @@ import { ProductApiServer } from '../../apps/api/src/server.js';
 import {
   AuthService,
   hashSessionToken,
+  loginRateLimitBucket,
 } from '../../packages/product-db/src/auth-service.js';
 import type {
   AuthRepository,
   RegisterAccountInput,
 } from '../../packages/product-db/src/auth-repository.js';
+import type { LoginRateLimiter } from '../../packages/product-db/src/login-rate-limiter.js';
 import {
   requireWorkspaceRole,
   WorkspaceAuthorizationError,
@@ -58,6 +61,7 @@ function fakePasswordHasher(): PasswordHasher {
 
 function fakeRepository(overrides: Partial<AuthRepository> = {}): AuthRepository {
   return {
+    changePassword: vi.fn(async () => 0),
     registerAccount: vi.fn(async () => ({
       context: context(),
       defaultWorkspace: context().memberships[0],
@@ -65,9 +69,32 @@ function fakeRepository(overrides: Partial<AuthRepository> = {}): AuthRepository
     findLoginCredential: vi.fn(async () => undefined),
     createSession: vi.fn(async () => context()),
     findAuthContext: vi.fn(async () => undefined),
+    listSessions: vi.fn(async () => []),
+    revokeAllSessions: vi.fn(async () => 0),
+    revokeOtherSessions: vi.fn(async () => 0),
     revokeSession: vi.fn(async () => false),
+    revokeSessionById: vi.fn(async () => false),
     updatePasswordHash: vi.fn(async () => undefined),
     ...overrides,
+  };
+}
+
+function allowingRateLimiter(): LoginRateLimiter {
+  return {
+    run: vi.fn(async (_buckets, _reset, _now, attempt) => ({
+      allowed: true,
+      succeeded: await attempt(),
+    })),
+  };
+}
+
+function rateLimitOptions(): Pick<
+  Parameters<typeof AuthService.create>[2],
+  'loginRateLimiter' | 'loginRateLimitSecret'
+> {
+  return {
+    loginRateLimiter: allowingRateLimiter(),
+    loginRateLimitSecret: Buffer.alloc(32, 17),
   };
 }
 
@@ -95,6 +122,7 @@ describe('password and auth service', () => {
       dummyPasswordHash: 'encoded:dummy',
       randomToken: () => Buffer.alloc(32, 7),
       sessionTtlMs: 60_000,
+      ...rateLimitOptions(),
     });
 
     const result = await service.register({
@@ -120,23 +148,59 @@ describe('password and auth service', () => {
     const hasher = fakePasswordHasher();
     const absent = await AuthService.create(fakeRepository(), hasher, {
       dummyPasswordHash: 'encoded:dummy',
+      ...rateLimitOptions(),
     });
     const existing = await AuthService.create(fakeRepository({
       findLoginCredential: vi.fn(async () => ({
         user: context().user,
         passwordHash: 'encoded:real-password',
       })),
-    }), hasher, { dummyPasswordHash: 'encoded:dummy' });
+    }), hasher, { dummyPasswordHash: 'encoded:dummy', ...rateLimitOptions() });
 
     const request = { email: 'person@example.com', password: 'wrong-password' };
-    await expect(absent.login(request)).rejects.toMatchObject({
+    await expect(absent.login(request, { directAddress: '127.0.0.1' })).rejects.toMatchObject({
       code: 'invalid_credentials',
     });
-    await expect(existing.login(request)).rejects.toMatchObject({
+    await expect(existing.login(request, { directAddress: '127.0.0.1' })).rejects.toMatchObject({
       code: 'invalid_credentials',
     });
     expect(hasher.verify).toHaveBeenCalledWith('encoded:dummy', 'wrong-password');
     expect(hasher.verify).toHaveBeenCalledWith('encoded:real-password', 'wrong-password');
+  });
+
+  it('derives domain-separated HMAC buckets and passes the injected clock to the limiter', async () => {
+    const secret = Buffer.alloc(32, 23);
+    let captured: {
+      buckets: readonly Buffer[];
+      now: Date;
+      reset: readonly Buffer[];
+    } | undefined;
+    const limiter: LoginRateLimiter = {
+      run: vi.fn(async (buckets, reset, passedNow) => {
+        captured = { buckets, reset, now: passedNow };
+        return { allowed: false, retryAfterSeconds: 17 };
+      }),
+    };
+    const service = await AuthService.create(fakeRepository(), fakePasswordHasher(), {
+      clock: () => now,
+      dummyPasswordHash: 'encoded:dummy',
+      loginRateLimiter: limiter,
+      loginRateLimitSecret: secret,
+    });
+    await expect(service.login(
+      { email: ' PERSON@EXAMPLE.COM ', password: 'wrong-password' },
+      { directAddress: '::FFFF:127.0.0.1' },
+    )).rejects.toMatchObject({ code: 'rate_limited', retryAfterSeconds: 17 });
+
+    const { buckets, reset, now: passedNow } = captured!;
+    expect(passedNow).toEqual(now);
+    expect(buckets).toEqual([
+      loginRateLimitBucket(secret, 'email', 'person@example.com'),
+      loginRateLimitBucket(secret, 'address', '::ffff:127.0.0.1'),
+    ]);
+    expect(reset).toEqual([buckets[0]]);
+    expect(Buffer.concat(buckets).toString('utf8')).not.toContain('person@example.com');
+    expect(buckets[0]).not.toEqual(buckets[1]);
   });
 
   it('provides a reusable workspace role guard', () => {
@@ -157,6 +221,9 @@ describe('product API configuration and cookies', () => {
       secureCookies: false,
       sessionTtlMs: 43_200_000,
       maxBodyBytes: 262_144,
+      loginRateLimitMaxAttempts: 5,
+      loginRateLimitWindowMs: 900_000,
+      loginRateLimitBlockMs: 900_000,
     });
     expect(config.allowedOrigins).toEqual(new Set([
       'http://127.0.0.1:5173',
@@ -166,6 +233,18 @@ describe('product API configuration and cookies', () => {
     ]));
     expect(() => productApiConfigFromEnv({ AUTH_COOKIE_SECRET: 'short' }))
       .toThrow('at least 32 random bytes');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_LOGIN_RATE_LIMIT_ATTEMPTS: '1',
+    })).toThrow('between 2 and 20');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS: '3601',
+    })).toThrow('no greater than 3600');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_LOGIN_RATE_LIMIT_BLOCK_SECONDS: '29',
+    })).toThrow('between 30 and 86400');
     expect(() => productApiConfigFromEnv({
       NODE_ENV: 'production',
       AUTH_COOKIE_SECRET: 'A'.repeat(43),
@@ -200,6 +279,9 @@ describe('product API configuration and cookies', () => {
       secureCookies: false,
       sessionTtlMs: 60_000,
       maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5,
+      loginRateLimitWindowMs: 900_000,
+      loginRateLimitBlockMs: 900_000,
     };
     const check = vi.fn()
       .mockResolvedValueOnce(undefined)
@@ -222,6 +304,39 @@ describe('product API configuration and cookies', () => {
       expect(unavailable.status).toBe(503);
       expect(JSON.stringify(await unavailable.json())).toBe('{"ok":false}');
       expect(check).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns bounded Retry-After and no-store for a database-backed login block', async () => {
+    const config: ProductApiConfig = {
+      host: '127.0.0.1', port: 0, allowedHosts: new Set(),
+      allowedOrigins: new Set(['http://127.0.0.1:5173']),
+      cookieSecret: Buffer.alloc(32, 7), secureCookies: false,
+      sessionTtlMs: 60_000, maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000,
+      loginRateLimitBlockMs: 900_000,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(),
+      login: vi.fn(async () => { throw new RuntimeAuthServiceError('rate_limited', 999_999); }),
+      logout: vi.fn(), register: vi.fn(),
+    }, config);
+    const port = await server.listen();
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/auth/login`, {
+        method: 'POST',
+        headers: { Origin: 'http://127.0.0.1:5173', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'person@example.com', password: 'wrong' }),
+      });
+      expect(response.status).toBe(429);
+      expect(response.headers.get('retry-after')).toBe('86400');
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: { code: 'rate_limited', message: 'Too many login attempts. Try again later.' },
+      });
     } finally {
       await server.close();
     }
@@ -261,6 +376,9 @@ describe('product API configuration and cookies', () => {
       secureCookies: false,
       sessionTtlMs: 60_000,
       maxBodyBytes: 65_536,
+      loginRateLimitMaxAttempts: 5,
+      loginRateLimitWindowMs: 900_000,
+      loginRateLimitBlockMs: 900_000,
     };
     const server = new ProductApiServer({
       authenticate: vi.fn(async () => authContext),
