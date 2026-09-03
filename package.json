@@ -30,6 +30,7 @@
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",
     "test:full-stack": "node scripts/test-full-stack.mjs",
     "test:desktop-full-stack": "tsx scripts/test-desktop-full-stack.ts",
+    "test:desktop-workspace-invitation": "tsx scripts/test-desktop-workspace-invitation.ts",
     "test:desktop-repository-rag": "tsx scripts/test-desktop-repository-rag.ts",
     "test:embedding-smoke": "vitest run --config vitest.embedding-live.config.ts",
     "lint": "eslint apps packages scripts test --max-warnings=0",

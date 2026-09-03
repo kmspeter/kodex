@@ -26,8 +26,9 @@ const bundledRuntime = existsSync(path.join(bundledCandidate, 'server', 'main.js
 const sourceRoot = bundledRuntime ? bundledCandidate : path.resolve(desktopRoot, '..', '..');
 const fakeSmoke = process.argv.includes('--smoke');
 const fullStackAcceptance = process.argv.includes('--full-stack-acceptance');
+const workspaceInvitationAcceptance = process.argv.includes('--workspace-invitation-acceptance');
 const repositoryRagAcceptance = process.argv.includes('--repository-rag-acceptance');
-const desktopAcceptance = fullStackAcceptance || repositoryRagAcceptance;
+const desktopAcceptance = fullStackAcceptance || workspaceInvitationAcceptance || repositoryRagAcceptance;
 const smoke = fakeSmoke || process.argv.includes('--smoke-real') || desktopAcceptance;
 const children = [];
 let mainWindow = null;
@@ -39,7 +40,7 @@ let acceptanceArtifactDirectory = null;
 
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
   void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
-}, repositoryRagAcceptance ? 270_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
+}, repositoryRagAcceptance ? 270_000 : workspaceInvitationAcceptance ? 210_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
 
 if (desktopAcceptance) {
   const isolatedUserData = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_USER_DATA?.trim() ?? '');
@@ -56,7 +57,7 @@ if (desktopAcceptance) {
     || path.dirname(artifactDirectory) !== acceptanceRoot
     || path.basename(artifactDirectory) !== 'failure-artifacts'
   ) {
-    throw new Error('Desktop full-stack acceptance requires owned paths under its temporary root.');
+    throw new Error('Desktop acceptance requires owned paths under its temporary root.');
   }
   app.setPath('userData', isolatedUserData);
   acceptanceArtifactDirectory = artifactDirectory;
@@ -317,6 +318,32 @@ async function launch() {
       password: process.env.KODEX_DESKTOP_ACCEPTANCE_PASSWORD,
     });
     process.stdout.write('Kodex desktop full-stack acceptance passed through renderer DOM interactions.\n');
+    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+    quitting = true;
+    launchComplete = false;
+    mainWindow.destroy();
+    mainWindow = null;
+    await stopServices();
+    app.quit();
+    return;
+  }
+
+  if (workspaceInvitationAcceptance) {
+    smokeStage = 'running the workspace invitation renderer DOM acceptance scenario';
+    const { runDesktopWorkspaceInvitationAcceptance } = await import('./workspace-invitation-acceptance-driver.mjs');
+    await runDesktopWorkspaceInvitationAcceptance(mainWindow, {
+      artifactDirectory: acceptanceArtifactDirectory,
+      databaseUrl: process.env.DATABASE_URL,
+      inviteeDisplayName: process.env.KODEX_DESKTOP_ACCEPTANCE_INVITEE_DISPLAY_NAME,
+      inviteeEmail: process.env.KODEX_DESKTOP_ACCEPTANCE_INVITEE_EMAIL,
+      inviteePassword: process.env.KODEX_DESKTOP_ACCEPTANCE_INVITEE_PASSWORD,
+      localOrigin,
+      ownerDisplayName: process.env.KODEX_DESKTOP_ACCEPTANCE_OWNER_DISPLAY_NAME,
+      ownerEmail: process.env.KODEX_DESKTOP_ACCEPTANCE_OWNER_EMAIL,
+      ownerPassword: process.env.KODEX_DESKTOP_ACCEPTANCE_OWNER_PASSWORD,
+      productOrigin,
+    });
+    process.stdout.write('Kodex desktop workspace invitation acceptance passed through renderer DOM interactions.\n');
     if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
     quitting = true;
     launchComplete = false;

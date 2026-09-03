@@ -277,11 +277,13 @@ npm run test:rag-postgres
 npm run test:full-stack
 # 실제 Electron renderer DOM으로 가입/settings/agent/history/logout까지의 opt-in Desktop UI acceptance
 npm run test:desktop-full-stack
+# 실제 Electron renderer DOM으로 workspace 초대 생성/fragment/가입/수락/재사용 실패까지 검증
+npm run test:desktop-workspace-invitation
 # 실제 OpenAI 호출은 key만으로 실행되지 않으며 두 값을 모두 명시해야 함
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`만 upgrade하고, invitation harness는 fresh 0001~0007과 실제 0001~0006 ledger에서 0007 upgrade를 각각 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-invitation`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`만 upgrade하고, invitation harness는 fresh 0001~0007과 실제 0001~0006 ledger에서 0007 upgrade를 각각 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
 
@@ -343,6 +345,28 @@ DOM으로 저장합니다. fixture가 고정한 로컬 echo command 외에 사�
 `test:desktop-full-stack`은 한 사용자 경로의 실제 DOM 표시와 상호작용을 검증합니다. 둘 다 live OpenAI/RAG,
 Web Search, remote MCP, installer/package 결과는 검증하지 않습니다. 상세 결정은
 `docs/adr/0011-desktop-ui-full-stack-acceptance.md`에 있습니다.
+
+### Desktop workspace invitation acceptance 경계
+
+`npm run test:desktop-workspace-invitation`은 invitation 전용 Electron renderer acceptance입니다. 실제 build된
+Product API와 Local Server, 고유 PostgreSQL container, 격리 Electron user-data를 띄운 뒤 owner가 account menu의
+**Workspace 관리**를 열어 email과 member 역할을 입력하고 링크를 생성합니다. raw link가 readonly input 한 곳에만
+표시되고 pending row에는 없으며, 닫은 뒤 renderer에서 제거되는지 확인합니다.
+
+같은 창을 생성된 `#invite=` fragment로 reload하면 entrypoint가 React render 전에 `history.replaceState`로 주소를
+정리해야 합니다. 실제 DOM에서 masked preview와 회원가입을 완료한 뒤 명시적 **초대 수락** 전 target workspace
+bootstrap이 `403`인지 검사합니다. 수락 후 Product `/me`가 다시 호출된 다음 account label이 invited member
+workspace를 선택하고, Local bootstrap `200`, UI WebSocket connected와 별도 target-scope WebSocket `hello`까지
+성공해야 합니다. 같은 fragment로 다시 진입해 사용된 token의 generic `410` terminal 화면과 안전한 후속 요청도
+검증합니다.
+
+Electron request observer는 raw token이 main-frame fragment 두 번과 strict preview/accept JSON body 외 URL,
+후속 body에 나타나지 않는지만 boolean/route/status로 판정하며 request body를 artifact나 log에 저장하지 않습니다.
+각 단계에서 URL/history, DOM/attribute/control value, Web Storage, Cache Storage, IndexedDB 이름, resource URL과
+HttpOnly 포함 cookie value에 token이 남지 않았는지 검사합니다. PostgreSQL에서는 domain-separated expected hash,
+accepted membership, pending 제거와 create/accepted audit를 교차 검증하고 raw token/hash/email이 audit에 없음을
+확인합니다. 실패 screenshot은 전체 renderer text를 투명화하고 allowlist heading, control type과 element count만
+보존합니다. 상세 결정은 `docs/adr/0017-desktop-workspace-invitation-acceptance.md`에 있습니다.
 
 ## 실제 한계
 
