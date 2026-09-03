@@ -70,10 +70,10 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     await database?.close();
   });
 
-  it('applies immutable migrations through 0009 for fresh and 0001-0008 upgrade databases', async () => {
-    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9] : [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  it('applies immutable migrations through 0010 for fresh and 0001-0008 upgrade databases', async () => {
+    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9, 10] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const indexes = await database.query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
        WHERE schemaname = 'public' AND indexname LIKE '%_retention_terminal_idx'

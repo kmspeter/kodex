@@ -37,6 +37,8 @@ import type {
 } from '@kodex/product-db';
 import {
   AuthServiceError,
+  normalizeDirectAddress,
+  ProductAbuseRateLimitError,
   HistoryCursorError,
   KnowledgeCursorError,
   KnowledgeNotFoundError,
@@ -45,6 +47,7 @@ import {
   WorkspaceCursorError,
   WorkspaceOperationError,
 } from '@kodex/product-db';
+import type { AbuseRateLimiter } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
 import {
   clearSessionCookies,
@@ -62,7 +65,7 @@ export interface AuthApplication {
   listSessions?(context: AuthContext): Promise<AuthSession[]>;
   login(value: unknown, request: { directAddress: string }): Promise<AuthSessionResult>;
   logout(token: string | undefined): Promise<void>;
-  register(value: unknown): Promise<AuthSessionResult>;
+  register(value: unknown, request: { directAddress: string }): Promise<AuthSessionResult>;
   revokeAllSessions?(context: AuthContext): Promise<number>;
   revokeOtherSessions?(context: AuthContext): Promise<number>;
   revokeSession?(context: AuthContext, sessionId: string): Promise<boolean>;
@@ -199,6 +202,17 @@ function publicSession(session: AuthSession): ProductSessionDto {
 }
 
 function errorResponse(response: ServerResponse, error: unknown): void {
+  if (error instanceof ProductAbuseRateLimitError) {
+    const retryAfter = Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds > 0
+      ? Math.min(error.retryAfterSeconds, 86_400)
+      : 1;
+    response.setHeader('Retry-After', String(retryAfter));
+    json(response, 429, {
+      ok: false,
+      error: { code: 'rate_limited', message: 'Too many requests. Try again later.' },
+    });
+    return;
+  }
   if (error instanceof HttpError) {
     json(response, error.status, {
       ok: false,
@@ -301,6 +315,7 @@ export class ProductApiServer {
     private readonly knowledge?: KnowledgeApplication,
     private readonly readiness?: ProductApiReadiness,
     private readonly workspaces?: WorkspaceApplication,
+    private readonly abuseRateLimiter?: AbuseRateLimiter,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -377,6 +392,7 @@ export class ProductApiServer {
         requireJson(request);
         const result = await this.auth.register(
           await readJsonBody(request, this.config.maxBodyBytes),
+          { directAddress: request.socket.remoteAddress ?? 'unavailable' },
         );
         response.setHeader('Set-Cookie', createSessionCookies(
           result.token,
@@ -491,6 +507,10 @@ export class ProductApiServer {
         verifyOrigin(request, this.config.allowedOrigins);
         requireJson(request);
         const { token } = validateInvitationTokenBody(await readJsonBody(request, this.config.maxBodyBytes));
+        await this.#consumeAbuseLimit('invitation_preview', [
+          { kind: 'address', value: normalizeDirectAddress(request.socket.remoteAddress ?? 'unavailable') },
+          { kind: 'token', value: token },
+        ]);
         json(response, 200, publicInvitationPreview(await this.#requireWorkspaces().previewInvitation(token)));
         return;
       }
@@ -498,6 +518,11 @@ export class ProductApiServer {
         const { context } = await this.#workspaceMutationContext(request);
         requireJson(request);
         const { token } = validateInvitationTokenBody(await readJsonBody(request, this.config.maxBodyBytes));
+        await this.#consumeAbuseLimit('invitation_accept', [
+          { kind: 'account', value: context.user.id },
+          { kind: 'address', value: normalizeDirectAddress(request.socket.remoteAddress ?? 'unavailable') },
+          { kind: 'token', value: token },
+        ]);
         json(response, 200, publicWorkspace(await this.#requireWorkspaces().acceptInvitation(context.user.id, token)));
         return;
       }
@@ -680,6 +705,15 @@ export class ProductApiServer {
   #requireWorkspaces(): WorkspaceApplication {
     if (!this.workspaces) throw new HttpError(503, 'workspace_unavailable', 'Workspace management is temporarily unavailable.');
     return this.workspaces;
+  }
+
+  async #consumeAbuseLimit(
+    action: 'invitation_accept' | 'invitation_preview',
+    subjects: Parameters<AbuseRateLimiter['consume']>[1],
+  ): Promise<void> {
+    if (!this.abuseRateLimiter) return;
+    const result = await this.abuseRateLimiter.consume(action, subjects, new Date());
+    if (!result.allowed) throw new ProductAbuseRateLimitError(result.retryAfterSeconds ?? 1);
   }
 
   async #authenticatedContext(request: IncomingMessage): Promise<AuthContext> {

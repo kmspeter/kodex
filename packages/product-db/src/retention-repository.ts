@@ -10,6 +10,7 @@ export interface RateLimitRetentionBatchInput extends RetentionBatchInput {
 }
 
 export interface RetentionRepository {
+  deleteStaleAbuseRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
   deleteStaleLoginRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
   deleteTerminalInvitationsBatch(input: RetentionBatchInput): Promise<number>;
   deleteTerminalSessionsBatch(input: RetentionBatchInput): Promise<number>;
@@ -92,6 +93,31 @@ export class PostgresRetentionRepository implements RetentionRepository {
        DELETE FROM auth_login_rate_limits AS rate_limit
        USING candidates
        WHERE rate_limit.bucket_hash = candidates.bucket_hash`,
+      [input.cutoff, input.referenceTime, input.batchSize],
+    );
+    return deletedRows(result.rowCount);
+  }
+
+  async deleteStaleAbuseRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number> {
+    validateBatch(input);
+    if (!Number.isFinite(input.referenceTime.getTime())) {
+      throw new Error('Retention reference time must be a valid date');
+    }
+    const result = await this.database.query(
+      `WITH candidates AS (
+         SELECT action, subject_kind, subject_hash
+         FROM product_abuse_rate_limits
+         WHERE updated_at < $1
+           AND (blocked_until IS NULL OR blocked_until <= $2)
+         ORDER BY updated_at, action, subject_kind, subject_hash
+         LIMIT $3
+         FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM product_abuse_rate_limits AS rate_limit
+       USING candidates
+       WHERE rate_limit.action = candidates.action
+         AND rate_limit.subject_kind = candidates.subject_kind
+         AND rate_limit.subject_hash = candidates.subject_hash`,
       [input.cutoff, input.referenceTime, input.batchSize],
     );
     return deletedRows(result.rowCount);

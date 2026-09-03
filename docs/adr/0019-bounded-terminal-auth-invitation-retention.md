@@ -4,6 +4,10 @@
 
 Accepted — 2026-09-03
 
+Phase 21의 `product_abuse_rate_limits` 확장은 ADR 0020이 소유한다. 같은 coordinator는 이제 네 번째 bounded
+hash-only batch와 `abuseRateLimitsDeleted` aggregate count를 포함하지만, 이 ADR의 기존 0009 migration과
+session/invitation/login 보존 계약은 변경하지 않는다.
+
 ## 맥락
 
 `auth_sessions`는 token hash만 저장하고 `workspace_invitations`는 raw token 대신 hash를 저장하지만, 폐기·만료·수락된
@@ -34,7 +38,7 @@ rate-limit cutoff는 별도 사용자 설정이 아니라 현재 login window와
 
 Product API는 migration 완료 후 server가 listen한 다음 startup sweep를 기다리지 않고 시작하고, 이후 unref된 timer로
 반복한다. process 안에서는 sweep가 겹치지 않는다. 각 sweep는 table별 batch size와 round 수를 모두 제한하며, 한
-round가 세 table 모두 batch를 채우지 못하면 일찍 끝난다. shutdown은 timer를 먼저 없애고 진행 중인 bounded DB
+round가 대상 table 모두 batch를 채우지 못하면 일찍 끝난다. shutdown은 timer를 먼저 없애고 진행 중인 bounded DB
 작업이 끝난 뒤 HTTP server와 pool을 닫는다. cleanup 오류는 serving을 중단하지 않고 다음 주기에 재시도한다.
 
 로그 이벤트의 표면은 고정 category/outcome/trigger, table별 aggregate delete count, round count와 고정된

@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(9);
+    expect(migrations).toHaveLength(10);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -196,5 +196,13 @@ describe('product database migration SQL', () => {
     expect(retentionSql).toContain('COALESCE(revoked_at, expires_at)');
     expect(retentionSql).toContain('workspace_invitations_retention_terminal_idx');
     expect(retentionSql).not.toMatch(/DELETE\s+FROM/iu);
+
+    const abuseLimitSql = migrations[9].sql;
+    expect(migrations[9].version).toBe(10);
+    expect(abuseLimitSql).toContain('CREATE TABLE product_abuse_rate_limits');
+    expect(abuseLimitSql).toContain("action IN ('register', 'invitation_preview', 'invitation_accept')");
+    expect(abuseLimitSql).toContain('octet_length(subject_hash) = 32');
+    expect(abuseLimitSql).toContain('product_abuse_rate_limits_updated_idx');
+    expect(abuseLimitSql).not.toMatch(/raw_email|raw_token|ip_address|session_id|user_id/iu);
   });
 });

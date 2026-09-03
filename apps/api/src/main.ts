@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   Argon2idPasswordHasher,
   AuthService,
+  PostgresAbuseRateLimiter,
   PostgresAuthRepository,
   PostgresHistoryRepository,
   PostgresLoginRateLimiter,
@@ -66,7 +67,14 @@ try {
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const repository = new PostgresAuthRepository(database);
+  if (!config.abuseRateLimitPolicies) throw new ProductApiConfigurationError('Abuse rate limit policies are required');
+  const abuseRateLimiter = new PostgresAbuseRateLimiter(
+    database,
+    config.cookieSecret,
+    config.abuseRateLimitPolicies,
+  );
   const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
+    abuseRateLimiter,
     sessionTtlMs: config.sessionTtlMs,
     loginRateLimitSecret: config.cookieSecret,
     loginRateLimiter: new PostgresLoginRateLimiter(database, {
@@ -88,6 +96,7 @@ try {
       pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
       ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
     }),
+    abuseRateLimiter,
   );
   retentionMaintenance = new ProductRetentionMaintenance(
     new PostgresRetentionRepository(database),
@@ -96,6 +105,12 @@ try {
       rateLimitStaleMs: Math.max(
         config.loginRateLimitWindowMs,
         config.loginRateLimitBlockMs,
+      ) * 2,
+      abuseRateLimitStaleMs: Math.max(
+        ...Object.values(config.abuseRateLimitPolicies).flatMap((policy) => [
+          policy.windowMs,
+          policy.blockMs,
+        ]),
       ) * 2,
     },
     { log: logRetentionMaintenance },

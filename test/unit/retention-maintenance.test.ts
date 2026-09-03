@@ -14,6 +14,7 @@ const referenceTime = new Date('2026-09-03T12:00:00.000Z');
 
 function runtimeConfig(overrides: Partial<RetentionMaintenanceRuntimeConfig> = {}): RetentionMaintenanceRuntimeConfig {
   return {
+    abuseRateLimitStaleMs: 40_000,
     batchSize: 5,
     enabled: true,
     intervalMs: 60_000,
@@ -27,6 +28,7 @@ function runtimeConfig(overrides: Partial<RetentionMaintenanceRuntimeConfig> = {
 
 function fakeRepository(overrides: Partial<RetentionRepository> = {}): RetentionRepository {
   return {
+    deleteStaleAbuseRateLimitsBatch: vi.fn(async () => 0),
     deleteStaleLoginRateLimitsBatch: vi.fn(async () => 0),
     deleteTerminalInvitationsBatch: vi.fn(async () => 0),
     deleteTerminalSessionsBatch: vi.fn(async () => 0),
@@ -79,6 +81,7 @@ describe('retention maintenance configuration', () => {
 describe('product retention coordinator', () => {
   it('uses one reference time, stops after a short batch, and logs aggregate counts only', async () => {
     const repository = fakeRepository({
+      deleteStaleAbuseRateLimitsBatch: vi.fn(async () => 1),
       deleteTerminalSessionsBatch: vi.fn(async () => 2),
       deleteTerminalInvitationsBatch: vi.fn(async () => 3),
       deleteStaleLoginRateLimitsBatch: vi.fn(async () => 4),
@@ -103,7 +106,13 @@ describe('product retention coordinator', () => {
       cutoff: new Date('2026-09-03T11:59:30.000Z'),
       referenceTime,
     });
+    expect(repository.deleteStaleAbuseRateLimitsBatch).toHaveBeenCalledWith({
+      batchSize: 5,
+      cutoff: new Date('2026-09-03T11:59:20.000Z'),
+      referenceTime,
+    });
     expect(events).toEqual([{
+      abuseRateLimitsDeleted: 1,
       batches: 1,
       category: 'product_retention_maintenance',
       invitationsDeleted: 3,
@@ -121,6 +130,7 @@ describe('product retention coordinator', () => {
       .mockImplementationOnce(async () => firstBatch)
       .mockResolvedValue(5);
     const repository = fakeRepository({
+      deleteStaleAbuseRateLimitsBatch: vi.fn(async () => 5),
       deleteTerminalSessionsBatch: sessions,
       deleteTerminalInvitationsBatch: vi.fn(async () => 5),
       deleteStaleLoginRateLimitsBatch: vi.fn(async () => 5),
@@ -147,6 +157,7 @@ describe('product retention coordinator', () => {
 
     await expect(maintenance.runSweep('periodic')).resolves.toBe(true);
     expect(events).toEqual([{
+      abuseRateLimitsDeleted: 0,
       batches: 1,
       category: 'product_retention_maintenance',
       errorClass: 'Error',

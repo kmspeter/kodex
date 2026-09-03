@@ -2,10 +2,12 @@ import type { RetentionRepository } from '@kodex/product-db';
 import type { ProductRetentionMaintenanceConfig } from './config.js';
 
 export interface RetentionMaintenanceRuntimeConfig extends ProductRetentionMaintenanceConfig {
+  abuseRateLimitStaleMs: number;
   rateLimitStaleMs: number;
 }
 
 export interface RetentionMaintenanceCounts {
+  abuseRateLimitsDeleted: number;
   batches: number;
   invitationsDeleted: number;
   rateLimitsDeleted: number;
@@ -42,6 +44,7 @@ function assertRuntimeConfig(config: RetentionMaintenanceRuntimeConfig): void {
     ['session retention', config.sessionRetentionMs],
     ['invitation retention', config.invitationRetentionMs],
     ['rate-limit stale age', config.rateLimitStaleMs],
+    ['abuse rate-limit stale age', config.abuseRateLimitStaleMs],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw new Error(`Retention maintenance ${name} must be a positive integer`);
@@ -55,7 +58,13 @@ function errorClass(error: unknown): 'DatabaseError' | 'Error' | 'NonError' {
 }
 
 function emptyCounts(): RetentionMaintenanceCounts {
-  return { batches: 0, invitationsDeleted: 0, rateLimitsDeleted: 0, sessionsDeleted: 0 };
+  return {
+    abuseRateLimitsDeleted: 0,
+    batches: 0,
+    invitationsDeleted: 0,
+    rateLimitsDeleted: 0,
+    sessionsDeleted: 0,
+  };
 }
 
 export class ProductRetentionMaintenance {
@@ -120,6 +129,7 @@ export class ProductRetentionMaintenance {
       const sessionCutoff = new Date(referenceTime.getTime() - this.config.sessionRetentionMs);
       const invitationCutoff = new Date(referenceTime.getTime() - this.config.invitationRetentionMs);
       const rateLimitCutoff = new Date(referenceTime.getTime() - this.config.rateLimitStaleMs);
+      const abuseRateLimitCutoff = new Date(referenceTime.getTime() - this.config.abuseRateLimitStaleMs);
 
       for (let index = 0; index < this.config.maxBatches && !this.#stopped; index += 1) {
         counts.batches += 1;
@@ -143,11 +153,20 @@ export class ProductRetentionMaintenance {
           referenceTime,
         });
         counts.rateLimitsDeleted += rateLimits;
+        if (this.#stopped) break;
+
+        const abuseRateLimits = await this.repository.deleteStaleAbuseRateLimitsBatch({
+          batchSize: this.config.batchSize,
+          cutoff: abuseRateLimitCutoff,
+          referenceTime,
+        });
+        counts.abuseRateLimitsDeleted += abuseRateLimits;
 
         if (
           sessions < this.config.batchSize
           && invitations < this.config.batchSize
           && rateLimits < this.config.batchSize
+          && abuseRateLimits < this.config.batchSize
         ) break;
       }
       this.#emit({ category: 'product_retention_maintenance', outcome: 'complete', trigger, ...counts });

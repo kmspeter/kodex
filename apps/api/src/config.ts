@@ -1,4 +1,9 @@
 export interface ProductApiConfig {
+  abuseRateLimitPolicies?: {
+    invitation_accept: { blockMs: number; maxAttempts: number; windowMs: number };
+    invitation_preview: { blockMs: number; maxAttempts: number; windowMs: number };
+    register: { blockMs: number; maxAttempts: number; windowMs: number };
+  };
   allowedHosts: Set<string>;
   allowedOrigins: Set<string>;
   cookieSecret: Buffer;
@@ -179,6 +184,77 @@ export function productApiConfigFromEnv(
     cookieSecret: parseCookieSecret(env.AUTH_COOKIE_SECRET),
     secureCookies,
     sessionTtlMs: sessionTtlSeconds * 1_000,
+    abuseRateLimitPolicies: {
+      register: {
+        maxAttempts: boundedInteger(
+          env.AUTH_REGISTER_RATE_LIMIT_ATTEMPTS,
+          'AUTH_REGISTER_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_REGISTER_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_REGISTER_RATE_LIMIT_WINDOW_SECONDS',
+          3_600,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_REGISTER_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_REGISTER_RATE_LIMIT_BLOCK_SECONDS',
+          3_600,
+          30,
+          86_400,
+        ) * 1_000,
+      },
+      invitation_preview: {
+        maxAttempts: boundedInteger(
+          env.AUTH_INVITATION_PREVIEW_RATE_LIMIT_ATTEMPTS,
+          'AUTH_INVITATION_PREVIEW_RATE_LIMIT_ATTEMPTS',
+          10,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_INVITATION_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_INVITATION_PREVIEW_RATE_LIMIT_WINDOW_SECONDS',
+          900,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_INVITATION_PREVIEW_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_INVITATION_PREVIEW_RATE_LIMIT_BLOCK_SECONDS',
+          900,
+          30,
+          86_400,
+        ) * 1_000,
+      },
+      invitation_accept: {
+        maxAttempts: boundedInteger(
+          env.AUTH_INVITATION_ACCEPT_RATE_LIMIT_ATTEMPTS,
+          'AUTH_INVITATION_ACCEPT_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS',
+          900,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_INVITATION_ACCEPT_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_INVITATION_ACCEPT_RATE_LIMIT_BLOCK_SECONDS',
+          900,
+          30,
+          86_400,
+        ) * 1_000,
+      },
+    },
     loginRateLimitMaxAttempts: boundedInteger(
       env.AUTH_LOGIN_RATE_LIMIT_ATTEMPTS,
       'AUTH_LOGIN_RATE_LIMIT_ATTEMPTS',

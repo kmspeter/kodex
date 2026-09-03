@@ -54,6 +54,19 @@ export {
   type WorkspaceRole,
 } from './auth-types.js';
 export {
+  abuseRateLimitSubjectHash,
+  normalizeDirectAddress,
+  PostgresAbuseRateLimiter,
+  ProductAbuseRateLimitError,
+  type AbuseRateLimiter,
+  type AbuseRateLimitAction,
+  type AbuseRateLimitPolicies,
+  type AbuseRateLimitPolicy,
+  type AbuseRateLimitResult,
+  type AbuseRateLimitSubject,
+  type AbuseRateLimitSubjectKind,
+} from './abuse-rate-limiter.js';
+export {
   PostgresLoginRateLimiter,
   type LoginRateLimiter,
   type LoginRateLimitPolicy,

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { AuthServiceError as RuntimeAuthServiceError } from '@kodex/product-db';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ProductApiConfigurationError,
   productApiConfigFromEnv,
   validateKnowledgeBodyCapacity,
   type ProductApiConfig,
@@ -224,6 +225,11 @@ describe('product API configuration and cookies', () => {
       loginRateLimitMaxAttempts: 5,
       loginRateLimitWindowMs: 900_000,
       loginRateLimitBlockMs: 900_000,
+      abuseRateLimitPolicies: {
+        register: { maxAttempts: 5, windowMs: 3_600_000, blockMs: 3_600_000 },
+        invitation_preview: { maxAttempts: 10, windowMs: 900_000, blockMs: 900_000 },
+        invitation_accept: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
+      },
       workspaceInvitationPendingLimit: 100,
       workspaceInvitationTtlMs: 604_800_000,
     });
@@ -249,6 +255,18 @@ describe('product API configuration and cookies', () => {
     })).toThrow('between 30 and 86400');
     expect(() => productApiConfigFromEnv({
       AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_REGISTER_RATE_LIMIT_ATTEMPTS: '101',
+    })).toThrow('no greater than 100');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_INVITATION_PREVIEW_RATE_LIMIT_WINDOW_SECONDS: '59',
+    })).toThrow('between 60 and 86400');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_INVITATION_ACCEPT_RATE_LIMIT_BLOCK_SECONDS: '86401',
+    })).toThrow('no greater than 86400');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
       WORKSPACE_INVITATION_TTL_HOURS: '721',
     })).toThrow('no greater than 720');
     expect(() => productApiConfigFromEnv({
@@ -261,6 +279,23 @@ describe('product API configuration and cookies', () => {
       AUTH_ALLOWED_ORIGINS: 'http://app.example.com',
       PRODUCT_API_ALLOWED_HOSTS: 'api.example.com',
     })).toThrow('must use HTTPS');
+  });
+
+  it.each([
+    ['AUTH_REGISTER_RATE_LIMIT_ATTEMPTS', '1'],
+    ['AUTH_REGISTER_RATE_LIMIT_WINDOW_SECONDS', '59'],
+    ['AUTH_REGISTER_RATE_LIMIT_BLOCK_SECONDS', '29'],
+    ['AUTH_INVITATION_PREVIEW_RATE_LIMIT_ATTEMPTS', '101'],
+    ['AUTH_INVITATION_PREVIEW_RATE_LIMIT_WINDOW_SECONDS', '86401'],
+    ['AUTH_INVITATION_PREVIEW_RATE_LIMIT_BLOCK_SECONDS', '29'],
+    ['AUTH_INVITATION_ACCEPT_RATE_LIMIT_ATTEMPTS', '1'],
+    ['AUTH_INVITATION_ACCEPT_RATE_LIMIT_WINDOW_SECONDS', '59'],
+    ['AUTH_INVITATION_ACCEPT_RATE_LIMIT_BLOCK_SECONDS', '86401'],
+  ])('rejects out-of-range product abuse setting %s before listen', (name, value) => {
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      [name]: value,
+    })).toThrow(ProductApiConfigurationError);
   });
 
   it('reserves UTF-8 JSON capacity for the configured RAG document limit', () => {

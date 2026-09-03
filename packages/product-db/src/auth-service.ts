@@ -8,6 +8,11 @@ import {
 } from './auth-repository.js';
 import type { AuthContext, AuthSession, WorkspaceMembership } from './auth-types.js';
 import type { LoginRateLimiter } from './login-rate-limiter.js';
+import {
+  normalizeDirectAddress,
+  ProductAbuseRateLimitError,
+  type AbuseRateLimiter,
+} from './abuse-rate-limiter.js';
 import type { PasswordHasher } from './password.js';
 
 export type AuthErrorCode =
@@ -33,12 +38,17 @@ export interface AuthSessionResult {
 }
 
 export interface AuthServiceOptions {
+  abuseRateLimiter?: AbuseRateLimiter;
   clock?: () => Date;
   dummyPasswordHash?: string;
   loginRateLimiter: LoginRateLimiter;
   loginRateLimitSecret: Buffer;
   randomToken?: () => Buffer;
   sessionTtlMs?: number;
+}
+
+interface ResolvedAuthServiceOptions extends Omit<Required<AuthServiceOptions>, 'abuseRateLimiter'> {
+  abuseRateLimiter?: AbuseRateLimiter;
 }
 
 interface RegistrationInput {
@@ -161,6 +171,7 @@ export function loginRateLimitBucket(
 }
 
 export class AuthService {
+  readonly #abuseRateLimiter: AbuseRateLimiter | undefined;
   readonly #clock: () => Date;
   readonly #dummyPasswordHash: string;
   readonly #loginRateLimiter: LoginRateLimiter;
@@ -171,8 +182,9 @@ export class AuthService {
   private constructor(
     private readonly repository: AuthRepository,
     private readonly passwordHasher: PasswordHasher,
-    options: Required<AuthServiceOptions>,
+    options: ResolvedAuthServiceOptions,
   ) {
+    this.#abuseRateLimiter = options.abuseRateLimiter;
     this.#clock = options.clock;
     this.#dummyPasswordHash = options.dummyPasswordHash;
     this.#loginRateLimiter = options.loginRateLimiter;
@@ -193,6 +205,7 @@ export class AuthService {
     const dummyPasswordHash = options.dummyPasswordHash
       ?? await passwordHasher.hash(randomBytes(32).toString('base64url'));
     return new AuthService(repository, passwordHasher, {
+      abuseRateLimiter: options.abuseRateLimiter,
       clock: options.clock ?? (() => new Date()),
       dummyPasswordHash,
       loginRateLimiter: options.loginRateLimiter,
@@ -202,8 +215,24 @@ export class AuthService {
     });
   }
 
-  async register(value: unknown): Promise<AuthSessionResult> {
+  async register(value: unknown, request?: LoginRequestContext): Promise<AuthSessionResult> {
     const input = parseRegistrationInput(value);
+    if (this.#abuseRateLimiter) {
+      if (!request) throw new AuthServiceError('invalid_request');
+      let directAddress: string;
+      try {
+        directAddress = normalizeDirectAddress(request.directAddress);
+      } catch {
+        throw new AuthServiceError('invalid_request');
+      }
+      const limited = await this.#abuseRateLimiter.consume('register', [
+        { kind: 'address', value: directAddress },
+        { kind: 'email', value: input.email },
+      ], this.#clock());
+      if (!limited.allowed) {
+        throw new ProductAbuseRateLimitError(limited.retryAfterSeconds ?? 1);
+      }
+    }
     const passwordHash = await this.passwordHasher.hash(input.password);
     const { token, tokenHash, expiresAt } = this.#newSession();
     try {

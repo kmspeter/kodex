@@ -81,11 +81,11 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`, desktop은 `%APPDATA%\Kodex\data\tenants\...`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`를 따로 저장합니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. immutable source/runtime root와 writable data base는 별도 신뢰 경계이며, data base로 drive root, 사용자 home, repository/source root를 지정하거나 tenant root를 data base 밖으로 탈출시킬 수 없습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, 인증 수명주기, tenant runtime, 내구성 history와 private RAG (20단계까지, 필수)
+## 제품 PostgreSQL, 인증 수명주기, tenant runtime, 내구성 history와 private RAG (21단계까지, 필수)
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
-`0001_initial_product_schema.sql`부터 `0008_workspace_management_pagination.sql`까지는 변경하지 않습니다. 새 `0009_terminal_auth_invitation_retention.sql`은 terminal session/invitation의 bounded oldest-first cleanup index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. Retention 계약은 `docs/adr/0019-bounded-terminal-auth-invitation-retention.md`, Workspace page 계약은 `docs/adr/0018-workspace-management-keyset-pagination.md`, 초대 계약은 `docs/adr/0016-hash-only-workspace-invitations.md`, 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`, RAG private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
+`0001_initial_product_schema.sql`부터 `0009_terminal_auth_invitation_retention.sql`까지는 변경하지 않습니다. 새 `0010_product_abuse_rate_limits.sql`은 가입/초대의 action+kind domain-separated HMAC-only 공유 bucket과 bounded cleanup index를 추가합니다. 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership과 첫 session을 원자적으로 만듭니다. Abuse 제한 계약은 `docs/adr/0020-postgresql-shared-product-abuse-throttling.md`, Retention 계약은 `docs/adr/0019-bounded-terminal-auth-invitation-retention.md`, Workspace page 계약은 `docs/adr/0018-workspace-management-keyset-pagination.md`, 초대 계약은 `docs/adr/0016-hash-only-workspace-invitations.md`, 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`, RAG private 경계와 경합 모델은 `docs/adr/0005-private-pgvector-rag.md`, ANN 결정은 `docs/adr/0008-default-embedding-hnsw.md`에 있습니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -179,7 +179,11 @@ session token은 32 random bytes이며 브라우저의 `kodex_product_session` H
 
 로그인 실패 제한은 PostgreSQL `auth_login_rate_limits`를 모든 Product API process가 공유합니다. canonical email과 Node direct socket address를 `AUTH_COOKIE_SECRET`의 domain-separated HMAC-SHA-256으로만 저장하며 `X-Forwarded-For`는 신뢰하지 않습니다. 기본 15분 window/5회/15분 block이고 `AUTH_LOGIN_RATE_LIMIT_ATTEMPTS`(2~20), `AUTH_LOGIN_RATE_LIMIT_WINDOW_SECONDS`(60~3,600), `AUTH_LOGIN_RATE_LIMIT_BLOCK_SECONDS`(30~86,400)로 제한 안에서 조정합니다. block 응답은 `429`, bounded `Retry-After`, `no-store`입니다. 성공은 email bucket만 reset하고 address bucket은 유지합니다. 각 로그인 transaction은 정책 기간의 두 배보다 오래된 bucket을 `updated_at` index로 최대 100개만 기회적으로 제거하며, 시계가 이전 window 시작보다 뒤로 이동하면 window를 안전하게 초기화합니다.
 
-Product API는 migration과 listen 이후 terminal 인증 row의 bounded startup/periodic retention sweep를 실행합니다. 기본값은 1시간 간격, table별 batch 100, sweep당 최대 10 round, terminal session과 invitation 각각 30일 보존입니다. `PRODUCT_RETENTION_ENABLED`(`true|false`), `PRODUCT_RETENTION_INTERVAL_SECONDS`(60~86,400), `PRODUCT_RETENTION_BATCH_SIZE`(1~1,000), `PRODUCT_RETENTION_MAX_BATCHES`(1~100), `PRODUCT_RETENTION_SESSION_DAYS`/`PRODUCT_RETENTION_INVITATION_DAYS`(각 1~3,650)로 조정하며 범위 밖 값은 listen 전에 실패합니다. session은 폐기 시각(미폐기 row는 만료 시각), invitation은 수락/취소 시각(미처리 row는 만료 시각)이 cutoff보다 엄격히 오래된 경우만 지웁니다. stale login bucket은 기존 정책처럼 `max(window, block) × 2` cutoff를 사용하고 아직 활성인 block은 보존합니다. 각 query는 `LIMIT`과 `FOR UPDATE SKIP LOCKED`를 사용하므로 여러 API process가 leader 없이 안전하게 일을 나눕니다. 공개 cleanup endpoint나 metric은 없습니다.
+가입과 초대 preview/accept도 PostgreSQL `product_abuse_rate_limits`를 모든 Product API process가 공유합니다. 가입은 canonical email+direct address(기본 1시간/5회/1시간 block), preview는 valid-format presented token+direct address(기본 15분/10회/15분 block), accept는 authenticated account+token+direct address(기본 15분/5회/15분 block)를 원자적으로 소비합니다. 가입은 Argon2/user 생성 전, preview는 invitation lookup 전, accept는 session/Origin/CSRF 검증 후 invitation lookup 전에 제한합니다. 성공도 count되고 가입 성공 뒤 address를 reset하지 않습니다. threshold request부터 고정 `429 {"ok":false,"error":{"code":"rate_limited","message":"Too many requests. Try again later."}}`, bounded `Retry-After`, `no-store`이며 어떤 bucket이 걸렸는지 공개하지 않습니다. active block 요청은 count/block 종료를 연장하지 않습니다. 각 action의 `*_ATTEMPTS` hard range는 2~100, `*_WINDOW_SECONDS`는 60~86,400, `*_BLOCK_SECONDS`는 30~86,400이며 정확한 변수명/기본값은 `.env.example`과 ADR 0020에 있습니다.
+
+이 limiter는 Node direct socket peer만 사용하고 `Forwarded`/`X-Forwarded-For`를 무시합니다. NAT 사용자는 address bucket을 공유하고 reverse proxy 뒤에서는 별도 trusted-proxy 설계 전까지 proxy가 하나의 peer로 보입니다. edge WAF/CAPTCHA 또는 proxy-aware global client-IP identity를 대신하지 않으며, 같은 PostgreSQL을 공유하는 application process 범위에서만 분산 state를 제공합니다.
+
+Product API는 migration과 listen 이후 terminal 인증 row의 bounded startup/periodic retention sweep를 실행합니다. 기본값은 1시간 간격, table별 batch 100, sweep당 최대 10 round, terminal session과 invitation 각각 30일 보존입니다. `PRODUCT_RETENTION_ENABLED`(`true|false`), `PRODUCT_RETENTION_INTERVAL_SECONDS`(60~86,400), `PRODUCT_RETENTION_BATCH_SIZE`(1~1,000), `PRODUCT_RETENTION_MAX_BATCHES`(1~100), `PRODUCT_RETENTION_SESSION_DAYS`/`PRODUCT_RETENTION_INVITATION_DAYS`(각 1~3,650)로 조정하며 범위 밖 값은 listen 전에 실패합니다. session은 폐기 시각(미폐기 row는 만료 시각), invitation은 수락/취소 시각(미처리 row는 만료 시각)이 cutoff보다 엄격히 오래된 경우만 지웁니다. stale login/product-abuse bucket은 각 정책의 `max(window, block) × 2` cutoff를 사용하고 아직 활성인 block은 보존합니다. 각 query는 deterministic order, `LIMIT`, `FOR UPDATE SKIP LOCKED`를 사용하므로 여러 API process가 leader 없이 안전하게 일을 나눕니다. 로그는 aggregate count와 고정 error class뿐이고 공개 cleanup/reset/inspection endpoint나 metric은 없습니다.
 
 이 정책은 PostgreSQL row retention이며 secure erasure가 아닙니다. 일반 `DELETE`는 dead tuple을 만들므로 autovacuum을 관찰하고 필요한 `VACUUM`을 별도로 운영해야 합니다. WAL/replica/snapshot/dump/backup의 보존과 폐기는 운영자 정책이며 앱이 `VACUUM FULL`, backup 삭제 또는 storage overwrite를 수행하지 않습니다.
 
@@ -242,7 +246,7 @@ npm run runtime:bundle
 # runtime\Kodex-win32-x64\Kodex.exe 실행
 ```
 
-bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0009, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
+bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0010, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
 
 ## 검증
 
@@ -254,6 +258,7 @@ npm test
 npm run build
 npm run test:auth-lifecycle-postgres # 격리된 실제 PostgreSQL의 change-password/session/limiter + Local HTTP/WS
 npm run test:retention-postgres # fresh + 0001~0008 upgrade DB의 bounded terminal-row cleanup
+npm run test:abuse-rate-limit-postgres # fresh + immutable 0001~0009 upgrade DB의 공유 limiter/경합/retention
 npm run test:tenant-auth  # Local Server HTTP/열린 WebSocket 재검증
 npm run verify:ui-bundle
 npm run smoke:production
@@ -288,7 +293,7 @@ npm run test:desktop-workspace-invitation
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-invitation`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0009`를 upgrade하고, retention harness는 fresh 0001~0009와 실제 0001~0008 ledger의 0009-only upgrade를 검증합니다. Invitation harness는 fresh 0001~0009, 실제 0001~0006 ledger에서 0007~0009, 0001~0007 ledger에서 0008~0009, 0001~0008 ledger에서 0009-only upgrade를 각각 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:abuse-rate-limit-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-invitation`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0010`을 upgrade하고, retention harness는 fresh 0001~0010과 실제 0001~0008 ledger의 0009~0010 upgrade를 검증합니다. Abuse limiter harness는 fresh 0001~0010과 immutable 0001~0009 ledger의 0010-only upgrade를 검증합니다. Invitation harness는 fresh 0001~0010, 실제 0001~0006 ledger에서 0007~0010, 0001~0007 ledger에서 0008~0010, 0001~0008 ledger에서 0009~0010을 각각 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
 
@@ -376,9 +381,9 @@ accepted membership, pending 제거와 create/accepted audit를 교차 검증하
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
-- Workspace 초대 delivery는 명시적인 one-time copy-link만 제공합니다. 외부 SMTP/email delivery, reminder/resend, workspace rename/delete와 분산 preview/accept rate limit은 아직 제공하지 않습니다.
-- Password reset과 email verification은 외부 메일 전달/token 전달 인프라가 없어 제공하지 않습니다. register limit, distributed edge/WAF rate limit, trusted reverse proxy와 forwarded client IP 처리도 후속 범위입니다.
-- Terminal session/invitation/login-bucket cleanup은 bounded row retention만 제공합니다. secure erasure, table bloat 자동 관리, `VACUUM FULL`, WAL/replica/snapshot/backup 삭제, history/RAG/audit/content retention 정책은 제공하지 않습니다.
+- Workspace 초대 delivery는 명시적인 one-time copy-link만 제공합니다. 외부 SMTP/email delivery, reminder/resend와 workspace rename/delete는 아직 제공하지 않습니다.
+- Password reset과 email verification은 외부 메일 전달/token 전달 인프라가 없어 제공하지 않습니다. 가입/초대 limiter는 application-level direct-peer 제한이며 distributed edge WAF/CAPTCHA, trusted reverse proxy, forwarded client identity 또는 multi-database global limit은 제공하지 않습니다. NAT peer와 reverse proxy 뒤 client는 각각 같은 address bucket을 공유합니다.
+- Terminal session/invitation/login/product-abuse-bucket cleanup은 bounded row retention만 제공합니다. secure erasure, table bloat 자동 관리, `VACUUM FULL`, WAL/replica/snapshot/backup 삭제, history/RAG/audit/content retention 정책은 제공하지 않습니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.
