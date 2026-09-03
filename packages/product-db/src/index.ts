@@ -60,6 +60,12 @@ export {
   type LoginRateLimitResult,
 } from './login-rate-limiter.js';
 export {
+  PostgresRetentionRepository,
+  type RateLimitRetentionBatchInput,
+  type RetentionBatchInput,
+  type RetentionRepository,
+} from './retention-repository.js';
+export {
   Argon2idPasswordHasher,
   argon2idParameters,
   type PasswordHasher,

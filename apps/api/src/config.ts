@@ -14,6 +14,15 @@ export interface ProductApiConfig {
   workspaceInvitationTtlMs?: number;
 }
 
+export interface ProductRetentionMaintenanceConfig {
+  batchSize: number;
+  enabled: boolean;
+  intervalMs: number;
+  invitationRetentionMs: number;
+  maxBatches: number;
+  sessionRetentionMs: number;
+}
+
 export class ProductApiConfigurationError extends Error {
   constructor(message: string) {
     super(message);
@@ -211,6 +220,53 @@ export function productApiConfigFromEnv(
       1,
       720,
     ) * 60 * 60 * 1_000,
+  };
+}
+
+export function productRetentionMaintenanceConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductRetentionMaintenanceConfig {
+  return {
+    enabled: booleanValue(
+      env.PRODUCT_RETENTION_ENABLED,
+      'PRODUCT_RETENTION_ENABLED',
+      true,
+    ),
+    intervalMs: boundedInteger(
+      env.PRODUCT_RETENTION_INTERVAL_SECONDS,
+      'PRODUCT_RETENTION_INTERVAL_SECONDS',
+      3_600,
+      60,
+      86_400,
+    ) * 1_000,
+    batchSize: boundedInteger(
+      env.PRODUCT_RETENTION_BATCH_SIZE,
+      'PRODUCT_RETENTION_BATCH_SIZE',
+      100,
+      1,
+      1_000,
+    ),
+    maxBatches: boundedInteger(
+      env.PRODUCT_RETENTION_MAX_BATCHES,
+      'PRODUCT_RETENTION_MAX_BATCHES',
+      10,
+      1,
+      100,
+    ),
+    sessionRetentionMs: boundedInteger(
+      env.PRODUCT_RETENTION_SESSION_DAYS,
+      'PRODUCT_RETENTION_SESSION_DAYS',
+      30,
+      1,
+      3_650,
+    ) * 24 * 60 * 60 * 1_000,
+    invitationRetentionMs: boundedInteger(
+      env.PRODUCT_RETENTION_INVITATION_DAYS,
+      'PRODUCT_RETENTION_INVITATION_DAYS',
+      30,
+      1,
+      3_650,
+    ) * 24 * 60 * 60 * 1_000,
   };
 }
 

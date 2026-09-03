@@ -6,6 +6,7 @@ import {
   PostgresAuthRepository,
   PostgresHistoryRepository,
   PostgresLoginRateLimiter,
+  PostgresRetentionRepository,
   PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
@@ -15,8 +16,13 @@ import dotenv from 'dotenv';
 import {
   ProductApiConfigurationError,
   productApiConfigFromEnv,
+  productRetentionMaintenanceConfigFromEnv,
   validateKnowledgeBodyCapacity,
 } from './config.js';
+import {
+  ProductRetentionMaintenance,
+  type RetentionMaintenanceLogEvent,
+} from './retention-maintenance.js';
 import { ProductApiServer } from './server.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
@@ -28,7 +34,14 @@ if (process.env.KODEX_DISABLE_ENV_FILE !== '1') {
 
 let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
 let server: ProductApiServer | undefined;
+let retentionMaintenance: ProductRetentionMaintenance | undefined;
 let stopping = false;
+
+function logRetentionMaintenance(event: RetentionMaintenanceLogEvent): void {
+  const output = `${JSON.stringify(event)}\n`;
+  if (event.outcome === 'failed') process.stderr.write(output);
+  else process.stdout.write(output);
+}
 
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) {
@@ -36,6 +49,7 @@ async function stop(exitCode = 0): Promise<void> {
   }
   stopping = true;
   try {
+    await retentionMaintenance?.stop().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await database?.close().catch(() => undefined);
   } finally {
@@ -48,6 +62,7 @@ async function stop(exitCode = 0): Promise<void> {
 
 try {
   const config = productApiConfigFromEnv();
+  const retentionConfig = productRetentionMaintenanceConfigFromEnv();
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const repository = new PostgresAuthRepository(database);
@@ -74,7 +89,19 @@ try {
       ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
     }),
   );
+  retentionMaintenance = new ProductRetentionMaintenance(
+    new PostgresRetentionRepository(database),
+    {
+      ...retentionConfig,
+      rateLimitStaleMs: Math.max(
+        config.loginRateLimitWindowMs,
+        config.loginRateLimitBlockMs,
+      ) * 2,
+    },
+    { log: logRetentionMaintenance },
+  );
   const port = await server.listen();
+  retentionMaintenance.start();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

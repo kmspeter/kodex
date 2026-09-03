@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(9);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -189,5 +189,12 @@ describe('product database migration SQL', () => {
     expect(paginationSql).toContain('(workspace_id, joined_at, user_id)');
     expect(paginationSql).toContain('workspace_invitations_pending_created_idx');
     expect(paginationSql).toContain('(workspace_id, created_at, id)');
+
+    const retentionSql = migrations[8].sql;
+    expect(migrations[8].version).toBe(9);
+    expect(retentionSql).toContain('auth_sessions_retention_terminal_idx');
+    expect(retentionSql).toContain('COALESCE(revoked_at, expires_at)');
+    expect(retentionSql).toContain('workspace_invitations_retention_terminal_idx');
+    expect(retentionSql).not.toMatch(/DELETE\s+FROM/iu);
   });
 });

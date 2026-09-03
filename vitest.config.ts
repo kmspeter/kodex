@@ -13,6 +13,7 @@ export default defineConfig({
       'test/integration/tenant-auth-postgres.test.ts',
       'test/integration/history-postgres.test.ts',
       'test/integration/rag-postgres.test.ts',
+      'test/integration/retention-postgres.test.ts',
       'test/integration/workspace-membership-postgres.test.ts',
       'test/integration/workspace-invitation-postgres.test.ts',
       'test/acceptance/full-stack.test.ts',

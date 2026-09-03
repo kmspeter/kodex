@@ -192,7 +192,7 @@ describe('product database migrations', () => {
     const result = await database.query<{ checksum: string; version: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version',
     );
-    expect(result.rows).toHaveLength(8);
+    expect(result.rows).toHaveLength(9);
     expect(result.rows[0]).toMatchObject({ version: '1' });
     expect(result.rows[1]).toMatchObject({ version: '2' });
     expect(result.rows[2]).toMatchObject({ version: '3' });
@@ -201,11 +201,13 @@ describe('product database migrations', () => {
     expect(result.rows[5]).toMatchObject({ version: '6' });
     expect(result.rows[6]).toMatchObject({ version: '7' });
     expect(result.rows[7]).toMatchObject({ version: '8' });
+    expect(result.rows[8]).toMatchObject({ version: '9' });
     expect(result.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[4].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[5].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[6].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[7].checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.rows[8].checksum).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('is a no-op when migrations are run again', async () => {

@@ -21,7 +21,9 @@ const mode = process.env.INVITATION_MIGRATION_MODE === 'upgrade'
   ? 'upgrade'
   : process.env.INVITATION_MIGRATION_MODE === 'phase17-upgrade'
     ? 'phase17-upgrade'
-    : 'fresh';
+    : process.env.INVITATION_MIGRATION_MODE === 'phase19-upgrade'
+      ? 'phase19-upgrade'
+      : 'fresh';
 
 interface Session {
   cookie: string;
@@ -59,7 +61,7 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
           version bigint PRIMARY KEY, name text NOT NULL, checksum text NOT NULL,
           applied_at timestamptz NOT NULL DEFAULT now()
         )`);
-        const legacyCount = mode === 'upgrade' ? 6 : 7;
+        const legacyCount = mode === 'upgrade' ? 6 : mode === 'phase17-upgrade' ? 7 : 8;
         for (const migration of migrations.slice(0, legacyCount)) {
           await client.query(migration.sql);
           await client.query(
@@ -138,16 +140,18 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     return { id: body.invitation.id, token: body.token };
   }
 
-  it('applies the fresh or immutable 0001-0006 upgrade path through migrations 0007-0008', async () => {
+  it('applies fresh and immutable legacy upgrade paths through migration 0009', async () => {
     expect(migratedVersions).toEqual(
       mode === 'upgrade'
-        ? [7, 8]
+        ? [7, 8, 9]
         : mode === 'phase17-upgrade'
-          ? [8]
-          : [1, 2, 3, 4, 5, 6, 7, 8],
+          ? [8, 9]
+          : mode === 'phase19-upgrade'
+            ? [9]
+            : [1, 2, 3, 4, 5, 6, 7, 8, 9],
     );
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('enforces permissions, limits, hash-only storage, IDOR protection, and one-time atomic acceptance', async () => {
