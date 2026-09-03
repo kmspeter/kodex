@@ -7,11 +7,13 @@ import {
   PRODUCT_HISTORY_PREVIEW_CHARACTERS,
   PRODUCT_WORKSPACE_HEADER_NAME,
   PRODUCT_WORKSPACE_QUERY_PARAM,
+  workspaceRoles,
   type ProductAuthResponseDto,
   type ProductHistoryPreviewDto,
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
   type ProductHistoryThreadSummaryDto,
+  type WorkspaceRole,
 } from '@kodex/product-contract';
 import type {
   AuthContext,
@@ -24,6 +26,7 @@ import type {
   KnowledgeScope,
   RagConfig,
   RetrievalResult,
+  WorkspaceApplication,
 } from '@kodex/product-db';
 import {
   AuthServiceError,
@@ -31,6 +34,7 @@ import {
   KnowledgeCursorError,
   KnowledgeNotFoundError,
   KnowledgeOperationError,
+  WorkspaceOperationError,
 } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
 import {
@@ -212,6 +216,17 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     });
     return;
   }
+  if (error instanceof WorkspaceOperationError) {
+    const responses = {
+      forbidden: [403, 'workspace_forbidden', 'Workspace access is not permitted.'],
+      not_found: [404, 'not_found', 'The existing account or membership was not found.'],
+      conflict: [409, 'membership_conflict', 'That account is already a workspace member.'],
+      last_owner: [409, 'last_owner', 'A workspace must keep at least one owner.'],
+    } as const;
+    const [status, code, message] = responses[error.code];
+    json(response, status, { ok: false, error: { code, message } });
+    return;
+  }
   process.stderr.write('Product API request failed without exposing internal details.\n');
   json(response, 500, {
     ok: false,
@@ -229,6 +244,7 @@ export class ProductApiServer {
     private readonly history?: HistoryReader,
     private readonly knowledge?: KnowledgeApplication,
     private readonly readiness?: ProductApiReadiness,
+    private readonly workspaces?: WorkspaceApplication,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -275,7 +291,7 @@ export class ProductApiServer {
       if (request.method === 'OPTIONS') {
         verifyOrigin(request, this.config.allowedOrigins);
         response.statusCode = 204;
-        response.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+        response.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
         response.setHeader(
           'Access-Control-Allow-Headers',
           `Content-Type,X-CSRF-Token,${PRODUCT_WORKSPACE_HEADER_NAME}`,
@@ -372,6 +388,53 @@ export class ProductApiServer {
         ));
         return;
       }
+      if (url.pathname === '/api/workspaces' && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const application = this.#requireWorkspaces();
+        requireJson(request);
+        const input = validateCreateWorkspace(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 201, publicWorkspace(await application.createWorkspace(context.user.id, input.name)));
+        return;
+      }
+      const workspaceMembersMatch = /^\/api\/workspaces\/([^/]+)\/members$/u.exec(url.pathname);
+      if (workspaceMembersMatch && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        const workspaceId = decodeUuidPath(workspaceMembersMatch[1]);
+        const members = await this.#requireWorkspaces().listMembers(context.user.id, workspaceId);
+        json(response, 200, { members: members.map(publicWorkspaceMember) });
+        return;
+      }
+      if (workspaceMembersMatch && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceMembersMatch[1]);
+        requireJson(request);
+        const input = validateAddWorkspaceMember(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 201, publicWorkspaceMember(await this.#requireWorkspaces().addMember(
+          context.user.id, workspaceId, input.email, input.role,
+        )));
+        return;
+      }
+      const workspaceMemberMatch = /^\/api\/workspaces\/([^/]+)\/members\/([^/]+)$/u.exec(url.pathname);
+      if (workspaceMemberMatch && request.method === 'PATCH') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceMemberMatch[1]);
+        const targetUserId = decodeUuidPath(workspaceMemberMatch[2]);
+        requireJson(request);
+        const { role } = validateWorkspaceRoleUpdate(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 200, publicWorkspaceMember(await this.#requireWorkspaces().updateMemberRole(
+          context.user.id, workspaceId, targetUserId, role,
+        )));
+        return;
+      }
+      if (workspaceMemberMatch && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceMemberMatch[1]);
+        const targetUserId = decodeUuidPath(workspaceMemberMatch[2]);
+        await this.#requireWorkspaces().removeMember(context.user.id, workspaceId, targetUserId);
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
       if (url.pathname === '/api/history/threads' && request.method === 'GET' && this.history) {
         const scope = await this.#historyScope(request, url);
         const options = historyPageOptions(url);
@@ -454,6 +517,30 @@ export class ProductApiServer {
 
   async #historyScope(request: IncomingMessage, url: URL): Promise<HistoryScope> {
     return this.#authenticatedWorkspaceScope(request, url);
+  }
+
+  #requireWorkspaces(): WorkspaceApplication {
+    if (!this.workspaces) throw new HttpError(503, 'workspace_unavailable', 'Workspace management is temporarily unavailable.');
+    return this.workspaces;
+  }
+
+  async #authenticatedContext(request: IncomingMessage): Promise<AuthContext> {
+    const token = parseCookies(request.headers.cookie).get(sessionCookieName);
+    if (!token) throw new HttpError(401, 'unauthenticated', 'Authentication is required.');
+    return this.auth.authenticate(token);
+  }
+
+  async #workspaceMutationContext(request: IncomingMessage): Promise<{ context: AuthContext; token: string }> {
+    verifyOrigin(request, this.config.allowedOrigins);
+    const cookies = parseCookies(request.headers.cookie);
+    const token = cookies.get(sessionCookieName);
+    if (!token) throw new HttpError(401, 'unauthenticated', 'Authentication is required.');
+    const csrfHeader = request.headers['x-csrf-token'];
+    if (
+      typeof csrfHeader !== 'string'
+      || !verifyCsrfToken(token, cookies.get(csrfCookieName), csrfHeader, this.config.cookieSecret)
+    ) throw new HttpError(403, 'csrf_failed', 'CSRF validation failed.');
+    return { context: await this.auth.authenticate(token), token };
   }
 
   #requireKnowledge(): KnowledgeApplication {
@@ -738,6 +825,80 @@ function exactKeys(value: Record<string, unknown>, required: readonly string[], 
   const allowed = new Set([...required, ...optional]);
   return required.every((key) => Object.hasOwn(value, key))
     && Object.keys(value).every((key) => allowed.has(key));
+}
+
+function invalidWorkspaceInput(): never {
+  throw new HttpError(422, 'validation_failed', 'Workspace input is invalid.');
+}
+
+function workspaceName(value: unknown): string {
+  if (typeof value !== 'string' || value !== value.trim() || value !== value.normalize('NFC')) {
+    return invalidWorkspaceInput();
+  }
+  const characters = Array.from(value);
+  if (
+    characters.length < 1
+    || characters.length > 100
+    || /\s{2,}/u.test(value)
+    || characters.some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127 || (code >= 0xD800 && code <= 0xDFFF);
+    })
+  ) return invalidWorkspaceInput();
+  return value;
+}
+
+function workspaceRole(value: unknown): WorkspaceRole {
+  if (typeof value !== 'string' || !workspaceRoles.includes(value as WorkspaceRole)) {
+    return invalidWorkspaceInput();
+  }
+  return value as WorkspaceRole;
+}
+
+function workspaceEmail(value: unknown): string {
+  if (typeof value !== 'string') return invalidWorkspaceInput();
+  const email = value.trim().toLowerCase();
+  if (
+    email.length < 3
+    || email.length > 320
+    || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(email)
+  ) return invalidWorkspaceInput();
+  return email;
+}
+
+function validateCreateWorkspace(value: unknown): { name: string } {
+  if (!isRecord(value) || !exactKeys(value, ['name'])) return invalidWorkspaceInput();
+  return { name: workspaceName(value.name) };
+}
+
+function validateAddWorkspaceMember(value: unknown): { email: string; role: WorkspaceRole } {
+  if (!isRecord(value) || !exactKeys(value, ['email', 'role'])) return invalidWorkspaceInput();
+  return { email: workspaceEmail(value.email), role: workspaceRole(value.role) };
+}
+
+function validateWorkspaceRoleUpdate(value: unknown): { role: WorkspaceRole } {
+  if (!isRecord(value) || !exactKeys(value, ['role'])) return invalidWorkspaceInput();
+  return { role: workspaceRole(value.role) };
+}
+
+function publicWorkspace(workspace: { id: string; name: string; role: WorkspaceRole; slug: string }): Record<string, unknown> {
+  return { id: workspace.id, name: workspace.name, role: workspace.role, slug: workspace.slug };
+}
+
+function publicWorkspaceMember(entry: {
+  displayName: string | null;
+  email: string;
+  joinedAt: Date;
+  role: WorkspaceRole;
+  userId: string;
+}): Record<string, unknown> {
+  return {
+    displayName: entry.displayName,
+    email: entry.email,
+    joinedAt: entry.joinedAt.toISOString(),
+    role: entry.role,
+    userId: entry.userId,
+  };
 }
 
 function decodeUuidPath(value: string): string {

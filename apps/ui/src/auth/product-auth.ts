@@ -3,6 +3,9 @@ import {
   isUuid,
   parseProductHistoryThreadDetail,
   parseProductHistoryThreadPage,
+  parseProductWorkspace,
+  parseProductWorkspaceMember,
+  parseProductWorkspaceMembers,
   PRODUCT_HISTORY_DEFAULT_LIMIT,
   PRODUCT_HISTORY_MAX_LIMIT,
   PRODUCT_WORKSPACE_HEADER_NAME,
@@ -12,12 +15,14 @@ import {
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
   type ProductUserDto,
+  type ProductWorkspaceMemberDto,
   type ProductWorkspaceDto,
   type WorkspaceRole,
 } from '@kodex/product-contract';
 
 export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
+export type ProductWorkspaceMember = ProductWorkspaceMemberDto;
 export type ProductAuthContext = ProductAuthContextDto;
 
 export interface ProductRuntimeWorkspaceSelection {
@@ -339,6 +344,47 @@ export class ProductAuthClient {
     this.#csrfToken = null;
   }
 
+  async createWorkspace(name: string): Promise<ProductWorkspace> {
+    const response = await this.#workspaceMutation('/api/workspaces', 'POST', { name });
+    if (response.status !== 201) throw new ProductAuthError('invalid-response', 'The workspace create response was invalid.', response.status);
+    try {
+      return parseProductWorkspace(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid workspace.');
+    }
+  }
+
+  async workspaceMembers(workspaceId: string): Promise<ProductWorkspaceMember[]> {
+    const path = this.#workspacePath(workspaceId, '/members');
+    const response = await this.#request(path, { method: 'GET' });
+    try {
+      return parseProductWorkspaceMembers(await this.#json(response)).members;
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid member list.');
+    }
+  }
+
+  async addWorkspaceMember(workspaceId: string, email: string, role: WorkspaceRole): Promise<ProductWorkspaceMember> {
+    const response = await this.#workspaceMutation(this.#workspacePath(workspaceId, '/members'), 'POST', { email, role });
+    if (response.status !== 201) throw new ProductAuthError('invalid-response', 'The member create response was invalid.', response.status);
+    return this.#parseWorkspaceMember(response);
+  }
+
+  async updateWorkspaceMember(workspaceId: string, userId: string, role: WorkspaceRole): Promise<ProductWorkspaceMember> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, `/members/${this.#uuid(userId)}`), 'PATCH', { role },
+    );
+    if (response.status !== 200) throw new ProductAuthError('invalid-response', 'The member update response was invalid.', response.status);
+    return this.#parseWorkspaceMember(response);
+  }
+
+  async removeWorkspaceMember(workspaceId: string, userId: string): Promise<void> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, `/members/${this.#uuid(userId)}`), 'DELETE', undefined,
+    );
+    if (response.status !== 204) throw new ProductAuthError('invalid-response', 'The member delete response was invalid.', response.status);
+  }
+
   async knowledge<T>(
     pathname: string,
     workspaceId: string,
@@ -406,6 +452,40 @@ export class ProductAuthClient {
   onUnauthenticated(listener: () => void): () => void {
     this.#unauthenticatedListeners.add(listener);
     return () => this.#unauthenticatedListeners.delete(listener);
+  }
+
+  #uuid(value: string): string {
+    if (!isUuid(value)) throw new ProductAuthError('rejected', 'Workspace request scope is invalid.');
+    return encodeURIComponent(value);
+  }
+
+  #workspacePath(workspaceId: string, suffix: string): string {
+    return `/api/workspaces/${this.#uuid(workspaceId)}${suffix}`;
+  }
+
+  async #workspaceMutation(
+    pathname: string,
+    method: 'DELETE' | 'PATCH' | 'POST',
+    body: Record<string, unknown> | undefined,
+  ): Promise<Response> {
+    if (!this.#csrfToken) throw new ProductAuthError('unauthenticated', 'Authentication is required.');
+    const response = await this.#request(pathname, {
+      method,
+      headers: {
+        'X-CSRF-Token': this.#csrfToken,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return response;
+  }
+
+  async #parseWorkspaceMember(response: Response): Promise<ProductWorkspaceMember> {
+    try {
+      return parseProductWorkspaceMember(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid member.');
+    }
   }
 
   async #historyGet(

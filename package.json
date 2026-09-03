@@ -23,6 +23,7 @@
     "test:product-db": "npm run build --workspace @kodex/product-db && vitest run --config vitest.product-db.config.ts",
     "test:product-auth": "npm run build --workspace @kodex/product-db && npm run build --workspace @kodex/product-api && vitest run --config vitest.product-auth.config.ts",
     "test:tenant-auth": "npm run build && vitest run --config vitest.tenant-auth.config.ts",
+    "test:workspace-postgres": "node scripts/test-workspace-postgres.mjs",
     "test:history-postgres": "npm run build && vitest run --config vitest.history-postgres.config.ts",
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",
     "test:full-stack": "node scripts/test-full-stack.mjs",

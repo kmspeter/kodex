@@ -60,6 +60,7 @@ interface ProductAuthGateProps {
     logout: () => Promise<void>,
     loggingOut: boolean,
     client: ProductAuthClient,
+    updateContext: (context: ProductAuthContext) => void,
   ) => ReactNode;
   client?: ProductAuthClient;
 }
@@ -261,7 +262,13 @@ export function ProductAuthGate({ children, client: providedClient }: ProductAut
   if (state.status === 'unauthenticated') {
     return <AuthForm client={client} onAuthenticated={(context) => setState({ status: 'authenticated', context })} />;
   }
-  return children(state.context, logout, loggingOut, client);
+  return children(
+    state.context,
+    logout,
+    loggingOut,
+    client,
+    (context) => setState({ status: 'authenticated', context }),
+  );
 }
 
 type AuthMode = 'login' | 'register';

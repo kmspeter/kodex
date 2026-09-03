@@ -5,6 +5,7 @@ import {
   AuthService,
   PostgresAuthRepository,
   PostgresHistoryRepository,
+  PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
@@ -60,6 +61,7 @@ try {
     new PostgresHistoryRepository(database),
     knowledgeRuntime.service,
     { check: async () => { await database!.query('SELECT 1'); } },
+    new PostgresWorkspaceRepository(database),
   );
   const port = await server.listen();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);

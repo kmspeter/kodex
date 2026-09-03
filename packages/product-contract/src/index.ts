@@ -27,6 +27,18 @@ export interface ProductWorkspaceDto {
   slug: string;
 }
 
+export interface ProductWorkspaceMemberDto {
+  displayName: string | null;
+  email: string;
+  joinedAt: string;
+  role: WorkspaceRole;
+  userId: string;
+}
+
+export interface ProductWorkspaceMembersDto {
+  members: ProductWorkspaceMemberDto[];
+}
+
 export interface ProductAuthContextDto {
   defaultWorkspace?: ProductWorkspaceDto;
   session: { expiresAt: string };
@@ -123,6 +135,71 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+function workspaceRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactWorkspaceKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function workspaceDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function workspaceEmail(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length >= 3
+    && value.length <= 320
+    && value === value.toLowerCase()
+    && /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(value);
+}
+
+/** Strict browser-boundary parser for workspace mutation responses. */
+export function parseProductWorkspace(value: unknown): ProductWorkspaceDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['id', 'name', 'role', 'slug'])
+    || !isUuid(value.id)
+    || typeof value.name !== 'string'
+    || Array.from(value.name).length < 1
+    || Array.from(value.name).length > 100
+    || value.name !== value.name.trim()
+    || value.name !== value.name.normalize('NFC')
+    || /\s{2,}/u.test(value.name)
+    || typeof value.slug !== 'string'
+    || !/^[a-z0-9][a-z0-9-]{0,127}$/u.test(value.slug)
+    || !workspaceRoles.includes(value.role as WorkspaceRole)
+  ) throw new Error('Invalid workspace response.');
+  return value as unknown as ProductWorkspaceDto;
+}
+
+export function parseProductWorkspaceMember(value: unknown): ProductWorkspaceMemberDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['displayName', 'email', 'joinedAt', 'role', 'userId'])
+    || !isUuid(value.userId)
+    || !workspaceEmail(value.email)
+    || (value.displayName !== null && (typeof value.displayName !== 'string' || value.displayName.length > 100))
+    || !workspaceDate(value.joinedAt)
+    || !workspaceRoles.includes(value.role as WorkspaceRole)
+  ) throw new Error('Invalid workspace member response.');
+  return value as unknown as ProductWorkspaceMemberDto;
+}
+
+/** Strict browser-boundary parser; rejects extra fields and oversized member lists. */
+export function parseProductWorkspaceMembers(value: unknown): ProductWorkspaceMembersDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['members'])
+    || !Array.isArray(value.members)
+    || value.members.length > 10_000
+  ) throw new Error('Invalid workspace members response.');
+  return { members: value.members.map(parseProductWorkspaceMember) };
 }
 
 function historyRecord(value: unknown): value is Record<string, unknown> {

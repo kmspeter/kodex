@@ -196,8 +196,8 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
     expect((await localRequest(tokenA, sharedWorkspace)).status).toBe(200);
     expect((await localRequest(tokenB, sharedWorkspace)).status).toBe(200);
     const roots = manager.inspect().map((entry) => entry.root);
-    expect(roots).toContain(path.join(root, 'tenants', 'users', userA, 'workspaces', sharedWorkspace));
-    expect(roots).toContain(path.join(root, 'tenants', 'users', userB, 'workspaces', sharedWorkspace));
+    expect(roots).toContain(path.join(root, 'data', 'tenants', 'users', userA, 'workspaces', sharedWorkspace));
+    expect(roots).toContain(path.join(root, 'data', 'tenants', 'users', userB, 'workspaces', sharedWorkspace));
 
     const scope: RuntimeScope = {
       userId: userB, workspaceId: workspaceB,
@@ -215,6 +215,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
   it('blocks WS cross-tenant upgrades, isolates events, and closes after DB session revocation', async () => {
     const establishedA = await bootstrap(tokenA, workspaceA);
     const establishedB = await bootstrap(tokenB, workspaceB);
+    const establishedSharedB = await bootstrap(tokenB, sharedWorkspace);
     const denied = new Promise<number>((resolve, reject) => {
       const attempted = new WebSocket(`ws://127.0.0.1:${port}/ws?workspace_id=${workspaceB}`, ['kodex', establishedA.body.sessionToken], {
         origin,
@@ -239,6 +240,7 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
 
     const socketA = await socket(tokenA, workspaceA, establishedA.body.sessionToken);
     const socketB = await socket(tokenB, workspaceB, establishedB.body.sessionToken);
+    const sharedSocketB = await socket(tokenB, sharedWorkspace, establishedSharedB.body.sessionToken);
     try {
       const authA = (await repository.findAuthContext(hashSessionToken(tokenA)))!;
       const lease = await manager.acquire({
@@ -262,9 +264,24 @@ describe('PostgreSQL-backed Local Server tenant authorization', () => {
         [workspaceB, userB],
       );
       await expect(membershipClosed).resolves.toBe(1008);
+
+      const downgradedClosed = new Promise<number>((resolve) => sharedSocketB.webSocket.once('close', (code) => resolve(code)));
+      await database.query(
+        `UPDATE workspace_members SET role = 'viewer', updated_at = now()
+         WHERE workspace_id = $1 AND user_id = $2`,
+        [sharedWorkspace, userB],
+      );
+      await expect(downgradedClosed).resolves.toBe(1008);
+      expect((await localRequest(tokenB, sharedWorkspace)).status).toBe(403);
+      await database.query(
+        `UPDATE workspace_members SET role = 'member', updated_at = now()
+         WHERE workspace_id = $1 AND user_id = $2`,
+        [sharedWorkspace, userB],
+      );
     } finally {
       socketA.webSocket.close();
       socketB.webSocket.close();
+      sharedSocketB.webSocket.close();
     }
   });
 

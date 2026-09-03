@@ -260,6 +260,58 @@ describe('product auth browser contract', () => {
     });
   });
 
+  it('uses CSRF-protected workspace APIs and strictly parses allowlisted responses', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const userId = '10000000-0000-4000-8000-000000000001';
+    const workspace = { id: workspaceId, name: 'Platform', slug: 'workspace-safe', role: 'owner' };
+    const member = {
+      userId, email: 'member@example.com', displayName: 'Member', role: 'member',
+      joinedAt: '2026-08-31T00:00:00.000Z',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse(workspace, 201))
+      .mockResolvedValueOnce(jsonResponse({ members: [member] }))
+      .mockResolvedValueOnce(jsonResponse(member, 201))
+      .mockResolvedValueOnce(jsonResponse({ ...member, role: 'viewer' }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await client.me();
+    await expect(client.createWorkspace('Platform')).resolves.toEqual(workspace);
+    await expect(client.workspaceMembers(workspaceId)).resolves.toEqual([member]);
+    await expect(client.addWorkspaceMember(workspaceId, member.email, 'member')).resolves.toEqual(member);
+    await expect(client.updateWorkspaceMember(workspaceId, userId, 'viewer')).resolves.toMatchObject({ role: 'viewer' });
+    await client.removeWorkspaceMember(workspaceId, userId);
+
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:47832/api/workspaces',
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,
+    ]);
+    for (const [, init] of [fetchMock.mock.calls[1], fetchMock.mock.calls[3], fetchMock.mock.calls[4], fetchMock.mock.calls[5]]) {
+      expect(new Headers(init.headers).get('X-CSRF-Token')).toBe(csrfToken);
+    }
+
+    const malformed = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ members: [{ ...member, passwordHash: 'leak' }] })),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await expect(malformed.workspaceMembers(workspaceId)).rejects.toMatchObject({ kind: 'invalid-response' });
+    const malformedEmail = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ members: [{ ...member, email: 'not-an-email' }] })),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await expect(malformedEmail.workspaceMembers(workspaceId)).rejects.toMatchObject({ kind: 'invalid-response' });
+    await expect(client.workspaceMembers('not-a-uuid')).rejects.toMatchObject({ kind: 'rejected' });
+  });
+
   it('separates 401, 5xx, network, and malformed-response failures', async () => {
     const cases: Array<[Response | Error, ProductAuthError['kind']]> = [
       [jsonResponse(errorBody('unauthenticated'), 401), 'unauthenticated'],

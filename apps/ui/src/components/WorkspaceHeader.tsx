@@ -1,7 +1,7 @@
 import type { GitStatus, ProjectRecord } from '@kodex/kodex-api';
 import type { Thread } from '@kodex/codex-protocol';
 import { canUseWorkspaceRuntime } from '@kodex/product-contract';
-import { Archive, Building2, Check, ChevronDown, Code2, Columns2, Copy, GitBranch, GitCommitHorizontal, History, LogOut, MoreHorizontal, PanelLeftClose, ShieldCheck, UserRound } from 'lucide-react';
+import { Archive, Building2, Check, ChevronDown, Code2, Columns2, Copy, GitBranch, GitCommitHorizontal, History, LogOut, MoreHorizontal, PanelLeftClose, Settings2, ShieldCheck, UserRound } from 'lucide-react';
 import type { ProductAuthContext, ProductWorkspace } from '../auth/product-auth';
 import { threadTitle } from './Sidebar';
 
@@ -22,6 +22,7 @@ export function WorkspaceHeader(props: {
   onArchive: () => void;
   onFork: () => void;
   onLogout: () => void;
+  onManageWorkspace: () => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onRename: () => void;
   onToast: (message: string) => void;
@@ -41,6 +42,6 @@ export function WorkspaceHeader(props: {
       const current = workspace.id === props.activeWorkspace.id;
       const runnable = canUseWorkspaceRuntime(workspace.role);
       return <button className={`workspace-option ${current ? 'is-current' : ''}`} type="button" key={workspace.id} aria-current={current ? 'true' : undefined} disabled={current || !runnable} onClick={() => props.onSelectWorkspace(workspace.id)}><span><strong>{workspace.name}</strong><small>{workspace.role}</small></span><span className="workspace-option-state">{current ? <><Check size={11} /> 현재</> : runnable ? '전환' : '실행 불가'}</span></button>;
-    })}<p className="workspace-switch-note">전환하면 이 UI 연결과 화면 상태가 바뀝니다. 진행 중인 turn은 서버 정책에 따라 계속될 수 있습니다.</p></div>}<button disabled={props.loggingOut} onClick={() => { props.onMenu(null); props.onLogout(); }}><LogOut size={14} /> {props.loggingOut ? '로그아웃 중…' : '로그아웃'}</button></div>}</div>
+    })}<p className="workspace-switch-note">전환하면 이 UI 연결과 화면 상태가 바뀝니다. 진행 중인 turn은 서버 정책에 따라 계속될 수 있습니다.</p></div>}<button onClick={() => { props.onMenu(null); props.onManageWorkspace(); }}><Settings2 size={14} /> Workspace 관리</button><button disabled={props.loggingOut} onClick={() => { props.onMenu(null); props.onLogout(); }}><LogOut size={14} /> {props.loggingOut ? '로그아웃 중…' : '로그아웃'}</button></div>}</div>
   </div></header>;
 }

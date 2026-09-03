@@ -112,6 +112,10 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 - `POST /api/auth/register`: `{ "email", "password", "displayName"? }`, 성공 `201`. 비밀번호는 UTF-8 12~1,024 bytes입니다.
 - `POST /api/auth/login`: `{ "email", "password" }`, 성공 `200`. 존재하지 않는 이메일과 잘못된 비밀번호는 같은 `401 invalid_credentials`입니다.
 - `GET /api/auth/me`: session cookie로 사용자, session 만료, workspace membership을 조회합니다.
+- `POST /api/workspaces`: strict name으로 workspace를 만들고 호출자를 owner로 원자 추가합니다. UI는 `/me` 재검증 후 새 workspace로 즉시 전환합니다.
+- `GET /api/workspaces/<uuid>/members`: 현재 member에게 canonical email, display name, role, joined time만 반환합니다.
+- `POST /api/workspaces/<uuid>/members`: owner/admin이 이미 가입한 정확한 email의 계정을 추가합니다. 초대 메일이나 token을 만드는 API가 아닙니다.
+- `PATCH|DELETE /api/workspaces/<uuid>/members/<user-uuid>`: 역할 변경/제거를 수행하며 보수적 admin 제한과 last-owner 불변식을 transaction row lock으로 강제합니다.
 - `POST /api/auth/logout`: session/CSRF cookie와 `X-CSRF-Token` header가 필요하고 성공 시 DB session을 폐기한 뒤 `204`를 반환합니다.
 - `GET /api/history/threads?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: header의 `X-Kodex-Workspace-Id`와 URL scope가 정확히 같아야 하며 현재 로그인 사용자가 만든 thread만 반환합니다. `limit`은 최대 50이고 cursor는 브라우저가 해석하지 않는 불투명 토큰입니다.
 - `GET /api/history/threads/<codex-thread-id>?workspace_id=<uuid>&limit=<n>&cursor=<opaque>`: 같은 소유자 검사를 서버에서 강제하고 turn/item/tool call/approval page를 반환합니다. 다른 사용자 thread ID는 `404`입니다. 브라우저 DTO는 DB 내부 ID, source event 식별자, checksum/vector와 session/secret을 제외하고 payload를 서버에서 재필터링한 최대 4,000자 preview로 제한합니다.
@@ -144,7 +148,9 @@ session token은 32 random bytes이며 브라우저의 `kodex_product_session` H
 
 최초 runtime workspace는 실행 가능한 default membership, 없으면 첫 `owner`/`admin`/`member` membership입니다. 로그인한 사용자는 account menu에서 실행 가능한 membership 사이를 전환할 수 있습니다. 선택은 현재 로그인 React 메모리에만 있고 localStorage, sessionStorage, IndexedDB 또는 URL에 저장하지 않습니다. `/api/auth/me` 재검증에서 같은 사용자와 실행 가능한 membership이 유지되면 선택을 보존하고, membership 제거나 `viewer` 강등이면 기존 UI client를 즉시 unmount한 뒤 안전한 default/첫 workspace로 fallback합니다. fallback이 없으면 runtime 없는 권한 화면으로 이동하며, 사용자가 바뀌면 이전 사용자의 workspace ID를 폐기합니다.
 
-workspace 전환은 `AuthenticatedApp`와 `KodexClient`를 `(user ID, workspace ID)` key로 완전히 다시 만들므로 이전 WebSocket, pending RPC, event reducer, active thread/project/dialog와 RAG/history 화면 상태가 새 tenant에 섞이지 않습니다. 이전 client의 UI 연결과 pending RPC는 닫히지만 서버에서 이미 실행 중인 turn을 취소했다는 뜻은 아니며 해당 작업은 서버 정책에 따라 계속될 수 있습니다. Product knowledge/history 요청과 모든 Local Server HTTP 요청은 active workspace의 `X-Kodex-Workspace-Id`/`workspace_id`를 사용하고 WebSocket URL도 같은 비밀 아닌 `workspace_id`를 사용합니다. session bearer는 계속 HttpOnly cookie에만 있습니다. 이 UI 선택에 필요한 별도 workspace-switch API는 없으며 서버측 workspace 생성·초대·membership 관리 API도 아직 제공하지 않습니다.
+workspace 전환은 `AuthenticatedApp`와 `KodexClient`를 `(user ID, workspace ID)` key로 완전히 다시 만들므로 이전 WebSocket, pending RPC, event reducer, active thread/project/dialog와 RAG/history 화면 상태가 새 tenant에 섞이지 않습니다. 이전 client의 UI 연결과 pending RPC는 닫히지만 서버에서 이미 실행 중인 turn을 취소했다는 뜻은 아니며 해당 작업은 서버 정책에 따라 계속될 수 있습니다. Product knowledge/history 요청과 모든 Local Server HTTP 요청은 active workspace의 `X-Kodex-Workspace-Id`/`workspace_id`를 사용하고 WebSocket URL도 같은 비밀 아닌 `workspace_id`를 사용합니다. session bearer는 계속 HttpOnly cookie에만 있습니다. 이 UI 선택에 필요한 별도 workspace-switch API는 없습니다.
+
+Account menu의 **Workspace 관리**에서는 새 workspace 생성, 현재 member 목록, 기존 가입 계정 email 추가, 역할 변경과 제거를 Product API로 수행합니다. 새 workspace는 생성 직후 선택하며 모든 mutation 뒤 `/me`를 재검증합니다. owner는 전체 관리, admin은 member/viewer만 추가·변경·제거할 수 있고 owner/admin 권한에는 손댈 수 없습니다. 마지막 owner는 동시 요청에서도 강등/제거할 수 없으며 owner 이전은 다른 멤버를 먼저 owner로 승격한 뒤 기존 owner를 변경하는 두 단계입니다. Membership은 Saved DB History나 RAG 문서 공유를 의미하지 않으며 두 기능은 같은 workspace에서도 계속 사용자별 private scope입니다. 자세한 계약은 `docs/adr/0012-workspace-membership-management.md`에 있습니다.
 
 로그인 후 사이드바의 **저장된 DB 히스토리**는 Product API의 사용자별 PostgreSQL projection만 조회하는 별도 다이얼로그입니다. 공식 Codex sidebar/thread 목록을 병합하거나 대체하지 않으며, 목록과 상세을 각각 cursor로 더 불러옵니다. projection은 비동기이므로 방금 끝난 대화가 잠시 늦게 보일 수 있습니다. 내보내기는 이 화면이 검증한 bounded DTO만 JSON Blob으로 만들고 임시 URL을 즉시 해제합니다. 세부 경계는 `docs/adr/0007-saved-db-history-ui.md`에 있습니다.
 
@@ -220,6 +226,8 @@ npm run test:product-db
 npm run test:product-auth
 # DATABASE_URL을 명시한 실제 Local Server tenant/WS 격리 검증
 npm run test:tenant-auth
+# 독립 --rm pgvector에서 workspace 생성/역할/owner lock/audit와 Local Server 권한 폐기 검증
+npm run test:workspace-postgres
 # DATABASE_URL을 명시한 실제 history projection/outbox/API 검증
 npm run test:history-postgres
 # 독립 --rm pgvector 컨테이너를 만들고 항상 정리하는 실제 RAG 검증
@@ -232,7 +240,7 @@ npm run test:desktop-full-stack
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:workspace-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 ### Full-stack acceptance 경계
 
@@ -289,7 +297,7 @@ Web Search, remote MCP, installer/package 결과는 검증하지 않습니다. �
 ## 실제 한계
 
 - 자동화는 Local Server가 켜져 있을 때만 실행되는 로컬 scheduler입니다.
-- account menu는 기존 membership 사이의 메모리 전용 runtime 전환만 제공합니다. 서버측 workspace 생성, 초대, membership/role 관리는 아직 제공하지 않습니다.
+- Workspace 관리는 기존 가입 계정의 정확한 email 추가만 제공합니다. 이메일 초대/token, 가입 전 pending member, workspace rename/delete, member pagination과 분산 rate limit은 아직 제공하지 않습니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read API는 shared workspace에서도 현재 사용자의 `created_by_user_id`만 반환합니다. workspace 전체 협업 공유, 보존 기간, hard deletion/계정 삭제 cascade 정책과 사용자 export는 후속 작업입니다.

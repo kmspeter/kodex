@@ -124,3 +124,11 @@ export {
   type RetrievalResult,
 } from './knowledge-types.js';
 export { ragConfigFromEnv, type RagConfig } from './rag-config.js';
+export { PostgresWorkspaceRepository } from './workspace-repository.js';
+export {
+  WorkspaceOperationError,
+  type WorkspaceApplication,
+  type WorkspaceMember,
+  type WorkspaceOperationErrorCode,
+  type WorkspaceRecord,
+} from './workspace-types.js';
