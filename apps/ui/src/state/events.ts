@@ -35,6 +35,31 @@ function upsertItem(thread: Thread, turnId: string, item: ThreadItem): Thread {
   return { ...thread, turns };
 }
 
+function mergeTurn(current: Turn | undefined, incoming: Turn): Turn {
+  if (!current) return incoming;
+  const incomingById = new Map(incoming.items.map((item) => [item.id, item]));
+  const currentIds = new Set(current.items.map((item) => item.id));
+  return {
+    ...current,
+    ...incoming,
+    items: [
+      ...current.items.map((item) => incomingById.get(item.id) ?? item),
+      ...incoming.items.filter((item) => !currentIds.has(item.id)),
+    ],
+  };
+}
+
+function upsertTurn(thread: Thread, incoming: Turn): Thread {
+  const current = thread.turns.find((turn) => turn.id === incoming.id);
+  const merged = mergeTurn(current, incoming);
+  return {
+    ...thread,
+    turns: current
+      ? thread.turns.map((turn) => turn.id === incoming.id ? merged : turn)
+      : [...thread.turns, merged],
+  };
+}
+
 function appendLive(state: EventState, itemId: string, delta: string): EventState {
   return { ...state, liveText: { ...state.liveText, [itemId]: `${state.liveText[itemId] ?? ''}${delta}` } };
 }
@@ -62,8 +87,11 @@ export function eventReducer(state: EventState, action: EventAction): EventState
   if (action.type === 'resync-started') return { ...state, activeTurnId: null, liveText: {}, pendingRequests: [], processes: {} };
   if (action.type === 'turn-accepted') {
     if (!state.activeThread || state.activeThread.id !== action.threadId) return state;
-    const turns = [...state.activeThread.turns.filter((turn) => turn.id !== action.turn.id), action.turn];
-    return { ...state, activeThread: { ...state.activeThread, turns }, activeTurnId: action.turn.id };
+    return {
+      ...state,
+      activeThread: upsertTurn(state.activeThread, action.turn),
+      activeTurnId: action.turn.id,
+    };
   }
   if (action.type === 'server-request') {
     return { ...state, pendingRequests: [...state.pendingRequests.filter((entry) => String(entry.request.id) !== String(action.request.request.id)), action.request] };
@@ -101,12 +129,20 @@ export function eventReducer(state: EventState, action: EventAction): EventState
     case 'turn/started': {
       const params = notification.params;
       if (params.threadId !== state.activeThread?.id || !state.activeThread) return state;
-      return { ...state, activeTurnId: params.turn.id, activeThread: { ...state.activeThread, turns: [...state.activeThread.turns.filter((turn) => turn.id !== params.turn.id), params.turn] } };
+      return {
+        ...state,
+        activeTurnId: params.turn.id,
+        activeThread: upsertTurn(state.activeThread, params.turn),
+      };
     }
     case 'turn/completed': {
       const params = notification.params;
       if (params.threadId !== state.activeThread?.id || !state.activeThread) return state;
-      return { ...state, activeTurnId: null, activeThread: { ...state.activeThread, turns: state.activeThread.turns.map((turn) => turn.id === params.turn.id ? params.turn : turn) } };
+      return {
+        ...state,
+        activeTurnId: null,
+        activeThread: upsertTurn(state.activeThread, params.turn),
+      };
     }
     case 'item/started':
     case 'item/completed': {

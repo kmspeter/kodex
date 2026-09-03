@@ -226,11 +226,13 @@ npm run test:history-postgres
 npm run test:rag-postgres
 # 인증부터 실제 두 서버/codex.exe/DB projection/격리/logout까지의 opt-in API/WS acceptance
 npm run test:full-stack
+# 실제 Electron renderer DOM으로 가입/settings/agent/history/logout까지의 opt-in Desktop UI acceptance
+npm run test:desktop-full-stack
 # 실제 OpenAI 호출은 key만으로 실행되지 않으며 두 값을 모두 명시해야 함
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`와 `test:full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 두 스크립트는 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`, `test:history-postgres`는 실제 PostgreSQL row를 만들고 종료 시 정리합니다. `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 ### Full-stack acceptance 경계
 
@@ -262,6 +264,27 @@ Windows에서 실제 command lifecycle을 안정적으로 검증하기 위해 �
 `danger-full-access`/`never`를 사용합니다. model fixture가 호출할 수 있는 command는 고정된 로컬 echo 하나이며
 shell/Web Search network를 끄고, 실제 exit code 0과 marker output을 확인합니다. 운영 기본 설정을 바꾸거나
 사용자 prompt/repository 내용을 command로 실행하지 않습니다.
+
+### Desktop UI full-stack acceptance 경계
+
+`npm run test:desktop-full-stack`은 위 API/WS acceptance와 같은 Node/npm, 실행 중인 Docker daemon,
+현재 저장소의 `bin/codex.exe` 전제를 사용하지만 별도의 제품 경계를 검증합니다. 실제 Electron desktop
+bootstrap이 Product API readiness 다음 Local Server readiness를 기다리고 build된 renderer를 숨김 창에
+로드합니다. 드라이버는 React 함수나 상태, HTTP API를 직접 호출하지 않고 접근 가능한 label/role/text로만
+회원가입 폼 입력·제출, Settings 열기와 Local provider 저장, composer 전송, assistant/tool 결과 확인,
+저장된 DB 히스토리 dialog refresh·선택·상세 확인, 계정 메뉴 로그아웃을 수행합니다.
+
+이 명령은 테스트 tenant에만 `kodex-loopback-model`, keyless loopback `/v1`, `danger-full-access`와 `never`를
+DOM으로 저장합니다. fixture가 고정한 로컬 echo command 외에 사용자 입력이나 외부 network를 shell로 전달하지
+않으며 Responses 요청에 Authorization이 없고 tool output marker와 exit code 0이 돌아왔는지도 fixture에서
+확인합니다. Electron user data, tenant data, fixture socket, Electron/서버/App Server process와 DB container는
+격리되고 bounded cleanup됩니다. 실패하면 임시 디렉터리에 renderer screenshot과 값·본문을 제외한 DOM 구조
+요약만 남기고 경로를 출력하며, 성공하면 artifact 디렉터리까지 제거합니다.
+
+`test:full-stack`은 browser 없이 더 넓은 HTTP/WS tenant isolation과 logout socket revocation을 검증하고,
+`test:desktop-full-stack`은 한 사용자 경로의 실제 DOM 표시와 상호작용을 검증합니다. 둘 다 live OpenAI/RAG,
+Web Search, remote MCP, installer/package 결과는 검증하지 않습니다. 상세 결정은
+`docs/adr/0011-desktop-ui-full-stack-acceptance.md`에 있습니다.
 
 ## 실제 한계
 

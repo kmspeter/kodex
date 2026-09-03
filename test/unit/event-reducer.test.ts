@@ -57,4 +57,50 @@ describe('typed notification reducer', () => {
     expect(state.activeTurnId).toBeNull();
     expect(state.activeThread?.turns[0]?.status).toBe('completed');
   });
+
+  it('retains streamed command items when turn completion contains only final message items', () => {
+    let state = eventReducer(initialEventState, { type: 'thread-selected', thread: thread() });
+    state = eventReducer(state, {
+      type: 'notification',
+      notification: {
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          completedAtMs: 2,
+          item: {
+            type: 'commandExecution', id: 'command-1', pluginId: null, scriptPath: null,
+            command: 'echo marker', cwd: 'D:/project', processId: null, source: 'agent',
+            status: 'completed', commandActions: [], aggregatedOutput: 'marker', exitCode: 0,
+            durationMs: 10,
+          },
+        },
+      },
+    });
+    const completedTurn = {
+      ...thread().turns[0]!,
+      status: 'completed' as const,
+      completedAt: 2,
+      durationMs: 1,
+      items: [{
+        type: 'agentMessage' as const,
+        id: 'item-1',
+        text: 'done',
+        phase: null,
+        memoryCitation: null,
+        delivery: null,
+      }],
+    };
+    state = eventReducer(state, {
+      type: 'notification',
+      notification: {
+        method: 'turn/completed',
+        params: { threadId: 'thread-1', turn: completedTurn },
+      },
+    });
+
+    expect(state.activeThread?.turns[0]?.items.map((item) => item.type))
+      .toEqual(['agentMessage', 'commandExecution']);
+    expect(state.activeThread?.turns[0]?.items[0]).toMatchObject({ text: 'done' });
+  });
 });

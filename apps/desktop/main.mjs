@@ -25,17 +25,40 @@ const bundledRuntime = existsSync(path.join(bundledCandidate, 'server', 'main.js
   && existsSync(path.join(bundledCandidate, 'ui', 'index.html'));
 const sourceRoot = bundledRuntime ? bundledCandidate : path.resolve(desktopRoot, '..', '..');
 const fakeSmoke = process.argv.includes('--smoke');
-const smoke = fakeSmoke || process.argv.includes('--smoke-real');
+const fullStackAcceptance = process.argv.includes('--full-stack-acceptance');
+const smoke = fakeSmoke || process.argv.includes('--smoke-real') || fullStackAcceptance;
 const children = [];
 let mainWindow = null;
 let quitting = false;
 let launchComplete = false;
 let smokeDataRoot = null;
 let smokeStage = 'waiting for Electron ready';
+let acceptanceArtifactDirectory = null;
 
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
   void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
-}, 30_000) : null;
+}, fullStackAcceptance ? 180_000 : 30_000) : null;
+
+if (fullStackAcceptance) {
+  const isolatedUserData = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_USER_DATA?.trim() ?? '');
+  const artifactDirectory = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_ARTIFACT_DIR?.trim() ?? '');
+  const acceptanceRoot = path.dirname(isolatedUserData);
+  const relativeRoot = path.relative(app.getPath('temp'), acceptanceRoot);
+  if (
+    !path.isAbsolute(process.env.KODEX_DESKTOP_ACCEPTANCE_USER_DATA?.trim() ?? '')
+    || !path.isAbsolute(process.env.KODEX_DESKTOP_ACCEPTANCE_ARTIFACT_DIR?.trim() ?? '')
+    || !path.basename(acceptanceRoot).startsWith('kodex-desktop-ui-')
+    || relativeRoot.startsWith('..')
+    || path.isAbsolute(relativeRoot)
+    || path.basename(isolatedUserData) !== 'electron-user-data'
+    || path.dirname(artifactDirectory) !== acceptanceRoot
+    || path.basename(artifactDirectory) !== 'failure-artifacts'
+  ) {
+    throw new Error('Desktop full-stack acceptance requires owned paths under its temporary root.');
+  }
+  app.setPath('userData', isolatedUserData);
+  acceptanceArtifactDirectory = artifactDirectory;
+}
 
 function runtimeRoot() {
   return bundledRuntime || app.isPackaged ? sourceRoot : path.resolve(desktopRoot, '..', '..');
@@ -92,7 +115,10 @@ async function loadDesktopConfiguration() {
 function childEnvironment(overrides) {
   const environment = { ...process.env, ...overrides };
   for (const key of Object.keys(environment)) {
-    if (/^(?:VITE_|NEXT_PUBLIC_)/iu.test(key) || environment[key] === undefined) delete environment[key];
+    if (
+      /^(?:VITE_|NEXT_PUBLIC_|KODEX_DESKTOP_ACCEPTANCE_)/iu.test(key)
+      || environment[key] === undefined
+    ) delete environment[key];
   }
   if (fakeSmoke) {
     for (const key of [
@@ -261,6 +287,27 @@ async function launch() {
   smokeStage = 'loading the localhost renderer';
   await mainWindow.loadURL(localOrigin);
   if (!smoke) return;
+
+  if (fullStackAcceptance) {
+    smokeStage = 'running the renderer DOM acceptance scenario';
+    const { runDesktopFullStackAcceptance } = await import('./full-stack-acceptance-driver.mjs');
+    await runDesktopFullStackAcceptance(mainWindow, {
+      artifactDirectory: acceptanceArtifactDirectory,
+      displayName: process.env.KODEX_DESKTOP_ACCEPTANCE_DISPLAY_NAME,
+      email: process.env.KODEX_DESKTOP_ACCEPTANCE_EMAIL,
+      fixtureBaseUrl: process.env.KODEX_DESKTOP_ACCEPTANCE_BASE_URL,
+      password: process.env.KODEX_DESKTOP_ACCEPTANCE_PASSWORD,
+    });
+    process.stdout.write('Kodex desktop full-stack acceptance passed through renderer DOM interactions.\n');
+    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+    quitting = true;
+    launchComplete = false;
+    mainWindow.destroy();
+    mainWindow = null;
+    await stopServices();
+    app.quit();
+    return;
+  }
 
   smokeStage = 'checking Product API runtime configuration and login UI';
   const rendered = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
