@@ -69,6 +69,7 @@ try {
     knowledgeRuntime.service,
     { check: async () => { await database!.query('SELECT 1'); } },
     new PostgresWorkspaceRepository(database, {
+      cursorSecret: config.cookieSecret,
       pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
       ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
     }),

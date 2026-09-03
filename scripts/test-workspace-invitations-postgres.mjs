@@ -17,7 +17,7 @@ if (!npmCli) throw new Error('npm_execpath is required to run the isolated invit
 const vitestCli = path.join(repositoryRoot, 'node_modules', 'vitest', 'vitest.mjs');
 
 await run(process.execPath, [npmCli, 'run', 'build']);
-for (const mode of ['fresh', 'upgrade']) {
+for (const mode of ['fresh', 'upgrade', 'phase17-upgrade']) {
   let postgres;
   try {
     postgres = await startIsolatedPostgres({

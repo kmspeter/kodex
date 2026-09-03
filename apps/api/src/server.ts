@@ -5,6 +5,9 @@ import {
   PRODUCT_HISTORY_DEFAULT_LIMIT,
   PRODUCT_HISTORY_MAX_LIMIT,
   PRODUCT_HISTORY_PREVIEW_CHARACTERS,
+  PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS,
+  PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
+  PRODUCT_WORKSPACE_PAGE_MAX_LIMIT,
   PRODUCT_WORKSPACE_HEADER_NAME,
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceInvitationRoles,
@@ -39,6 +42,7 @@ import {
   KnowledgeNotFoundError,
   KnowledgeOperationError,
   WorkspaceInvitationError,
+  WorkspaceCursorError,
   WorkspaceOperationError,
 } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
@@ -235,6 +239,13 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     json(response, 400, {
       ok: false,
       error: { code: 'invalid_cursor', message: 'Knowledge cursor is invalid.' },
+    });
+    return;
+  }
+  if (error instanceof WorkspaceCursorError) {
+    json(response, 400, {
+      ok: false,
+      error: { code: 'invalid_cursor', message: 'Workspace cursor is invalid.' },
     });
     return;
   }
@@ -500,10 +511,18 @@ export class ProductApiServer {
       }
       const workspaceInvitationsMatch = /^\/api\/workspaces\/([^/]+)\/invitations$/u.exec(url.pathname);
       if (workspaceInvitationsMatch && request.method === 'GET') {
-        const context = await this.#authenticatedContext(request);
         const workspaceId = decodeUuidPath(workspaceInvitationsMatch[1]);
-        const invitations = await this.#requireWorkspaces().listInvitations(context.user.id, workspaceId);
-        json(response, 200, { invitations: invitations.map(publicWorkspaceInvitation) });
+        const options = workspacePageOptions(url);
+        const context = await this.#authenticatedContext(request);
+        const page = await this.#requireWorkspaces().listInvitations(
+          context.user.id,
+          workspaceId,
+          options,
+        );
+        json(response, 200, {
+          invitations: page.invitations.map(publicWorkspaceInvitation),
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        });
         return;
       }
       if (workspaceInvitationsMatch && request.method === 'POST') {
@@ -529,10 +548,18 @@ export class ProductApiServer {
       }
       const workspaceMembersMatch = /^\/api\/workspaces\/([^/]+)\/members$/u.exec(url.pathname);
       if (workspaceMembersMatch && request.method === 'GET') {
-        const context = await this.#authenticatedContext(request);
         const workspaceId = decodeUuidPath(workspaceMembersMatch[1]);
-        const members = await this.#requireWorkspaces().listMembers(context.user.id, workspaceId);
-        json(response, 200, { members: members.map(publicWorkspaceMember) });
+        const options = workspacePageOptions(url);
+        const context = await this.#authenticatedContext(request);
+        const page = await this.#requireWorkspaces().listMembers(
+          context.user.id,
+          workspaceId,
+          options,
+        );
+        json(response, 200, {
+          members: page.members.map(publicWorkspaceMember),
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        });
         return;
       }
       if (workspaceMembersMatch && request.method === 'POST') {
@@ -1171,6 +1198,36 @@ function knowledgePageOptions(url: URL): { cursor?: string; limit: number } {
   const cursors = url.searchParams.getAll('cursor');
   if (cursors.length > 1 || (cursors[0]?.length ?? 0) > 512 || (cursors[0] && !/^[A-Za-z0-9_-]+$/u.test(cursors[0]))) {
     throw new HttpError(400, 'invalid_cursor', 'Knowledge cursor is invalid.');
+  }
+  return { limit, ...(cursors[0] ? { cursor: cursors[0] } : {}) };
+}
+
+function workspacePageOptions(url: URL): { cursor?: string; limit: number } {
+  if ([...url.searchParams.keys()].some((key) => key !== 'cursor' && key !== 'limit')) {
+    throw new HttpError(400, 'invalid_request', 'Workspace page query is invalid.');
+  }
+  const limits = url.searchParams.getAll('limit');
+  if (limits.length > 1) {
+    throw new HttpError(400, 'invalid_request', 'Workspace page limit is invalid.');
+  }
+  const limit = limits.length === 0
+    ? PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT
+    : Number(limits[0]);
+  if (
+    !Number.isSafeInteger(limit)
+    || limit < 1
+    || limit > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT
+    || (limits.length === 1 && !/^[1-9]\d*$/u.test(limits[0]))
+  ) {
+    throw new HttpError(400, 'invalid_request', 'Workspace page limit is invalid.');
+  }
+  const cursors = url.searchParams.getAll('cursor');
+  if (
+    cursors.length > 1
+    || (cursors[0]?.length ?? 0) > PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS
+    || (cursors[0] !== undefined && !/^[A-Za-z0-9_-]+$/u.test(cursors[0]))
+  ) {
+    throw new HttpError(400, 'invalid_cursor', 'Workspace cursor is invalid.');
   }
   return { limit, ...(cursors[0] ? { cursor: cursors[0] } : {}) };
 }

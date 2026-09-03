@@ -79,7 +79,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -89,7 +89,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(7);
+    expect(migrations).toHaveLength(8);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -182,5 +182,12 @@ describe('product database migration SQL', () => {
     expect(invitationSql).toContain('octet_length(token_hash) = 32');
     expect(invitationSql).toContain('workspace_invitations_unresolved_email_uq');
     expect(invitationSql).not.toContain('raw_token');
+
+    const paginationSql = migrations[7].sql;
+    expect(migrations[7].version).toBe(8);
+    expect(paginationSql).toContain('workspace_members_workspace_joined_idx');
+    expect(paginationSql).toContain('(workspace_id, joined_at, user_id)');
+    expect(paginationSql).toContain('workspace_invitations_pending_created_idx');
+    expect(paginationSql).toContain('(workspace_id, created_at, id)');
   });
 });

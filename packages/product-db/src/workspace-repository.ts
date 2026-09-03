@@ -1,21 +1,38 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+} from 'node:crypto';
+import {
+  isUuid,
+  PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS,
+  PRODUCT_WORKSPACE_PAGE_MAX_LIMIT,
+} from '@kodex/product-contract';
 import type { PoolClient } from 'pg';
 import type { ProductDatabase } from './database.js';
 import { normalizeEmail } from './auth-service.js';
 import type { WorkspaceRole } from './auth-types.js';
 import {
   WorkspaceInvitationError,
+  WorkspaceCursorError,
   WorkspaceOperationError,
   type CreatedWorkspaceInvitation,
   type WorkspaceApplication,
   type WorkspaceInvitation,
+  type WorkspaceInvitationPage,
   type WorkspaceInvitationPreview,
   type WorkspaceInvitationRole,
   type WorkspaceMember,
+  type WorkspaceMemberPage,
+  type WorkspacePageOptions,
   type WorkspaceRecord,
 } from './workspace-types.js';
 
 interface MemberRow {
+  cursor_joined_at: string;
   display_name: string | null;
   email: string;
   joined_at: Date;
@@ -24,6 +41,7 @@ interface MemberRow {
 }
 
 interface InvitationRow {
+  cursor_created_at?: string;
   created_at: Date;
   created_by_user_id: string | null;
   expires_at: Date;
@@ -36,11 +54,105 @@ interface InvitationRow {
 export const WORKSPACE_INVITATION_TOKEN_BYTES = 32;
 export const WORKSPACE_INVITATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const INVITATION_HASH_DOMAIN = Buffer.from('kodex-workspace-invitation-v1\0', 'utf8');
+const CURSOR_KEY_DOMAIN = Buffer.from('kodex-workspace-pagination-key-v1\0', 'utf8');
+const CURSOR_AAD = Buffer.from('kodex-workspace-pagination-v1', 'utf8');
+const CURSOR_NONCE_BYTES = 12;
+const CURSOR_TAG_BYTES = 16;
 const INVITATION_TOKEN_ATTEMPTS = 3;
 
 export interface WorkspaceInvitationOptions {
+  cursorSecret: Buffer;
   pendingLimit?: number;
   ttlMs?: number;
+}
+
+interface MemberCursorPayload {
+  id: string;
+  joinedAt: string;
+  kind: 'members';
+  version: 1;
+  workspaceId: string;
+}
+
+interface InvitationCursorPayload {
+  createdAt: string;
+  id: string;
+  kind: 'invitations';
+  version: 1;
+  workspaceId: string;
+}
+
+type WorkspaceCursorPayload = InvitationCursorPayload | MemberCursorPayload;
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function validTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 20 && value.length <= 40 && Number.isFinite(Date.parse(value));
+}
+
+function assertPageOptions(options: WorkspacePageOptions): void {
+  if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT) {
+    throw new Error('Workspace page limit is out of bounds.');
+  }
+}
+
+class WorkspaceCursorCodec {
+  readonly #key: Buffer;
+
+  constructor(secret: Buffer) {
+    if (secret.length < 32) throw new Error('Workspace cursor secret must contain at least 32 bytes.');
+    this.#key = createHmac('sha256', secret).update(CURSOR_KEY_DOMAIN).digest();
+  }
+
+  encode(payload: WorkspaceCursorPayload): string {
+    const nonce = randomBytes(CURSOR_NONCE_BYTES);
+    const cipher = createCipheriv('aes-256-gcm', this.#key, nonce);
+    cipher.setAAD(CURSOR_AAD);
+    const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()]);
+    return Buffer.concat([nonce, ciphertext, cipher.getAuthTag()]).toString('base64url');
+  }
+
+  decode(value: string | undefined, kind: WorkspaceCursorPayload['kind'], workspaceId: string): WorkspaceCursorPayload | undefined {
+    if (!value) return undefined;
+    if (value.length > PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+      throw new WorkspaceCursorError();
+    }
+    try {
+      const packed = Buffer.from(value, 'base64url');
+      if (
+        packed.toString('base64url') !== value
+        || packed.length <= CURSOR_NONCE_BYTES + CURSOR_TAG_BYTES
+      ) throw new WorkspaceCursorError();
+      const nonce = packed.subarray(0, CURSOR_NONCE_BYTES);
+      const tag = packed.subarray(packed.length - CURSOR_TAG_BYTES);
+      const decipher = createDecipheriv('aes-256-gcm', this.#key, nonce);
+      decipher.setAAD(CURSOR_AAD);
+      decipher.setAuthTag(tag);
+      const plaintext = Buffer.concat([
+        decipher.update(packed.subarray(CURSOR_NONCE_BYTES, -CURSOR_TAG_BYTES)),
+        decipher.final(),
+      ]).toString('utf8');
+      const parsed = JSON.parse(plaintext) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new WorkspaceCursorError();
+      const record = parsed as Record<string, unknown>;
+      const timestampKey = kind === 'members' ? 'joinedAt' : 'createdAt';
+      if (
+        !exactKeys(record, [timestampKey, 'id', 'kind', 'version', 'workspaceId'])
+        || record.version !== 1
+        || record.kind !== kind
+        || record.workspaceId !== workspaceId
+        || !isUuid(record.workspaceId)
+        || !isUuid(record.id)
+        || !validTimestamp(record[timestampKey])
+      ) throw new WorkspaceCursorError();
+      return record as unknown as WorkspaceCursorPayload;
+    } catch (error) {
+      if (error instanceof WorkspaceCursorError) throw error;
+      throw new WorkspaceCursorError();
+    }
+  }
 }
 
 function invitation(row: InvitationRow): WorkspaceInvitation {
@@ -135,8 +247,10 @@ async function audit(
 export class PostgresWorkspaceRepository implements WorkspaceApplication {
   readonly #pendingInvitationLimit: number;
   readonly #invitationTtlMs: number;
+  readonly #cursorCodec: WorkspaceCursorCodec;
 
-  constructor(private readonly database: ProductDatabase, options: WorkspaceInvitationOptions = {}) {
+  constructor(private readonly database: ProductDatabase, options: WorkspaceInvitationOptions) {
+    this.#cursorCodec = new WorkspaceCursorCodec(options.cursorSecret);
     this.#pendingInvitationLimit = options.pendingLimit ?? 100;
     this.#invitationTtlMs = options.ttlMs ?? 7 * 24 * 60 * 60 * 1_000;
     if (!Number.isSafeInteger(this.#pendingInvitationLimit) || this.#pendingInvitationLimit < 1 || this.#pendingInvitationLimit > 500) {
@@ -167,20 +281,49 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
     });
   }
 
-  async listMembers(actorUserId: string, workspaceId: string): Promise<WorkspaceMember[]> {
-    const result = await this.database.query<MemberRow>(
-      `SELECT wm.user_id, u.email, u.display_name, wm.role, wm.joined_at
-       FROM workspace_members actor
-       JOIN workspace_members wm ON wm.workspace_id = actor.workspace_id
-       JOIN users u ON u.id = wm.user_id AND u.status = 'active' AND u.deleted_at IS NULL
-       JOIN workspaces w ON w.id = wm.workspace_id AND w.deleted_at IS NULL
-       WHERE actor.workspace_id = $1 AND actor.user_id = $2
-       ORDER BY CASE wm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END,
-                lower(u.email), wm.user_id`,
-      [workspaceId, actorUserId],
-    );
-    if (!result.rowCount) throw new WorkspaceOperationError('forbidden');
-    return result.rows.map(member);
+  async listMembers(
+    actorUserId: string,
+    workspaceId: string,
+    options: WorkspacePageOptions,
+  ): Promise<WorkspaceMemberPage> {
+    assertPageOptions(options);
+    const cursor = this.#cursorCodec.decode(options.cursor, 'members', workspaceId) as MemberCursorPayload | undefined;
+    return this.database.transaction(async (client) => {
+      const access = await client.query(
+        `SELECT actor.role FROM workspace_members actor
+         JOIN workspaces workspace ON workspace.id = actor.workspace_id AND workspace.deleted_at IS NULL
+         WHERE actor.workspace_id = $1 AND actor.user_id = $2
+         FOR SHARE OF actor, workspace`,
+        [workspaceId, actorUserId],
+      );
+      if (!access.rowCount) throw new WorkspaceOperationError('forbidden');
+      const result = await client.query<MemberRow>(
+        `SELECT wm.user_id, u.email, u.display_name, wm.role, wm.joined_at,
+                wm.joined_at::text AS cursor_joined_at
+         FROM workspace_members wm
+         JOIN users u ON u.id = wm.user_id AND u.status = 'active' AND u.deleted_at IS NULL
+         WHERE wm.workspace_id = $1
+           AND ($2::timestamptz IS NULL OR (wm.joined_at, wm.user_id) > ($2::timestamptz, $3::uuid))
+         ORDER BY wm.joined_at, wm.user_id
+         LIMIT $4`,
+        [workspaceId, cursor?.joinedAt ?? null, cursor?.id ?? null, options.limit + 1],
+      );
+      const hasMore = result.rows.length > options.limit;
+      const rows = result.rows.slice(0, options.limit);
+      const last = rows.at(-1);
+      return {
+        members: rows.map(member),
+        ...(hasMore && last ? {
+          nextCursor: this.#cursorCodec.encode({
+            version: 1,
+            kind: 'members',
+            workspaceId,
+            joinedAt: last.cursor_joined_at,
+            id: last.user_id,
+          }),
+        } : {}),
+      };
+    });
   }
 
   async addMember(actorUserId: string, workspaceId: string, email: string, nextRole: WorkspaceRole): Promise<WorkspaceMember> {
@@ -275,18 +418,49 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
     throw new Error('Workspace invitation token generation failed.');
   }
 
-  async listInvitations(actorUserId: string, workspaceId: string): Promise<WorkspaceInvitation[]> {
+  async listInvitations(
+    actorUserId: string,
+    workspaceId: string,
+    options: WorkspacePageOptions,
+  ): Promise<WorkspaceInvitationPage> {
+    assertPageOptions(options);
+    const cursor = this.#cursorCodec.decode(options.cursor, 'invitations', workspaceId) as InvitationCursorPayload | undefined;
     return this.database.transaction(async (client) => {
-      await lockWorkspace(client, workspaceId);
-      requireManager(await roleFor(client, workspaceId, actorUserId));
+      const access = await client.query<{ role: WorkspaceRole }>(
+        `SELECT actor.role FROM workspace_members actor
+         JOIN workspaces workspace ON workspace.id = actor.workspace_id AND workspace.deleted_at IS NULL
+         WHERE actor.workspace_id = $1 AND actor.user_id = $2
+         FOR SHARE OF actor, workspace`,
+        [workspaceId, actorUserId],
+      );
+      const actorRole = access.rows[0]?.role;
+      if (!actorRole) throw new WorkspaceOperationError('forbidden');
+      requireManager(actorRole);
       const result = await client.query<InvitationRow>(
-        `SELECT id, workspace_id, target_email, requested_role, created_by_user_id, expires_at, created_at
+        `SELECT id, workspace_id, target_email, requested_role, created_by_user_id, expires_at, created_at,
+                created_at::text AS cursor_created_at
          FROM workspace_invitations
          WHERE workspace_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
-         ORDER BY created_at, id`,
-        [workspaceId],
+           AND ($2::timestamptz IS NULL OR (created_at, id) > ($2::timestamptz, $3::uuid))
+         ORDER BY created_at, id
+         LIMIT $4`,
+        [workspaceId, cursor?.createdAt ?? null, cursor?.id ?? null, options.limit + 1],
       );
-      return result.rows.map(invitation);
+      const hasMore = result.rows.length > options.limit;
+      const rows = result.rows.slice(0, options.limit);
+      const last = rows.at(-1);
+      return {
+        invitations: rows.map(invitation),
+        ...(hasMore && last?.cursor_created_at ? {
+          nextCursor: this.#cursorCodec.encode({
+            version: 1,
+            kind: 'invitations',
+            workspaceId,
+            createdAt: last.cursor_created_at,
+            id: last.id,
+          }),
+        } : {}),
+      };
     });
   }
 

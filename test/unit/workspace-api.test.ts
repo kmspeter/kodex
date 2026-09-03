@@ -1,5 +1,5 @@
-import type { AuthContext, WorkspaceApplication } from '@kodex/product-db';
-import { WorkspaceOperationError } from '@kodex/product-db';
+import type { AuthContext, ProductDatabase, WorkspaceApplication } from '@kodex/product-db';
+import { PostgresWorkspaceRepository, WorkspaceCursorError, WorkspaceOperationError } from '@kodex/product-db';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProductApiConfig } from '../../apps/api/src/config.js';
 import { createCsrfToken, csrfCookieName, sessionCookieName } from '../../apps/api/src/cookies.js';
@@ -35,13 +35,13 @@ function application(): WorkspaceApplication {
   return {
     acceptInvitation: vi.fn(async () => ({ id: workspaceId, name: 'Platform', role: 'member' as const, slug: 'workspace-platform' })),
     createInvitation: vi.fn(),
-    listInvitations: vi.fn(async () => []),
+    listInvitations: vi.fn(async () => ({ invitations: [] })),
     previewInvitation: vi.fn(),
     revokeInvitation: vi.fn(),
     createWorkspace: vi.fn(async () => ({
       id: workspaceId, name: 'Platform', role: 'owner' as const, slug: 'workspace-platform',
     })),
-    listMembers: vi.fn(async () => [member]),
+    listMembers: vi.fn(async () => ({ members: [member] })),
     addMember: vi.fn(async () => member),
     updateMemberRole: vi.fn(async (_actor, _workspace, _target, role) => ({ ...member, role })),
     removeMember: vi.fn(async () => undefined),
@@ -58,6 +58,17 @@ function mutationHeaders(): Record<string, string> {
 }
 
 describe('workspace Product API boundary', () => {
+  it('rejects structurally valid-looking opaque cursor garbage before opening a database transaction', async () => {
+    const transaction = vi.fn();
+    const repository = new PostgresWorkspaceRepository(
+      { transaction } as unknown as ProductDatabase,
+      { cursorSecret: secret },
+    );
+    await expect(repository.listMembers(userId, workspaceId, { cursor: 'A'.repeat(80), limit: 50 }))
+      .rejects.toBeInstanceOf(WorkspaceCursorError);
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('enforces CSRF and strict DTOs while routing only allowlisted workspace data', async () => {
     const workspaces = application();
     const config: ProductApiConfig = {
@@ -99,7 +110,7 @@ describe('workspace Product API boundary', () => {
         role: 'member',
         joinedAt: '2026-09-03T00:00:00.000Z',
       }] });
-      expect(workspaces.listMembers).toHaveBeenCalledWith(userId, workspaceId);
+      expect(workspaces.listMembers).toHaveBeenCalledWith(userId, workspaceId, { limit: 50 });
 
       const extraField = await fetch(`${base}/api/workspaces/${workspaceId}/members/${memberId}`, {
         method: 'PATCH', headers: mutationHeaders(), body: JSON.stringify({ role: 'viewer', ownerId: userId }),
@@ -144,6 +155,36 @@ describe('workspace Product API boundary', () => {
     }
   });
 
+  it('bounds workspace page inputs before repository work and emits only optional opaque cursors', async () => {
+    const workspaces = application();
+    const nextCursor = 'opaque_next_page';
+    vi.mocked(workspaces.listMembers).mockResolvedValue({ members: [], nextCursor });
+    const config: ProductApiConfig = {
+      host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
+      cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 4_096,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(async () => context()), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
+    }, config, undefined, undefined, undefined, workspaces);
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const page = await fetch(`${base}/api/workspaces/${workspaceId}/members?limit=1`, { headers: { Cookie: cookie } });
+      expect(await page.json()).toEqual({ members: [], nextCursor });
+      expect(workspaces.listMembers).toHaveBeenCalledWith(userId, workspaceId, { limit: 1 });
+      const calls = vi.mocked(workspaces.listMembers).mock.calls.length;
+      for (const query of ['limit=0', 'limit=101', 'limit=1&limit=2', 'cursor=bad%21cursor', 'cursor=a&cursor=b', 'offset=1']) {
+        const response = await fetch(`${base}/api/workspaces/${workspaceId}/members?${query}`, { headers: { Cookie: cookie } });
+        expect(response.status).toBe(400);
+        expect(JSON.stringify(await response.json())).not.toMatch(/SQL|secret|stack/iu);
+      }
+      expect(workspaces.listMembers).toHaveBeenCalledTimes(calls);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('keeps invitation tokens in strict JSON bodies and applies auth, Origin, and CSRF boundaries', async () => {
     const workspaces = application();
     const inviteToken = 'C'.repeat(43);
@@ -157,7 +198,7 @@ describe('workspace Product API boundary', () => {
       expiresAt: new Date('2026-09-10T00:00:00.000Z'),
     };
     vi.mocked(workspaces.createInvitation).mockResolvedValue({ invitation, token: inviteToken });
-    vi.mocked(workspaces.listInvitations).mockResolvedValue([invitation]);
+    vi.mocked(workspaces.listInvitations).mockResolvedValue({ invitations: [invitation] });
     vi.mocked(workspaces.previewInvitation).mockResolvedValue({
       workspaceName: 'Platform', targetEmailHint: 'i***@example.invalid', role: 'member', expiresAt: invitation.expiresAt,
     });

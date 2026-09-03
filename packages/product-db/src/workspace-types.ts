@@ -10,6 +10,11 @@ export interface WorkspaceMember {
   userId: string;
 }
 
+export interface WorkspaceMemberPage {
+  members: WorkspaceMember[];
+  nextCursor?: string;
+}
+
 export interface WorkspaceRecord {
   id: string;
   name: string;
@@ -25,6 +30,16 @@ export interface WorkspaceInvitation {
   role: WorkspaceInvitationRole;
   targetEmail: string;
   workspaceId: string;
+}
+
+export interface WorkspaceInvitationPage {
+  invitations: WorkspaceInvitation[];
+  nextCursor?: string;
+}
+
+export interface WorkspacePageOptions {
+  cursor?: string;
+  limit: number;
 }
 
 export interface CreatedWorkspaceInvitation {
@@ -66,15 +81,22 @@ export class WorkspaceInvitationError extends Error {
   }
 }
 
+export class WorkspaceCursorError extends Error {
+  constructor() {
+    super('Workspace cursor is invalid.');
+    this.name = 'WorkspaceCursorError';
+  }
+}
+
 export interface WorkspaceApplication {
   addMember(actorUserId: string, workspaceId: string, email: string, role: WorkspaceRole): Promise<WorkspaceMember>;
   createWorkspace(actorUserId: string, name: string): Promise<WorkspaceRecord>;
-  listMembers(actorUserId: string, workspaceId: string): Promise<WorkspaceMember[]>;
+  listMembers(actorUserId: string, workspaceId: string, options: WorkspacePageOptions): Promise<WorkspaceMemberPage>;
   removeMember(actorUserId: string, workspaceId: string, targetUserId: string): Promise<void>;
   updateMemberRole(actorUserId: string, workspaceId: string, targetUserId: string, role: WorkspaceRole): Promise<WorkspaceMember>;
   acceptInvitation(actorUserId: string, token: string): Promise<WorkspaceRecord>;
   createInvitation(actorUserId: string, workspaceId: string, email: string, role: WorkspaceInvitationRole): Promise<CreatedWorkspaceInvitation>;
-  listInvitations(actorUserId: string, workspaceId: string): Promise<WorkspaceInvitation[]>;
+  listInvitations(actorUserId: string, workspaceId: string, options: WorkspacePageOptions): Promise<WorkspaceInvitationPage>;
   previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
   revokeInvitation(actorUserId: string, workspaceId: string, invitationId: string): Promise<void>;
 }

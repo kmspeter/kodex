@@ -354,7 +354,7 @@ describe('product auth browser contract', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(authBody()))
       .mockResolvedValueOnce(jsonResponse(workspace, 201))
-      .mockResolvedValueOnce(jsonResponse({ members: [member] }))
+      .mockResolvedValueOnce(jsonResponse({ members: [member], nextCursor: 'member_next' }))
       .mockResolvedValueOnce(jsonResponse(member, 201))
       .mockResolvedValueOnce(jsonResponse({ ...member, role: 'viewer' }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -364,14 +364,14 @@ describe('product auth browser contract', () => {
     });
     await client.me();
     await expect(client.createWorkspace('Platform')).resolves.toEqual(workspace);
-    await expect(client.workspaceMembers(workspaceId)).resolves.toEqual([member]);
+    await expect(client.workspaceMembers(workspaceId)).resolves.toEqual({ members: [member], nextCursor: 'member_next' });
     await expect(client.addWorkspaceMember(workspaceId, member.email, 'member')).resolves.toEqual(member);
     await expect(client.updateWorkspaceMember(workspaceId, userId, 'viewer')).resolves.toMatchObject({ role: 'viewer' });
     await client.removeWorkspaceMember(workspaceId, userId);
 
     expect(fetchMock.mock.calls.slice(1).map(([url]) => String(url))).toEqual([
       'http://127.0.0.1:47832/api/workspaces',
-      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members?limit=50`,
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members`,
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,

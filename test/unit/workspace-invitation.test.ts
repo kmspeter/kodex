@@ -2,6 +2,7 @@ import {
   parseProductCreatedWorkspaceInvitation,
   parseProductWorkspaceInvitationPreview,
   parseProductWorkspaceInvitations,
+  parseProductWorkspaceMembers,
 } from '@kodex/product-contract';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -49,5 +50,22 @@ describe('workspace invitation browser boundary', () => {
       expiresAt: invitation.expiresAt, role: 'member', targetEmailHint: 'm***@example.com', workspaceName: 'Platform', token,
     })).toThrow();
     expect(() => parseProductCreatedWorkspaceInvitation({ invitation, token, tokenHash: 'secret' })).toThrow();
+  });
+
+  it('accepts only exact bounded workspace page envelopes with an optional opaque cursor', () => {
+    const member = {
+      userId: invitation.createdByUserId,
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+      joinedAt: invitation.createdAt,
+    };
+    expect(parseProductWorkspaceMembers({ members: [member], nextCursor: 'member_next' }))
+      .toEqual({ members: [member], nextCursor: 'member_next' });
+    expect(parseProductWorkspaceInvitations({ invitations: [invitation], nextCursor: 'invite_next' }))
+      .toEqual({ invitations: [invitation], nextCursor: 'invite_next' });
+    expect(() => parseProductWorkspaceMembers({ members: [member], nextCursor: null })).toThrow();
+    expect(() => parseProductWorkspaceInvitations({ invitations: [invitation], nextCursor: 'bad!', tokenHash: 'secret' })).toThrow();
+    expect(() => parseProductWorkspaceMembers({ members: Array.from({ length: 101 }, () => member) })).toThrow();
   });
 });

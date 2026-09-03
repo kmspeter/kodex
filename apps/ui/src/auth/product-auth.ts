@@ -12,7 +12,10 @@ import {
   parseProductWorkspaceMembers,
   PRODUCT_HISTORY_DEFAULT_LIMIT,
   PRODUCT_HISTORY_MAX_LIMIT,
+  PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS,
   PRODUCT_WORKSPACE_HEADER_NAME,
+  PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
+  PRODUCT_WORKSPACE_PAGE_MAX_LIMIT,
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthContextDto,
@@ -22,7 +25,9 @@ import {
   type ProductCreatedWorkspaceInvitationDto,
   type ProductUserDto,
   type ProductWorkspaceMemberDto,
+  type ProductWorkspaceMembersDto,
   type ProductWorkspaceInvitationDto,
+  type ProductWorkspaceInvitationsDto,
   type ProductWorkspaceInvitationPreviewDto,
   type ProductWorkspaceDto,
   type WorkspaceRole,
@@ -32,7 +37,9 @@ import {
 export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
 export type ProductWorkspaceMember = ProductWorkspaceMemberDto;
+export type ProductWorkspaceMemberPage = ProductWorkspaceMembersDto;
 export type ProductWorkspaceInvitation = ProductWorkspaceInvitationDto;
+export type ProductWorkspaceInvitationPage = ProductWorkspaceInvitationsDto;
 export type ProductWorkspaceInvitationPreview = ProductWorkspaceInvitationPreviewDto;
 export type CreatedProductWorkspaceInvitation = ProductCreatedWorkspaceInvitationDto;
 export type ProductAuthContext = ProductAuthContextDto;
@@ -416,11 +423,13 @@ export class ProductAuthClient {
     }
   }
 
-  async workspaceMembers(workspaceId: string): Promise<ProductWorkspaceMember[]> {
-    const path = this.#workspacePath(workspaceId, '/members');
-    const response = await this.#request(path, { method: 'GET' });
+  async workspaceMembers(
+    workspaceId: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ProductWorkspaceMemberPage> {
+    const response = await this.#workspacePage(workspaceId, '/members', options);
     try {
-      return parseProductWorkspaceMembers(await this.#json(response)).members;
+      return parseProductWorkspaceMembers(await this.#json(response));
     } catch {
       throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid member list.');
     }
@@ -447,10 +456,13 @@ export class ProductAuthClient {
     if (response.status !== 204) throw new ProductAuthError('invalid-response', 'The member delete response was invalid.', response.status);
   }
 
-  async workspaceInvitations(workspaceId: string): Promise<ProductWorkspaceInvitation[]> {
-    const response = await this.#request(this.#workspacePath(workspaceId, '/invitations'), { method: 'GET' });
+  async workspaceInvitations(
+    workspaceId: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ProductWorkspaceInvitationPage> {
+    const response = await this.#workspacePage(workspaceId, '/invitations', options);
     try {
-      return parseProductWorkspaceInvitations(await this.#json(response)).invitations;
+      return parseProductWorkspaceInvitations(await this.#json(response));
     } catch {
       throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid invitation list.');
     }
@@ -593,6 +605,31 @@ export class ProductAuthClient {
 
   #workspacePath(workspaceId: string, suffix: string): string {
     return `/api/workspaces/${this.#uuid(workspaceId)}${suffix}`;
+  }
+
+  async #workspacePage(
+    workspaceId: string,
+    suffix: '/invitations' | '/members',
+    options: { cursor?: string; limit?: number; signal?: AbortSignal },
+  ): Promise<Response> {
+    const limit = options.limit ?? PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT;
+    if (
+      !Number.isSafeInteger(limit)
+      || limit < 1
+      || limit > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT
+      || (
+        options.cursor !== undefined
+        && (
+          options.cursor.length === 0
+          || options.cursor.length > PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS
+          || !/^[A-Za-z0-9_-]+$/u.test(options.cursor)
+        )
+      )
+    ) throw new ProductAuthError('rejected', 'Workspace page request is invalid.');
+    const url = new URL(this.#workspacePath(workspaceId, suffix), this.apiBase);
+    url.searchParams.set('limit', String(limit));
+    if (options.cursor) url.searchParams.set('cursor', options.cursor);
+    return this.#request(`${url.pathname}${url.search}`, { method: 'GET', signal: options.signal });
   }
 
   async #workspaceMutation(

@@ -37,8 +37,13 @@ export interface ProductWorkspaceMemberDto {
   userId: string;
 }
 
+export const PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT = 50;
+export const PRODUCT_WORKSPACE_PAGE_MAX_LIMIT = 100;
+export const PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS = 512;
+
 export interface ProductWorkspaceMembersDto {
   members: ProductWorkspaceMemberDto[];
+  nextCursor?: string;
 }
 
 export interface ProductWorkspaceInvitationDto {
@@ -53,6 +58,7 @@ export interface ProductWorkspaceInvitationDto {
 
 export interface ProductWorkspaceInvitationsDto {
   invitations: ProductWorkspaceInvitationDto[];
+  nextCursor?: string;
 }
 
 export interface ProductCreatedWorkspaceInvitationDto {
@@ -239,6 +245,13 @@ function workspaceEmail(value: unknown): value is string {
     && /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(value);
 }
 
+function workspaceCursor(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS
+    && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
 /** Strict browser-boundary parser for workspace mutation responses. */
 export function parseProductWorkspace(value: unknown): ProductWorkspaceDto {
   if (
@@ -275,11 +288,18 @@ export function parseProductWorkspaceMember(value: unknown): ProductWorkspaceMem
 export function parseProductWorkspaceMembers(value: unknown): ProductWorkspaceMembersDto {
   if (
     !workspaceRecord(value)
-    || !exactWorkspaceKeys(value, ['members'])
+    || !(
+      exactWorkspaceKeys(value, ['members'])
+      || exactWorkspaceKeys(value, ['members', 'nextCursor'])
+    )
     || !Array.isArray(value.members)
-    || value.members.length > 10_000
+    || value.members.length > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT
+    || (Object.hasOwn(value, 'nextCursor') && !workspaceCursor(value.nextCursor))
   ) throw new Error('Invalid workspace members response.');
-  return { members: value.members.map(parseProductWorkspaceMember) };
+  return {
+    members: value.members.map(parseProductWorkspaceMember),
+    ...(Object.hasOwn(value, 'nextCursor') ? { nextCursor: value.nextCursor as string } : {}),
+  };
 }
 
 export function parseProductWorkspaceInvitation(value: unknown): ProductWorkspaceInvitationDto {
@@ -304,11 +324,18 @@ export function parseProductWorkspaceInvitation(value: unknown): ProductWorkspac
 export function parseProductWorkspaceInvitations(value: unknown): ProductWorkspaceInvitationsDto {
   if (
     !workspaceRecord(value)
-    || !exactWorkspaceKeys(value, ['invitations'])
+    || !(
+      exactWorkspaceKeys(value, ['invitations'])
+      || exactWorkspaceKeys(value, ['invitations', 'nextCursor'])
+    )
     || !Array.isArray(value.invitations)
-    || value.invitations.length > 500
+    || value.invitations.length > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT
+    || (Object.hasOwn(value, 'nextCursor') && !workspaceCursor(value.nextCursor))
   ) throw new Error('Invalid workspace invitation list response.');
-  return { invitations: value.invitations.map(parseProductWorkspaceInvitation) };
+  return {
+    invitations: value.invitations.map(parseProductWorkspaceInvitation),
+    ...(Object.hasOwn(value, 'nextCursor') ? { nextCursor: value.nextCursor as string } : {}),
+  };
 }
 
 /** The only browser DTO allowed to contain a raw invitation token. */

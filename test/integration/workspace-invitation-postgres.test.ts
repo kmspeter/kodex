@@ -17,7 +17,11 @@ import { ProductApiServer } from '../../apps/api/src/server.js';
 const origin = 'http://127.0.0.1:5173';
 const prefix = `invitation-it-${randomUUID()}`;
 const password = 'correct horse battery staple';
-const mode = process.env.INVITATION_MIGRATION_MODE === 'upgrade' ? 'upgrade' : 'fresh';
+const mode = process.env.INVITATION_MIGRATION_MODE === 'upgrade'
+  ? 'upgrade'
+  : process.env.INVITATION_MIGRATION_MODE === 'phase17-upgrade'
+    ? 'phase17-upgrade'
+    : 'fresh';
 
 interface Session {
   cookie: string;
@@ -48,14 +52,15 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
 
   beforeAll(async () => {
     database = requireProductDatabaseFromEnv();
-    if (mode === 'upgrade') {
+    if (mode !== 'fresh') {
       const migrations = await loadMigrations();
       await database.transaction(async (client) => {
         await client.query(`CREATE TABLE public.schema_migrations (
           version bigint PRIMARY KEY, name text NOT NULL, checksum text NOT NULL,
           applied_at timestamptz NOT NULL DEFAULT now()
         )`);
-        for (const migration of migrations.slice(0, 6)) {
+        const legacyCount = mode === 'upgrade' ? 6 : 7;
+        for (const migration of migrations.slice(0, legacyCount)) {
           await client.query(migration.sql);
           await client.query(
             'INSERT INTO public.schema_migrations (version, name, checksum) VALUES ($1, $2, $3)',
@@ -82,7 +87,11 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     });
     server = new ProductApiServer(
       auth, config, undefined, undefined, undefined,
-      new PostgresWorkspaceRepository(database, { pendingLimit: 2, ttlMs: 3_600_000 }),
+      new PostgresWorkspaceRepository(database, {
+        cursorSecret: config.cookieSecret,
+        pendingLimit: 2,
+        ttlMs: 3_600_000,
+      }),
     );
     baseUrl = `http://127.0.0.1:${await server.listen()}`;
   });
@@ -129,10 +138,16 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     return { id: body.invitation.id, token: body.token };
   }
 
-  it('applies the fresh or immutable 0001-0006 upgrade path through migration 0007', async () => {
-    expect(migratedVersions).toEqual(mode === 'upgrade' ? [7] : [1, 2, 3, 4, 5, 6, 7]);
+  it('applies the fresh or immutable 0001-0006 upgrade path through migrations 0007-0008', async () => {
+    expect(migratedVersions).toEqual(
+      mode === 'upgrade'
+        ? [7, 8]
+        : mode === 'phase17-upgrade'
+          ? [8]
+          : [1, 2, 3, 4, 5, 6, 7, 8],
+    );
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   it('enforces permissions, limits, hash-only storage, IDOR protection, and one-time atomic acceptance', async () => {
@@ -144,6 +159,9 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     const workspaceId = await createWorkspace(owner, 'Invitation Platform');
     for (const [session, role] of [[admin, 'admin'], [member, 'member'], [viewer, 'viewer']] as const) {
       expect((await request(owner, `/api/workspaces/${workspaceId}/members`, 'POST', { email: session.email, role })).status).toBe(201);
+    }
+    for (const session of [owner, admin, member, viewer]) {
+      expect((await request(session, `/api/workspaces/${workspaceId}/members`)).status).toBe(200);
     }
 
     expect((await request(admin, `/api/workspaces/${workspaceId}/invitations`, 'POST', { email: extra.email, role: 'admin' })).status).toBe(403);
@@ -175,6 +193,7 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     const pending = await request(owner, `/api/workspaces/${workspaceId}/invitations`).then((response) => response.json()) as { invitations: Array<Record<string, unknown>> };
     expect(pending.invitations).toHaveLength(2);
     expect(pending.invitations.every((entry) => !('token' in entry) && !('tokenHash' in entry))).toBe(true);
+    expect((await request(admin, `/api/workspaces/${workspaceId}/invitations`)).status).toBe(200);
 
     const otherWorkspace = await createWorkspace(mismatch, 'Other Workspace');
     expect((await request(mismatch, `/api/workspaces/${workspaceId}/invitations`)).status).toBe(403);
@@ -249,5 +268,96 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     expect(revokedAudit.rows).toEqual([{ details: { role: 'member' } }]);
     expect(JSON.stringify(revokedAudit.rows)).not.toContain(revoked.token);
     expect(JSON.stringify(revokedAudit.rows)).not.toContain(revokedUser.email);
+  });
+
+  it('paginates tied pending invitations with opaque endpoint-bound cursors and live mutation semantics', async () => {
+    const owner = await register('page-owner');
+    const workspaceId = await createWorkspace(owner, 'Paged Invitations');
+    await database.query(
+      `INSERT INTO workspace_invitations
+         (workspace_id, target_email, requested_role, created_by_user_id, token_hash, created_at, expires_at)
+       SELECT $1,
+              $2 || '-page-' || lpad(value::text, 3, '0') || '@example.invalid',
+              CASE value % 3 WHEN 0 THEN 'admin' WHEN 1 THEN 'member' ELSE 'viewer' END,
+              $3,
+              decode(lpad(to_hex(value), 64, '0'), 'hex'),
+              '2026-09-01 00:00:00.654321+00'::timestamptz,
+              '2027-09-01 00:00:00.654321+00'::timestamptz
+       FROM generate_series(1, 105) value`,
+      [workspaceId, prefix, owner.userId],
+    );
+    const initialOrder = await database.query<{ id: string }>(
+      `SELECT id FROM workspace_invitations
+       WHERE workspace_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+       ORDER BY created_at, id`,
+      [workspaceId],
+    );
+    const invitationPlan = await database.transaction(async (client) => {
+      await client.query('SET LOCAL enable_seqscan = off');
+      return client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT id, workspace_id, target_email, requested_role, created_by_user_id, expires_at, created_at
+         FROM workspace_invitations
+         WHERE workspace_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+           AND ($2::timestamptz IS NULL OR (created_at, id) > ($2::timestamptz, $3::uuid))
+         ORDER BY created_at, id
+         LIMIT 31`,
+        [workspaceId, null, null],
+      );
+    });
+    expect(JSON.stringify(invitationPlan.rows[0]['QUERY PLAN']))
+      .toContain('workspace_invitations_pending_created_idx');
+    const firstResponse = await request(owner, `/api/workspaces/${workspaceId}/invitations?limit=30`);
+    expect(firstResponse.status).toBe(200);
+    const first = await firstResponse.json() as {
+      invitations: Array<Record<string, unknown> & { id: string; targetEmail: string }>;
+      nextCursor?: string;
+    };
+    expect(first.invitations).toHaveLength(30);
+    expect(first.invitations.every((entry) => !('token' in entry) && !('tokenHash' in entry))).toBe(true);
+    const packedCursor = Buffer.from(first.nextCursor!, 'base64url').toString('utf8');
+    expect(packedCursor).not.toContain(workspaceId);
+    expect(packedCursor).not.toContain(first.invitations.at(-1)!.id);
+    expect(packedCursor).not.toContain(first.invitations.at(-1)!.targetEmail);
+    expect(packedCursor).not.toContain('2026-09-01');
+
+    const revokedId = initialOrder.rows[35].id;
+    await database.query('UPDATE workspace_invitations SET revoked_at = now() WHERE id = $1', [revokedId]);
+    const newcomer = await database.query<{ id: string }>(
+      `INSERT INTO workspace_invitations
+         (workspace_id, target_email, requested_role, created_by_user_id, token_hash, created_at, expires_at)
+       VALUES ($1, $2, 'member', $3, $4, '2027-01-01 00:00:00+00', '2027-09-01 00:00:00+00')
+       RETURNING id`,
+      [workspaceId, `${prefix}-page-new@example.invalid`, owner.userId, Buffer.alloc(32, 255)],
+    );
+
+    const seen = first.invitations.map((entry) => entry.id);
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const response = await request(
+        owner,
+        `/api/workspaces/${workspaceId}/invitations?limit=30&cursor=${encodeURIComponent(cursor)}`,
+      );
+      expect(response.status).toBe(200);
+      const page = await response.json() as { invitations: Array<{ id: string }>; nextCursor?: string };
+      seen.push(...page.invitations.map((entry) => entry.id));
+      cursor = page.nextCursor;
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).not.toContain(revokedId);
+    expect(seen).toContain(newcomer.rows[0].id);
+    const currentCount = await database.query<{ count: string }>(
+      `SELECT count(*) FROM workspace_invitations
+       WHERE workspace_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()`,
+      [workspaceId],
+    );
+    expect(seen).toHaveLength(Number(currentCount.rows[0].count));
+
+    expect((await request(owner, `/api/workspaces/${workspaceId}/members?cursor=${first.nextCursor}`)).status).toBe(400);
+    const otherWorkspaceId = await createWorkspace(owner, 'Invitation Cursor Scope');
+    expect((await request(owner, `/api/workspaces/${otherWorkspaceId}/invitations?cursor=${first.nextCursor}`)).status).toBe(400);
+    const tampered = `${first.nextCursor!.slice(0, -1)}${first.nextCursor!.endsWith('A') ? 'B' : 'A'}`;
+    expect((await request(owner, `/api/workspaces/${workspaceId}/invitations?cursor=${tampered}`)).status).toBe(400);
+    expect((await request(owner, `/api/workspaces/${workspaceId}/invitations?limit=101`)).status).toBe(400);
   });
 });

@@ -40,18 +40,20 @@ describe('real PostgreSQL workspace membership product flow', () => {
   let database: ProductDatabase;
   let server: ProductApiServer;
   let baseUrl: string;
+  let auth: AuthService;
+  let config: ProductApiConfig;
   const email = (label: string) => `${prefix}-${label}@example.invalid`;
 
   beforeAll(async () => {
     database = requireProductDatabaseFromEnv();
     await database.migrate();
     const repository = new PostgresAuthRepository(database);
-    const config: ProductApiConfig = {
+    config = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: Buffer.alloc(32, 31), secureCookies: false, sessionTtlMs: 3_600_000, maxBodyBytes: 65_536,
       loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
-    const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
+    auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
       sessionTtlMs: config.sessionTtlMs,
       loginRateLimitSecret: config.cookieSecret,
       loginRateLimiter: new PostgresLoginRateLimiter(database, {
@@ -60,7 +62,10 @@ describe('real PostgreSQL workspace membership product flow', () => {
         blockMs: config.loginRateLimitBlockMs,
       }),
     });
-    server = new ProductApiServer(auth, config, undefined, undefined, undefined, new PostgresWorkspaceRepository(database));
+    server = new ProductApiServer(
+      auth, config, undefined, undefined, undefined,
+      new PostgresWorkspaceRepository(database, { cursorSecret: config.cookieSecret }),
+    );
     baseUrl = `http://127.0.0.1:${await server.listen()}`;
   });
 
@@ -152,5 +157,130 @@ describe('real PostgreSQL workspace membership product flow', () => {
     expect(await unknown.json()).toEqual({ ok: false, error: { code: 'not_found', message: 'The existing account or membership was not found.' } });
     expect((await request(owner, `/api/workspaces/${workspace.id}/members`, 'POST', { email: email('errors-owner'), role: 'member' })).status).toBe(409);
     expect((await request(owner, `/api/workspaces/${workspace.id}/members/${owner.userId}`, 'DELETE')).status).toBe(409);
+  });
+
+  it('paginates a large tied member set with opaque scoped keysets across a middle mutation', async () => {
+    const owner = await register('page-owner');
+    const workspace = await request(owner, '/api/workspaces', 'POST', { name: 'Paged Members' })
+      .then((response) => response.json()) as { id: string };
+    await database.query(
+      `WITH inserted AS (
+         INSERT INTO users (email, display_name, email_verified_at)
+         SELECT $1 || '-page-' || lpad(value::text, 3, '0') || '@example.invalid',
+                'Page ' || value::text, now()
+         FROM generate_series(1, 105) value
+         RETURNING id
+       )
+       INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
+       SELECT $2, id, 'member', '2026-01-01 00:00:00.123456+00'::timestamptz
+       FROM inserted`,
+      [prefix, workspace.id],
+    );
+    const initialOrder = await database.query<{ user_id: string }>(
+      'SELECT user_id FROM workspace_members WHERE workspace_id = $1 ORDER BY joined_at, user_id',
+      [workspace.id],
+    );
+    await database.query('ANALYZE workspace_members');
+    await database.query('ANALYZE users');
+    const memberPlan = await database.transaction(async (client) => {
+      await client.query('SET LOCAL enable_seqscan = off');
+      return client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT wm.user_id, u.email, u.display_name, wm.role, wm.joined_at
+         FROM workspace_members wm
+         JOIN users u ON u.id = wm.user_id AND u.status = 'active' AND u.deleted_at IS NULL
+         WHERE wm.workspace_id = $1
+           AND ($2::timestamptz IS NULL OR (wm.joined_at, wm.user_id) > ($2::timestamptz, $3::uuid))
+         ORDER BY wm.joined_at, wm.user_id
+         LIMIT 26`,
+        [workspace.id, null, null],
+      );
+    });
+    expect(JSON.stringify(memberPlan.rows[0]['QUERY PLAN']))
+      .toContain('workspace_members_workspace_joined_idx');
+    const firstResponse = await request(owner, `/api/workspaces/${workspace.id}/members?limit=25`);
+    expect(firstResponse.status).toBe(200);
+    const first = await firstResponse.json() as { members: Array<{ userId: string }>; nextCursor?: string };
+    expect(first.members).toHaveLength(25);
+    expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/u);
+    const packedCursor = Buffer.from(first.nextCursor!, 'base64url').toString('utf8');
+    expect(packedCursor).not.toContain(workspace.id);
+    expect(packedCursor).not.toContain(first.members.at(-1)!.userId);
+    expect(packedCursor).not.toContain('2026-01-01');
+
+    const removedId = initialOrder.rows[30].user_id;
+    await database.query(
+      'DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2',
+      [workspace.id, removedId],
+    );
+    const newcomer = await database.query<{ id: string }>(
+      `INSERT INTO users (email, display_name, email_verified_at)
+       VALUES ($1, 'Page New', now()) RETURNING id`,
+      [`${prefix}-page-new@example.invalid`],
+    );
+    await database.query(
+      `INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
+       VALUES ($1, $2, 'viewer', '2027-01-01 00:00:00+00')`,
+      [workspace.id, newcomer.rows[0].id],
+    );
+
+    const seen = first.members.map((entry) => entry.userId);
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const response = await request(
+        owner,
+        `/api/workspaces/${workspace.id}/members?limit=25&cursor=${encodeURIComponent(cursor)}`,
+      );
+      expect(response.status).toBe(200);
+      const page = await response.json() as { members: Array<{ userId: string }>; nextCursor?: string };
+      seen.push(...page.members.map((entry) => entry.userId));
+      cursor = page.nextCursor;
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).not.toContain(removedId);
+    expect(seen).toContain(newcomer.rows[0].id);
+    const currentCount = await database.query<{ count: string }>(
+      'SELECT count(*) FROM workspace_members WHERE workspace_id = $1', [workspace.id],
+    );
+    expect(seen).toHaveLength(Number(currentCount.rows[0].count));
+
+    const other = await request(owner, '/api/workspaces', 'POST', { name: 'Cursor Scope' })
+      .then((response) => response.json()) as { id: string };
+    expect((await request(owner, `/api/workspaces/${other.id}/members?cursor=${first.nextCursor}`)).status).toBe(400);
+    expect((await request(owner, `/api/workspaces/${workspace.id}/invitations?cursor=${first.nextCursor}`)).status).toBe(400);
+    const tampered = `${first.nextCursor!.slice(0, -1)}${first.nextCursor!.endsWith('A') ? 'B' : 'A'}`;
+    const tamperedResponse = await request(owner, `/api/workspaces/${workspace.id}/members?cursor=${tampered}`);
+    expect(tamperedResponse.status).toBe(400);
+    expect(await tamperedResponse.json()).toEqual({
+      ok: false,
+      error: { code: 'invalid_cursor', message: 'Workspace cursor is invalid.' },
+    });
+    const rotatedServer = new ProductApiServer(
+      auth,
+      { ...config, port: 0, allowedHosts: new Set() },
+      undefined,
+      undefined,
+      undefined,
+      new PostgresWorkspaceRepository(database, { cursorSecret: Buffer.alloc(32, 99) }),
+    );
+    const rotatedBase = `http://127.0.0.1:${await rotatedServer.listen()}`;
+    try {
+      const rotatedResponse = await fetch(
+        `${rotatedBase}/api/workspaces/${workspace.id}/members?cursor=${first.nextCursor}`,
+        { headers: { Cookie: owner.cookie, Origin: origin } },
+      );
+      expect(rotatedResponse.status).toBe(400);
+      expect(await rotatedResponse.json()).toEqual({
+        ok: false,
+        error: { code: 'invalid_cursor', message: 'Workspace cursor is invalid.' },
+      });
+    } finally {
+      await rotatedServer.close();
+    }
+    expect((await request(owner, `/api/workspaces/${workspace.id}/members?cursor=not%21opaque`)).status).toBe(400);
+    expect((await request(owner, `/api/workspaces/${workspace.id}/members?limit=101`)).status).toBe(400);
+    const capped = await request(owner, `/api/workspaces/${workspace.id}/members?limit=100`)
+      .then((response) => response.json()) as { members: unknown[] };
+    expect(capped.members).toHaveLength(100);
   });
 });

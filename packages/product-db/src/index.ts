@@ -145,15 +145,19 @@ export {
   type WorkspaceInvitationOptions,
 } from './workspace-repository.js';
 export {
+  WorkspaceCursorError,
   WorkspaceInvitationError,
   WorkspaceOperationError,
   type CreatedWorkspaceInvitation,
   type WorkspaceApplication,
   type WorkspaceInvitation,
+  type WorkspaceInvitationPage,
   type WorkspaceInvitationErrorCode,
   type WorkspaceInvitationPreview,
   type WorkspaceInvitationRole,
   type WorkspaceMember,
+  type WorkspaceMemberPage,
   type WorkspaceOperationErrorCode,
+  type WorkspacePageOptions,
   type WorkspaceRecord,
 } from './workspace-types.js';
