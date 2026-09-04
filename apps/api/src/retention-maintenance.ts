@@ -31,6 +31,17 @@ export interface RetentionMaintenanceOptions {
   log?: (event: RetentionMaintenanceLogEvent) => void;
 }
 
+export interface RetentionMaintenanceStatus {
+  enabled: boolean;
+  lastCompletedAt: string | null;
+  lastCounts: RetentionMaintenanceCounts;
+  lastFailureAt: string | null;
+  lastOutcome: 'complete' | 'failed' | null;
+  running: boolean;
+  started: boolean;
+  stopped: boolean;
+}
+
 function assertRuntimeConfig(config: RetentionMaintenanceRuntimeConfig): void {
   if (!Number.isSafeInteger(config.intervalMs) || config.intervalMs < 1) {
     throw new Error('Retention maintenance interval must be a positive integer');
@@ -74,6 +85,10 @@ export class ProductRetentionMaintenance {
   readonly #clock: () => Date;
   readonly #log: (event: RetentionMaintenanceLogEvent) => void;
   #running: Promise<void> | undefined;
+  #lastCompletedAt: string | null = null;
+  #lastCounts: RetentionMaintenanceCounts = emptyCounts();
+  #lastFailureAt: string | null = null;
+  #lastOutcome: RetentionMaintenanceStatus['lastOutcome'] = null;
   #started = false;
   #stopped = false;
   #timer: NodeJS.Timeout | undefined;
@@ -109,6 +124,19 @@ export class ProductRetentionMaintenance {
     });
     this.#running = operation;
     return operation.then(() => true);
+  }
+
+  status(): RetentionMaintenanceStatus {
+    return {
+      enabled: this.config.enabled,
+      lastCompletedAt: this.#lastCompletedAt,
+      lastCounts: { ...this.#lastCounts },
+      lastFailureAt: this.#lastFailureAt,
+      lastOutcome: this.#lastOutcome,
+      running: this.#running !== undefined,
+      started: this.#started,
+      stopped: this.#stopped,
+    };
   }
 
   async stop(): Promise<void> {
@@ -194,6 +222,26 @@ export class ProductRetentionMaintenance {
   }
 
   #emit(event: RetentionMaintenanceLogEvent): void {
+    let observedAt: string;
+    try {
+      const observedTime = this.#clock();
+      observedAt = Number.isFinite(observedTime.getTime())
+        ? observedTime.toISOString()
+        : new Date().toISOString();
+    } catch {
+      observedAt = new Date().toISOString();
+    }
+    this.#lastCounts = {
+      abuseRateLimitsDeleted: event.abuseRateLimitsDeleted,
+      batches: event.batches,
+      invitationsDeleted: event.invitationsDeleted,
+      passwordResetsDeleted: event.passwordResetsDeleted,
+      rateLimitsDeleted: event.rateLimitsDeleted,
+      sessionsDeleted: event.sessionsDeleted,
+    };
+    this.#lastOutcome = event.outcome;
+    if (event.outcome === 'complete') this.#lastCompletedAt = observedAt;
+    else this.#lastFailureAt = observedAt;
     try {
       this.#log(event);
     } catch {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { JsonlDecoder, redactSecrets, SequenceBuffer } from '@kodex/shared';
+import {
+  JsonlDecoder,
+  operationsBearerTokenFromEnv,
+  redactSecrets,
+  SequenceBuffer,
+  verifyOperationsBearer,
+} from '@kodex/shared';
 
 describe('shared protocol utilities', () => {
   it('parses partial and multiple JSONL frames without duplicating data', () => {
@@ -24,5 +30,16 @@ describe('shared protocol utilities', () => {
     expect(masked).not.toContain(key);
     expect(masked).not.toContain('abc.def');
     expect(masked).toContain('[REDACTED]');
+  });
+
+  it('validates operations secrets and compares exact bearer credentials', () => {
+    const token = 'a'.repeat(43);
+    expect(operationsBearerTokenFromEnv(undefined, 'OPS_TOKEN')).toBeUndefined();
+    expect(operationsBearerTokenFromEnv(token, 'OPS_TOKEN')).toBe(token);
+    expect(() => operationsBearerTokenFromEnv('short', 'OPS_TOKEN')).toThrow('OPS_TOKEN');
+    expect(() => operationsBearerTokenFromEnv(`${'a'.repeat(32)}\n`, 'OPS_TOKEN')).toThrow('OPS_TOKEN');
+    expect(verifyOperationsBearer(`Bearer ${token}`, token)).toBe(true);
+    expect(verifyOperationsBearer(`bearer ${token}`, token)).toBe(false);
+    expect(verifyOperationsBearer(`Bearer ${token}x`, token)).toBe(false);
   });
 });

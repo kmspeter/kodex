@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { Duplex } from 'node:stream';
 import { PRODUCT_WORKSPACE_HEADER_NAME, PRODUCT_WORKSPACE_QUERY_PARAM } from '@kodex/product-contract';
 import type { ServerSocketMessage } from '@kodex/kodex-api';
-import { redactSecrets, sanitizeUnknown } from '@kodex/shared';
+import { redactSecrets, sanitizeUnknown, verifyOperationsBearer } from '@kodex/shared';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   ProductAuthorizationError,
@@ -26,6 +26,12 @@ import {
   validateRepositoryPreview, validateSettingsPatch, validateSocketMessage,
 } from './validation.js';
 import { RepositoryIndexError, type RepositoryIndexer } from '../rag/repository-indexer.js';
+import type { LocalSecurityMetricEvent } from '../operational-status.js';
+
+export interface LocalOperationsEndpoint {
+  snapshot(): Promise<unknown>;
+  token: string;
+}
 
 export interface LocalHttpServerOptions {
   allowedOrigins: Set<string>;
@@ -33,8 +39,9 @@ export interface LocalHttpServerOptions {
   host: '127.0.0.1';
   port: number;
   productApiOrigins?: ReadonlySet<string>;
+  operations?: LocalOperationsEndpoint;
   repositoryIndexer?: RepositoryIndexer;
-  securityLog?: (event: { kind: 'http_rejected' | 'ws_revalidation_failed' | 'ws_upgrade_rejected'; status: number }) => void;
+  securityLog?: (event: LocalSecurityMetricEvent) => void;
   uiRoot?: string;
 }
 
@@ -236,6 +243,9 @@ export class LocalHttpServer {
     } catch (error) {
       lease?.release();
       const failure = publicError(error);
+      if (error instanceof RuntimeCapacityError) {
+        this.options.securityLog?.({ kind: 'runtime_capacity_rejected', status: failure.status });
+      }
       this.options.securityLog?.({ kind: 'ws_upgrade_rejected', status: failure.status });
       if (!socket.destroyed) {
         const reason = failure.status === 400 ? 'Bad Request'
@@ -318,6 +328,7 @@ export class LocalHttpServer {
       const next = await this.authorizer.reauthorize(connection.authorization);
       if (this.#clients.get(socket) !== connection) return;
       connection.authorization = next;
+      this.options.securityLog?.({ kind: 'ws_revalidation_succeeded', status: 200 });
       this.#scheduleAuthorizationCheck(socket, connection, true);
     } catch (error) {
       if (this.#clients.get(socket) !== connection) return;
@@ -404,6 +415,25 @@ export class LocalHttpServer {
         return;
       }
       const url = requestUrl(request, this.options.port);
+      if (url.pathname === '/api/operations/status' && request.method === 'GET') {
+        if (!this.options.operations) {
+          json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
+          return;
+        }
+        if (
+          request.headers.origin
+          || !verifyOperationsBearer(request.headers.authorization, this.options.operations.token)
+        ) {
+          response.setHeader('WWW-Authenticate', 'Bearer');
+          json(response, 401, {
+            ok: false,
+            error: { code: 'operations_unauthorized', message: 'Operations authentication is required.' },
+          });
+          return;
+        }
+        json(response, 200, await this.options.operations.snapshot());
+        return;
+      }
       if (url.pathname === '/api/health' && request.method === 'GET') {
         json(response, 200, { ok: true });
         return;
@@ -433,6 +463,9 @@ export class LocalHttpServer {
       json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
     } catch (error) {
       const failure = publicError(error);
+      if (error instanceof RuntimeCapacityError) {
+        this.options.securityLog?.({ kind: 'runtime_capacity_rejected', status: failure.status });
+      }
       if (failure.status === 401 || failure.status === 403) this.options.securityLog?.({ kind: 'http_rejected', status: failure.status });
       json(response, failure.status, { ok: false, error: { code: failure.code, message: failure.message } });
     }

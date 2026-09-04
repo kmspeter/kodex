@@ -19,6 +19,34 @@ export interface RuntimeLease {
   release(): void;
 }
 
+export interface RuntimeManagerOperationalStatus {
+  activeLeases: number;
+  activeRuntimes: number;
+  atCapacity: boolean;
+  engine: {
+    failed: number;
+    missingBinary: number;
+    missingKey: number;
+    ready: number;
+    starting: number;
+    stopped: number;
+  };
+  history: {
+    attachedRuntimes: number;
+    databaseUnavailableRuntimes: number;
+    invalidSpoolRuntimes: number;
+    overflowedRuntimes: number;
+    pendingBytes: number;
+    pendingRecords: number;
+    reconciliationFailedRuntimes: number;
+    reconciliationPartialRuntimes: number;
+    reconciliationRunningRuntimes: number;
+    runningOutboxes: number;
+  };
+  maxActiveRuntimes: number;
+  startingRuntimes: number;
+}
+
 export interface RuntimeManagerOptions {
   apiKey?: string;
   clock?: () => number;
@@ -297,6 +325,68 @@ export class RuntimeManager {
       root: entry.root,
       ...(entry.history ? { history: entry.history.status() } : {}),
     }));
+  }
+
+  operationalStatus(): RuntimeManagerOperationalStatus {
+    const status: RuntimeManagerOperationalStatus = {
+      activeLeases: 0,
+      activeRuntimes: this.#entries.size,
+      atCapacity: this.#entries.size >= this.maxActiveRuntimes
+        && [...this.#entries.values()].every((entry) => entry.leases > 0),
+      engine: {
+        failed: 0,
+        missingBinary: 0,
+        missingKey: 0,
+        ready: 0,
+        starting: 0,
+        stopped: 0,
+      },
+      history: {
+        attachedRuntimes: 0,
+        databaseUnavailableRuntimes: 0,
+        invalidSpoolRuntimes: 0,
+        overflowedRuntimes: 0,
+        pendingBytes: 0,
+        pendingRecords: 0,
+        reconciliationFailedRuntimes: 0,
+        reconciliationPartialRuntimes: 0,
+        reconciliationRunningRuntimes: 0,
+        runningOutboxes: 0,
+      },
+      maxActiveRuntimes: this.maxActiveRuntimes,
+      startingRuntimes: 0,
+    };
+    for (const entry of this.#entries.values()) {
+      status.activeLeases += entry.leases;
+      if (!entry.runtime) {
+        status.startingRuntimes += 1;
+        status.engine.starting += 1;
+      } else {
+        const engineState = entry.runtime.appServer.status().state;
+        if (engineState === 'missing-binary') status.engine.missingBinary += 1;
+        else if (engineState === 'missing-key') status.engine.missingKey += 1;
+        else status.engine[engineState] += 1;
+      }
+      const history = entry.history?.status();
+      if (!history) continue;
+      status.history.attachedRuntimes += 1;
+      if (history.running) status.history.runningOutboxes += 1;
+      status.history.pendingRecords += history.pendingRecords;
+      status.history.pendingBytes += history.pendingBytes;
+      if (history.overflowed) status.history.overflowedRuntimes += 1;
+      if (history.lastError === 'database_unavailable') {
+        status.history.databaseUnavailableRuntimes += 1;
+      } else if (history.lastError === 'invalid_spool_record') {
+        status.history.invalidSpoolRuntimes += 1;
+      }
+      if (history.reconciliation.running) status.history.reconciliationRunningRuntimes += 1;
+      if (history.reconciliation.lastResult === 'failed') {
+        status.history.reconciliationFailedRuntimes += 1;
+      } else if (history.reconciliation.lastResult === 'partial') {
+        status.history.reconciliationPartialRuntimes += 1;
+      }
+    }
+    return status;
   }
 
   async close(): Promise<void> {

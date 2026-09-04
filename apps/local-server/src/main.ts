@@ -7,12 +7,14 @@ import {
   createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
 } from '@kodex/product-db';
+import { operationsBearerTokenFromEnv } from '@kodex/shared';
 import dotenv from 'dotenv';
 import { LocalHttpServer } from './api/http-server.js';
 import { parseProductApiOrigins } from './api/security.js';
 import { DatabaseProductAuthorizer } from './auth/product-authorization.js';
 import { RuntimeManager } from './runtime-manager.js';
 import { RepositoryIndexer } from './rag/repository-indexer.js';
+import { LocalOperationalTelemetry } from './operational-status.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -45,6 +47,7 @@ const uiRoot = process.env.KODEX_SERVE_UI === '1'
 let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
 let runtimeManager: RuntimeManager | undefined;
 let server: LocalHttpServer | undefined;
+let operationalTelemetry: LocalOperationalTelemetry | undefined;
 let stopping = false;
 
 async function stop(exitCode = 0): Promise<void> {
@@ -63,6 +66,10 @@ async function stop(exitCode = 0): Promise<void> {
 }
 
 try {
+  const operationsToken = operationsBearerTokenFromEnv(
+    process.env.KODEX_OPERATIONS_BEARER_TOKEN,
+    'KODEX_OPERATIONS_BEARER_TOKEN',
+  );
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const authorizer = new DatabaseProductAuthorizer(new PostgresAuthRepository(database));
@@ -142,13 +149,18 @@ try {
       reconciliationRetryInitialMs,
       reconciliationRetryMaximumMs,
     },
-    historyLog: (event) => process.stderr.write(
-      `Kodex Local Server history state: ${JSON.stringify(event)}\n`,
-    ),
+    historyLog: (event) => {
+      operationalTelemetry?.recordHistory(event);
+      process.stderr.write(`Kodex Local Server history state: ${JSON.stringify(event)}\n`);
+    },
     maxActiveRuntimes: positiveInteger(process.env.KODEX_MAX_ACTIVE_RUNTIMES, 8, 128, 'KODEX_MAX_ACTIVE_RUNTIMES'),
     idleTimeoutMs: positiveInteger(process.env.KODEX_RUNTIME_IDLE_MS, 15 * 60_000, 24 * 60 * 60_000, 'KODEX_RUNTIME_IDLE_MS'),
     sweepIntervalMs: positiveInteger(process.env.KODEX_RUNTIME_SWEEP_MS, 60_000, 60 * 60_000, 'KODEX_RUNTIME_SWEEP_MS'),
   });
+  operationalTelemetry = new LocalOperationalTelemetry(
+    runtimeManager,
+    async () => { await database!.query('SELECT 1'); },
+  );
   server = new LocalHttpServer(runtimeManager, authorizer, {
     host,
     port,
@@ -160,11 +172,20 @@ try {
       'KODEX_AUTH_REVALIDATE_MS',
     ),
     productApiOrigins,
+    operations: operationsToken ? {
+      token: operationsToken,
+      snapshot: () => operationalTelemetry!.snapshot(),
+    } : undefined,
     repositoryIndexer: knowledgeRuntime.service
       ? new RepositoryIndexer(knowledgeRuntime.service, Date.now, {}, [configuredDataRoot])
       : undefined,
     uiRoot,
-    securityLog: (event) => process.stderr.write(`Kodex Local Server security event: ${event.kind} status=${event.status}\n`),
+    securityLog: (event) => {
+      operationalTelemetry?.recordSecurity(event);
+      if (event.kind !== 'ws_revalidation_succeeded') {
+        process.stderr.write(`Kodex Local Server security event: ${event.kind} status=${event.status}\n`);
+      }
+    },
   });
   const actualPort = await server.listen();
   process.stdout.write(`Kodex Local Server: http://${host}:${actualPort}\n`);

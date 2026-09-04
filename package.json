@@ -37,6 +37,7 @@
     "release:verify": "node scripts/kodex-release.mjs verify",
     "test:release-deployment": "node scripts/test-release-deployment.mjs",
     "test:password-reset-postgres": "node scripts/test-password-reset-postgres.mjs",
+    "test:observability": "npm run build && vitest run test/integration/operational-status.test.ts",
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",
     "test:full-stack": "node scripts/test-full-stack.mjs",
     "test:desktop-full-stack": "tsx scripts/test-desktop-full-stack.ts",

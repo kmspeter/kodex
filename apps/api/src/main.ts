@@ -15,6 +15,7 @@ import {
   requireProductDatabaseFromEnv,
   PasswordResetService,
 } from '@kodex/product-db';
+import { operationsBearerTokenFromEnv } from '@kodex/shared';
 import dotenv from 'dotenv';
 import {
   ProductApiConfigurationError,
@@ -32,6 +33,7 @@ import {
   passwordResetDeliveryConfigFromEnv,
   WebhookPasswordResetDelivery,
 } from './password-reset-delivery.js';
+import { ProductOperationalTelemetry } from './operational-status.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -73,6 +75,10 @@ try {
   const release = await loadProductReleaseIdentity(repositoryRoot);
   const retentionConfig = productRetentionMaintenanceConfigFromEnv();
   const passwordResetConfig = passwordResetDeliveryConfigFromEnv();
+  const operationsToken = operationsBearerTokenFromEnv(
+    process.env.PRODUCT_OPERATIONS_BEARER_TOKEN,
+    'PRODUCT_OPERATIONS_BEARER_TOKEN',
+  );
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const repository = new PostgresAuthRepository(database);
@@ -104,21 +110,7 @@ try {
     )
     : undefined;
   validateKnowledgeBodyCapacity(config, knowledgeRuntime.config);
-  server = new ProductApiServer(
-    auth,
-    config,
-    new PostgresHistoryRepository(database),
-    knowledgeRuntime.service,
-    { check: async () => { await database!.query('SELECT 1'); } },
-    new PostgresWorkspaceRepository(database, {
-      cursorSecret: config.cookieSecret,
-      pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
-      ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
-    }),
-    abuseRateLimiter,
-    release,
-    passwordReset,
-  );
+  const readiness = { check: async () => { await database!.query('SELECT 1'); } };
   retentionMaintenance = new ProductRetentionMaintenance(
     new PostgresRetentionRepository(database),
     {
@@ -135,6 +127,26 @@ try {
       ) * 2,
     },
     { log: logRetentionMaintenance },
+  );
+  const operationalTelemetry = new ProductOperationalTelemetry(readiness, retentionMaintenance);
+  server = new ProductApiServer(
+    auth,
+    config,
+    new PostgresHistoryRepository(database),
+    knowledgeRuntime.service,
+    readiness,
+    new PostgresWorkspaceRepository(database, {
+      cursorSecret: config.cookieSecret,
+      pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
+      ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
+    }),
+    abuseRateLimiter,
+    release,
+    passwordReset,
+    operationsToken ? {
+      token: operationsToken,
+      snapshot: () => operationalTelemetry.snapshot(),
+    } : undefined,
   );
   const port = await server.listen();
   retentionMaintenance.start();
@@ -161,6 +173,7 @@ try {
   if (
     error instanceof ProductApiConfigurationError
     || error instanceof ProductDatabaseConfigurationError
+    || (error instanceof Error && error.message.startsWith('PRODUCT_OPERATIONS_BEARER_TOKEN'))
   ) {
     process.stderr.write(`Kodex Product API configuration error: ${error.message}\n`);
   } else {

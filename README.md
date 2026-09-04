@@ -111,6 +111,7 @@ API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`
 
 - `GET /api/health/live`: process liveness만 최소 `{ "ok": true }`로 반환합니다.
 - `GET /api/health/ready`: DB에 실제 `SELECT 1`이 성공할 때만 `200`; 실패는 credential/schema 내부 정보 없이 `503 { "ok": false }`입니다. migration은 listen 전에 완료됩니다.
+- `GET /api/operations/status`: 각각 `PRODUCT_OPERATIONS_BEARER_TOKEN`/`KODEX_OPERATIONS_BEARER_TOKEN`을 명시한 서버에서만 활성화되는 고정 JSON 운영 상태입니다. Browser Origin 요청은 거부하고 tenant ID·경로·대화 payload·오류문·secret을 반환하지 않습니다.
 - `POST /api/auth/register`: `{ "email", "password", "displayName"? }`, 성공 `201`. 비밀번호는 UTF-8 12~1,024 bytes입니다.
 - `POST /api/auth/login`: `{ "email", "password" }`, 성공 `200`. 존재하지 않는 이메일과 잘못된 비밀번호는 같은 `401 invalid_credentials`입니다.
 - `POST /api/auth/password-reset/request`: opt-in recovery webhook이 설정된 경우 exact `{ "email" }`을 받고 account 존재와 provider 결과에 관계없이 `202 { "ok": true }`를 반환합니다. DB에는 256-bit token의 domain-separated SHA-256만 저장하며 기본 응답 시간 floor와 PostgreSQL 공유 address/email limiter를 적용합니다.
@@ -189,7 +190,7 @@ session token은 32 random bytes이며 브라우저의 `kodex_product_session` H
 
 이 limiter는 Node direct socket peer만 사용하고 `Forwarded`/`X-Forwarded-For`를 무시합니다. NAT 사용자는 address bucket을 공유하고 reverse proxy 뒤에서는 별도 trusted-proxy 설계 전까지 proxy가 하나의 peer로 보입니다. edge WAF/CAPTCHA 또는 proxy-aware global client-IP identity를 대신하지 않으며, 같은 PostgreSQL을 공유하는 application process 범위에서만 분산 state를 제공합니다.
 
-Product API는 migration과 listen 이후 terminal 인증 row의 bounded startup/periodic retention sweep를 실행합니다. 기본값은 1시간 간격, table별 batch 100, sweep당 최대 10 round, terminal session/invitation/password-reset 각각 30일 보존입니다. `PRODUCT_RETENTION_ENABLED`(`true|false`), `PRODUCT_RETENTION_INTERVAL_SECONDS`(60~86,400), `PRODUCT_RETENTION_BATCH_SIZE`(1~1,000), `PRODUCT_RETENTION_MAX_BATCHES`(1~100), `PRODUCT_RETENTION_SESSION_DAYS`/`PRODUCT_RETENTION_INVITATION_DAYS`/`PRODUCT_RETENTION_PASSWORD_RESET_DAYS`(각 1~3,650)로 조정하며 범위 밖 값은 listen 전에 실패합니다. session은 폐기 시각(미폐기 row는 만료 시각), invitation은 수락/취소 시각(미처리 row는 만료 시각), password reset은 소비/폐기 시각(미처리 row는 만료 시각)이 cutoff보다 엄격히 오래된 경우만 지웁니다. stale login/product-abuse bucket은 각 정책의 `max(window, block) × 2` cutoff를 사용하고 아직 활성인 block은 보존합니다. 각 query는 deterministic order, `LIMIT`, `FOR UPDATE SKIP LOCKED`를 사용하므로 여러 API process가 leader 없이 안전하게 일을 나눕니다. 로그는 aggregate count와 고정 error class뿐이고 공개 cleanup/reset/inspection endpoint나 metric은 없습니다.
+Product API는 migration과 listen 이후 terminal 인증 row의 bounded startup/periodic retention sweep를 실행합니다. 기본값은 1시간 간격, table별 batch 100, sweep당 최대 10 round, terminal session/invitation/password-reset 각각 30일 보존입니다. `PRODUCT_RETENTION_ENABLED`(`true|false`), `PRODUCT_RETENTION_INTERVAL_SECONDS`(60~86,400), `PRODUCT_RETENTION_BATCH_SIZE`(1~1,000), `PRODUCT_RETENTION_MAX_BATCHES`(1~100), `PRODUCT_RETENTION_SESSION_DAYS`/`PRODUCT_RETENTION_INVITATION_DAYS`/`PRODUCT_RETENTION_PASSWORD_RESET_DAYS`(각 1~3,650)로 조정하며 범위 밖 값은 listen 전에 실패합니다. session은 폐기 시각(미폐기 row는 만료 시각), invitation은 수락/취소 시각(미처리 row는 만료 시각), password reset은 소비/폐기 시각(미처리 row는 만료 시각)이 cutoff보다 엄격히 오래된 경우만 지웁니다. stale login/product-abuse bucket은 각 정책의 `max(window, block) × 2` cutoff를 사용하고 아직 활성인 block은 보존합니다. 각 query는 deterministic order, `LIMIT`, `FOR UPDATE SKIP LOCKED`를 사용하므로 여러 API process가 leader 없이 안전하게 일을 나눕니다. 로그와 opt-in 운영 상태는 aggregate count와 고정 error class/code뿐이고 공개 cleanup/reset endpoint는 없습니다.
 
 이 정책은 PostgreSQL row retention이며 secure erasure가 아닙니다. 일반 `DELETE`는 dead tuple을 만들므로 autovacuum을 관찰하고 필요한 `VACUUM`을 별도로 운영해야 합니다. WAL/replica/snapshot/dump/backup의 보존과 폐기는 운영자 정책이며 앱이 `VACUUM FULL`, backup 삭제 또는 storage overwrite를 수행하지 않습니다.
 
@@ -225,6 +226,8 @@ non-loopback 운영은 HTTPS reverse proxy가 UI와 Product API를 exact same-or
 History subscriber는 thread/turn/item lifecycle과 tool/approval을 정규화하고 재귀 credential/absolute-path redaction 및 기본 64 KiB event 한계를 적용한 뒤 tenant root의 outbox에 먼저 원자적으로 기록합니다. Runtime 초기화 뒤 같은 tenant `AppServerClient`의 `thread/list`, `thread/turns/list`, `thread/items/list`로 기존 active/archived snapshot을 background reconciliation하며 SQLite/rollout 파일이나 UI의 active-project RPC를 사용하지 않습니다. 생성 protocol의 CLI/appServer/exec/VS Code와 모든 subagent/unknown source kind를 명시하고 opaque cursor를 끝까지 처리하되 기본 active/archived 각각 500 thread, thread당 1,000 turn/5,000 item, page 50, request 15초로 제한합니다. 성공 뒤 15분마다, 실패/partial은 5초~5분 backoff로 처음부터 다시 scan하며 stable semantic event ID와 pending-outbox dedupe 때문에 같은 snapshot을 재시작해도 spool/DB row가 중복되지 않습니다.
 
 DB transaction은 project/thread/turn/item/tool/approval 상태와 deduplicated `agent_events`를 함께 반영합니다. 전달 모델은 ordered at-least-once이고 `(source_instance, source_event_id)`와 monotonic lifecycle merge로 snapshot/live 재시도·재시작·out-of-order를 흡수합니다. DB 장애는 agent 실행을 막지 않으며 outbox가 250 ms부터 최대 30초까지 retry합니다. 기본 outbox는 tenant당 16 MiB/10,000 records로 제한되고 초과·손상·DB 불가와 reconciliation failure/truncation은 credential, cursor, 경로, response body 없는 명시적 history state log/status로 남습니다. `KODEX_HISTORY_RECONCILIATION_INTERVAL_MS`, `*_RETRY_INITIAL_MS`, `*_RETRY_MAX_MS`, `*_REQUEST_TIMEOUT_MS`, `*_PAGE_SIZE`, `*_MAX_THREADS_PER_STATE`, `*_MAX_TURNS_PER_THREAD`, `*_MAX_ITEMS_PER_THREAD`의 기본값과 hard range는 `.env.example`에 있으며 잘못된 값은 Local Server listen 전에 실패합니다.
+
+운영 상태 endpoint는 기본 비활성입니다. 서로 다른 32-byte random secret을 `PRODUCT_OPERATIONS_BEARER_TOKEN`과 `KODEX_OPERATIONS_BEARER_TOKEN`에 주입하면 Product API의 process/DB/retention과 Local Server의 process/DB/runtime/App Server/outbox/reconciliation/authorization revalidation을 조회할 수 있습니다. 응답은 고정 cardinality aggregate와 `product_database_unavailable`, `history_outbox_overflow`, `history_reconciliation_failed`, `authorization_revalidation_unavailable` 같은 stable alert code만 제공합니다. Email, user/workspace/thread ID, local root, DB/provider 오류문과 token은 포함하지 않습니다. 배치, alert 해석과 복구 절차는 [운영 관측 runbook](docs/operations/observability.md), 보안 결정은 [ADR 0026](docs/adr/0026-payload-free-operational-observability.md)을 따릅니다.
 
 ## 연결 복구, 승인, 자동화, 재시작
 
@@ -272,6 +275,7 @@ npm run test:auth-lifecycle-postgres # 격리된 실제 PostgreSQL의 change-pas
 npm run test:retention-postgres # fresh + 0001~0008 upgrade DB의 bounded terminal-row cleanup
 npm run test:abuse-rate-limit-postgres # fresh + immutable 0001~0009 upgrade DB의 공유 limiter/경합/retention
 npm run test:password-reset-postgres # fresh + immutable 0001~0010 upgrade DB의 hash-only 복구/전달/세션 폐기
+npm run test:observability # 실제 HTTP endpoint의 bearer 경계와 DB/outbox/backfill/revalidation failure injection
 npm run test:tenant-auth  # Local Server HTTP/열린 WebSocket 재검증
 npm run verify:ui-bundle
 npm run smoke:production

@@ -133,6 +133,23 @@ describe('product retention coordinator', () => {
       sessionsDeleted: 2,
       trigger: 'startup',
     }]);
+    expect(maintenance.status()).toEqual({
+      enabled: true,
+      lastCompletedAt: referenceTime.toISOString(),
+      lastCounts: {
+        abuseRateLimitsDeleted: 1,
+        batches: 1,
+        invitationsDeleted: 3,
+        passwordResetsDeleted: 0,
+        rateLimitsDeleted: 4,
+        sessionsDeleted: 2,
+      },
+      lastFailureAt: null,
+      lastOutcome: 'complete',
+      running: false,
+      started: false,
+      stopped: false,
+    });
   });
 
   it('caps work, rejects overlap in one process, and permits a later sweep', async () => {
@@ -182,6 +199,12 @@ describe('product retention coordinator', () => {
       trigger: 'periodic',
     }]);
     expect(JSON.stringify(events)).not.toContain(sensitive);
+    expect(maintenance.status()).toMatchObject({
+      lastCompletedAt: null,
+      lastOutcome: 'failed',
+      running: false,
+    });
+    expect(maintenance.status().lastFailureAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
   });
 
   it('does not schedule or query in disabled mode', async () => {

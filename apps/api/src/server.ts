@@ -50,6 +50,7 @@ import {
   WorkspaceOperationError,
 } from '@kodex/product-db';
 import type { AbuseRateLimiter } from '@kodex/product-db';
+import { verifyOperationsBearer } from '@kodex/shared';
 import type { ProductApiConfig } from './config.js';
 import type { ProductReleaseIdentity } from './release-identity.js';
 import {
@@ -89,6 +90,11 @@ export interface ProductApiReadiness {
 export interface PasswordResetApplication {
   complete(value: unknown, request: { directAddress: string }): Promise<number>;
   request(value: unknown, request: { directAddress: string }): Promise<{ deliveryFailed: boolean }>;
+}
+
+export interface ProductOperationsEndpoint {
+  snapshot(): Promise<unknown>;
+  token: string;
 }
 
 class HttpError extends Error {
@@ -342,6 +348,7 @@ export class ProductApiServer {
     private readonly abuseRateLimiter?: AbuseRateLimiter,
     private readonly release?: ProductReleaseIdentity,
     private readonly passwordReset?: PasswordResetApplication,
+    private readonly operations?: ProductOperationsEndpoint,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -411,6 +418,25 @@ export class ProductApiServer {
         } catch {
           json(response, 503, { ok: false });
         }
+        return;
+      }
+      if (url.pathname === '/api/operations/status' && request.method === 'GET') {
+        if (!this.operations) {
+          json(response, 404, { ok: false, error: { code: 'not_found', message: 'Not found.' } });
+          return;
+        }
+        if (
+          request.headers.origin
+          || !verifyOperationsBearer(request.headers.authorization, this.operations.token)
+        ) {
+          response.setHeader('WWW-Authenticate', 'Bearer');
+          json(response, 401, {
+            ok: false,
+            error: { code: 'operations_unauthorized', message: 'Operations authentication is required.' },
+          });
+          return;
+        }
+        json(response, 200, await this.operations.snapshot());
         return;
       }
       if (url.pathname === '/api/version' && request.method === 'GET') {
