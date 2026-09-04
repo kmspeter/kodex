@@ -106,7 +106,11 @@ for (const name of ['codex-protocol', 'kodex-api', 'product-contract', 'product-
 await writeFile(path.join(appRoot, 'package.json'), `${JSON.stringify({ name: 'kodex-runtime', version: '0.2.0', private: true, type: 'module', main: 'desktop/main.mjs' }, null, 2)}\n`, 'utf8');
 await writeFile(path.join(output, 'Kodex.cmd'), '@echo off\r\n"%~dp0electron.exe" "%~dp0resources\\app" %*\r\n', 'utf8');
 await writeFile(path.join(output, 'Kodex-Backup.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\n', 'utf8');
-await writeFile(path.join(output, 'Kodex-Release-Verify.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "%~dp0."\r\n', 'utf8');
+await writeFile(
+  path.join(output, 'Kodex-Release-Verify.cmd'),
+  '@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\npushd "%~dp0"\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "."\r\nset "KODEX_RELEASE_VERIFY_EXIT=%ERRORLEVEL%"\r\npopd\r\nexit /b %KODEX_RELEASE_VERIFY_EXIT%\r\n',
+  'utf8',
+);
 
 const bundledFiles = await walk();
 for (const filename of bundledFiles) {
