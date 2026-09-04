@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only d694c7a97eb7f2a9cf08d8b4cbad538b785f5fe8..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only f1d833d352d9d86bb99dc5af797693e08c1a66cf..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,19 +28,20 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-04 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `d694c7a97eb7f2a9cf08d8b4cbad538b785f5fe8` |
-| 제품 기준 commit | `feat: add verified offline backup and restore` |
-| 완료 범위 | Phase 1~24 |
-| 다음 핵심 기능 | 배포/upgrade와 계정 복구 |
+| 제품 기준 HEAD | `f1d833d352d9d86bb99dc5af797693e08c1a66cf` |
+| 제품 기준 commit | `fix: verify release as physical files` |
+| 완료 범위 | Phase 1~25 |
+| 다음 핵심 기능 | 계정 복구와 운영 관측성 |
 
-Phase 1~24에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~25에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
-backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore까지 구현했다. 상세 계약은
+backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
+forward-only deployment/upgrade까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0023](adr/0023-offline-backup-restore.md)까지가 기준이다.
+[ADR 0024](adr/0024-versioned-release-and-upgrade.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -153,20 +154,38 @@ full-stack, production smoke, rebuilt portable runtime smoke가 통과했다. `t
 backup→restore를 검증하며 active/runtime-start lock, existing target, unlisted file과 checksum tamper를
 거부한다. Packaged `Kodex-Backup.cmd`도 Electron Node 모드에서 실제 verification code까지 로드했다.
 
+## Phase 25 계약과 최종 검증
+
+Phase 25의 원본 결정은 [ADR 0024](adr/0024-versioned-release-and-upgrade.md), 운영 절차는
+[deployment/upgrade runbook](operations/deployment-upgrade.md)이다.
+
+- Clean Git HEAD에서만 Windows runtime을 `Kodex-<version>-windows-x64-<commit12>` directory로 봉인한다.
+  Manifest v1은 exact version/commit, migration ledger, Codex upstream/vendor provenance와 2,000개 artifact
+  regular file의 path/size/SHA-256을 가진다. Local config, tenant/outbox, symlink/special/unlisted/tampered file은
+  거부한다.
+- Artifact의 `Kodex-Release-Verify.cmd`는 Electron ASAR 가상 tree를 끄고 실제 physical file을 검증한다.
+  Product API `/api/version`은 sealed/container identity의 `{ version, commit }`을 no-store로 반환한다.
+- Product API는 migration-before-listen이며 미래 ledger나 changed checksum을 만나면 port를 열지 않는다.
+  Rollback은 별도 verified artifact directory 단위이며, 이전 app이 새 ledger를 모르면 down migration/ledger
+  수정 대신 candidate 재배포 또는 Phase 24 backup을 새 DB/data root에 복원한다.
+- Docker image는 누락돼 있던 internal `@kodex/product-contract` build/runtime workspace를 명시적으로 포함하고,
+  OCI version/revision label과 runtime import를 실제 image build에서 검증했다.
+
+2026-09-04에 최종 제품 commit `f1d833d352d9d86bb99dc5af797693e08c1a66cf`까지 대상으로 전체 215 unit,
+lint, typecheck, build, UI/vendor integrity, API/Electron full-stack, backup restore와 release deployment drill이
+통과했다. 실제 Docker image build/import/OCI label을 확인한 뒤 test tag를 정리했다. Clean HEAD에서 생성한
+`runtime/Kodex-0.2.0-windows-x64-f1d833d352d9`는 내부 verifier와 `Kodex.cmd --smoke`를 통과했다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P0 — 배포와 upgrade runbook을 만든다.** Versioned Windows artifact, Product API/PostgreSQL 배치,
-   migration-before-listen, health/readiness, secret 주입, 실패/rollback 책임을 정한다. Exit: production-like
-   clean host에서 설치 → migrate → smoke → version 확인을 재현하고 실패 시 이전 artifact로 서비스 복구가
-   문서화·연습되어야 한다.
-2. **P1 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
+1. **P0 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
    expiry/revoke/rate limit/session 폐기와 generic error를 정한다. Exit: token 원문 비저장, enumeration 방지,
    경합·재사용·만료·세션 폐기와 실제 전달 실패 경로가 PostgreSQL/acceptance에서 검증되어야 한다.
-3. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
+2. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
    payload-free health/metric/alert를 만들고 history/RAG/audit/local file/export/delete/legal-hold 정책을
    별도 결정한다. Exit: failure injection으로 actionable alert와 secret-free diagnostic을 확인하고,
    retention/export/delete가 backup/WAL/replica 한계까지 문서화·검증되어야 한다.
-4. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
+3. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
 
@@ -196,6 +215,7 @@ npm run test:history-postgres
 npm run test:tenant-auth
 npm run test:full-stack
 npm run test:backup-restore
+npm run test:release-deployment
 ```
 
 `test:history-postgres`를 포함한 독립 harness는 실행 중인 Docker daemon과
@@ -248,7 +268,7 @@ git status --short
 
 ## 알려진 비목표와 운영 위험
 
-- 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 완성된 배포 시스템을
+- 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 자동 배포 control plane을
   제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
 - Password reset/email verification, SMTP invitation delivery, self-service workspace restore, hard delete,
