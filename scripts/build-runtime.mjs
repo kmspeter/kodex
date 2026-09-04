@@ -74,6 +74,8 @@ await Promise.all([
   copy('apps/desktop/verify-runtime.mjs', 'desktop/verify-runtime.mjs'),
   copy('scripts/kodex-backup.mjs', 'operations/kodex-backup.mjs'),
   copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
+  copy('scripts/kodex-release.mjs', 'operations/kodex-release.mjs'),
+  copy('scripts/lib/release-artifact.mjs', 'operations/lib/release-artifact.mjs'),
   copy('apps/api/dist', 'product-api'),
   copy('apps/local-server/dist', 'server'),
   copy('apps/ui/dist', 'ui'),
@@ -104,6 +106,7 @@ for (const name of ['codex-protocol', 'kodex-api', 'product-contract', 'product-
 await writeFile(path.join(appRoot, 'package.json'), `${JSON.stringify({ name: 'kodex-runtime', version: '0.2.0', private: true, type: 'module', main: 'desktop/main.mjs' }, null, 2)}\n`, 'utf8');
 await writeFile(path.join(output, 'Kodex.cmd'), '@echo off\r\n"%~dp0electron.exe" "%~dp0resources\\app" %*\r\n', 'utf8');
 await writeFile(path.join(output, 'Kodex-Backup.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\n', 'utf8');
+await writeFile(path.join(output, 'Kodex-Release-Verify.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "%~dp0."\r\n', 'utf8');
 
 const bundledFiles = await walk();
 for (const filename of bundledFiles) {
@@ -122,6 +125,8 @@ for (const relative of [
   'product-api/main.js',
   'operations/kodex-backup.mjs',
   'operations/lib/offline-backup.mjs',
+  'operations/kodex-release.mjs',
+  'operations/lib/release-artifact.mjs',
   'node_modules/@kodex/product-contract/dist/index.js',
   'node_modules/@kodex/product-db/dist/index.js',
   'node_modules/@kodex/product-db/migrations/0001_initial_product_schema.sql',

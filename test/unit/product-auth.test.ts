@@ -333,7 +333,10 @@ describe('product API configuration and cookies', () => {
       .mockRejectedValueOnce(new Error('postgresql://user:secret@database/private-schema'));
     const server = new ProductApiServer({
       authenticate: vi.fn(), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
-    }, config, undefined, undefined, { check });
+    }, config, undefined, undefined, { check }, undefined, undefined, {
+      version: '0.2.0',
+      commit: 'a'.repeat(40),
+    });
     const port = await server.listen();
     const base = `http://127.0.0.1:${port}`;
     try {
@@ -349,6 +352,9 @@ describe('product API configuration and cookies', () => {
       expect(unavailable.status).toBe(503);
       expect(JSON.stringify(await unavailable.json())).toBe('{"ok":false}');
       expect(check).toHaveBeenCalledTimes(2);
+      const version = await fetch(`${base}/api/version`);
+      expect(version.status).toBe(200);
+      expect(await version.json()).toEqual({ version: '0.2.0', commit: 'a'.repeat(40) });
     } finally {
       await server.close();
     }

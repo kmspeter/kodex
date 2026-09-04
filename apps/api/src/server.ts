@@ -50,6 +50,7 @@ import {
 } from '@kodex/product-db';
 import type { AbuseRateLimiter } from '@kodex/product-db';
 import type { ProductApiConfig } from './config.js';
+import type { ProductReleaseIdentity } from './release-identity.js';
 import {
   clearSessionCookies,
   createCsrfToken,
@@ -319,6 +320,7 @@ export class ProductApiServer {
     private readonly readiness?: ProductApiReadiness,
     private readonly workspaces?: WorkspaceApplication,
     private readonly abuseRateLimiter?: AbuseRateLimiter,
+    private readonly release?: ProductReleaseIdentity,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -388,6 +390,10 @@ export class ProductApiServer {
         } catch {
           json(response, 503, { ok: false });
         }
+        return;
+      }
+      if (url.pathname === '/api/version' && request.method === 'GET') {
+        json(response, 200, this.release ?? { version: 'development', commit: null });
         return;
       }
       if (url.pathname === '/api/auth/register' && request.method === 'POST') {

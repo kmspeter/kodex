@@ -25,6 +25,7 @@ import {
   type RetentionMaintenanceLogEvent,
 } from './retention-maintenance.js';
 import { ProductApiServer } from './server.js';
+import { loadProductReleaseIdentity } from './release-identity.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -63,6 +64,7 @@ async function stop(exitCode = 0): Promise<void> {
 
 try {
   const config = productApiConfigFromEnv();
+  const release = await loadProductReleaseIdentity(repositoryRoot);
   const retentionConfig = productRetentionMaintenanceConfigFromEnv();
   database = requireProductDatabaseFromEnv();
   await database.migrate();
@@ -97,6 +99,7 @@ try {
       ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
     }),
     abuseRateLimiter,
+    release,
   );
   retentionMaintenance = new ProductRetentionMaintenance(
     new PostgresRetentionRepository(database),
