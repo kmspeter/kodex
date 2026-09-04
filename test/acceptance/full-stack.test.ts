@@ -5,9 +5,11 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import type { ServerNotification } from '@kodex/codex-protocol';
 import { PRODUCT_SESSION_COOKIE_NAME, PRODUCT_WORKSPACE_HEADER_NAME } from '@kodex/product-contract';
 import { expect, it } from 'vitest';
 import { WebSocket } from 'ws';
+import { AppServerClient } from '../../apps/local-server/src/process/app-server-client';
 import { startResponsesLoopbackFixture, type ResponsesLoopbackFixture } from '../fixtures/responses-loopback';
 
 type UnknownRecord = Record<string, unknown>;
@@ -505,6 +507,61 @@ async function pollForHistory(
   throw new Error(`PostgreSQL Saved DB History projection did not contain the thread, completed turn, assistant item, and tool result within 20 seconds. Last structural state: ${lastObservation}. Pending structural outbox state: ${pendingObservation}`);
 }
 
+async function createPreexistingTenantThread(
+  codexHome: string,
+  fixture: ResponsesLoopbackFixture,
+): Promise<{ threadId: string; turnId: string }> {
+  const notifications: ServerNotification[] = [];
+  const client = new AppServerClient({
+    repositoryRoot,
+    codexHome,
+    apiKey: undefined,
+    binary: { command: codexBinary, source: 'local' },
+    provider: { mode: 'local', baseUrl: fixture.baseUrl, model: 'kodex-loopback-model' },
+    extraArgs: ['-c', 'web_search="disabled"', '-c', 'analytics.enabled=false'],
+    log: async () => undefined,
+  });
+  client.on('notification', (notification: ServerNotification) => notifications.push(notification));
+  try {
+    await client.start();
+    const started = await client.request('thread/start', {
+      model: 'kodex-loopback-model',
+      modelProvider: 'kodex_local',
+      cwd: repositoryRoot,
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandbox: 'danger-full-access',
+      config: { web_search: 'disabled' },
+      ephemeral: false,
+      serviceName: 'Kodex',
+    });
+    const turn = await client.request('turn/start', {
+      threadId: started.thread.id,
+      input: [{ type: 'text', text: 'Run the provided local echo tool, then answer.', text_elements: [] }],
+      cwd: repositoryRoot,
+      approvalPolicy: 'never',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+      model: 'kodex-loopback-model',
+    });
+    const deadline = Date.now() + 30_000;
+    while (
+      Date.now() < deadline
+      && !notifications.some((notification) => notification.method === 'turn/completed'
+        && notification.params.turn.id === turn.turn.id
+        && notification.params.turn.status === 'completed')
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(notifications.some((notification) => notification.method === 'turn/completed'
+      && notification.params.turn.id === turn.turn.id
+      && notification.params.turn.status === 'completed')).toBe(true);
+    return { threadId: started.thread.id, turnId: turn.turn.id };
+  } finally {
+    await client.stop();
+  }
+}
+
 it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation -> workspace archive -> logout over HTTP/WS', async () => {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) throw new Error('DATABASE_URL is required. Use npm run test:full-stack.');
@@ -558,6 +615,9 @@ it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation 
       KODEX_AUTH_REVALIDATE_MS: '100',
       KODEX_HISTORY_RETRY_INITIAL_MS: '25',
       KODEX_HISTORY_RETRY_MAX_MS: '250',
+      KODEX_HISTORY_RECONCILIATION_INTERVAL_MS: '60000',
+      KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS: '50',
+      KODEX_HISTORY_RECONCILIATION_RETRY_MAX_MS: '250',
     });
     await waitForHttp(localProcess, `${localBaseUrl}/api/health`, 'Local Server readiness');
     loopback = await startResponsesLoopbackFixture();
@@ -573,6 +633,26 @@ it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation 
     const sessionA = await postAuth(productBaseUrl, origin, 'login', { email: emailA, password });
     expect(sessionA.userId).toBe(registeredA.userId);
     expect(sessionA.workspaceId).toBe(registeredA.workspaceId);
+    const userADataRoot = path.join(
+      temporaryRoot,
+      'data',
+      'tenants',
+      'users',
+      sessionA.userId,
+      'workspaces',
+      sessionA.workspaceId,
+    );
+    const preexisting = await createPreexistingTenantThread(
+      path.join(userADataRoot, 'codex-home'),
+      loopback,
+    );
+    await loopback.close();
+    loopback = await startResponsesLoopbackFixture();
+    expect((await historyGet(
+      productBaseUrl,
+      sessionA,
+      `/api/history/threads/${encodeURIComponent(preexisting.threadId)}?limit=50`,
+    )).status).toBe(404);
     const bootstrapA = await bootstrapLocal(localBaseUrl, origin, sessionA);
     expect(bootstrapA.response.status).toBe(200);
     const localSessionToken = bootstrapA.body.sessionToken;
@@ -605,6 +685,15 @@ it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation 
       provider: { mode: 'local', baseUrl: loopback.baseUrl, model: 'kodex-loopback-model' },
     });
 
+    const userAOutbox = path.join(userADataRoot, 'product-history-outbox');
+    await pollForHistory(
+      productBaseUrl,
+      sessionA,
+      preexisting.threadId,
+      preexisting.turnId,
+      userAOutbox,
+    );
+
     socketAOriginal = await connectSocket(localPort, origin, sessionA, localSessionToken);
     const threadResult = record(await socketAOriginal.rpc('thread/start', {}), 'thread/start');
     const thread = record(threadResult.thread, 'thread/start');
@@ -634,19 +723,21 @@ it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation 
     expect(loopback.sawToolOutput()).toBe(true);
     expect(loopback.toolOutputContainsExpectedText()).toBe(true);
     expect(loopback.toolOutputSucceeded()).toBe(true);
+    const liveItemLifecycles = socketAOriginal.messages.flatMap((message) => {
+      if (message.type !== 'notification') return [];
+      const notification = record(message.notification, 'live item lifecycle diagnostic');
+      if (notification.method !== 'item/started' && notification.method !== 'item/completed') return [];
+      const params = record(notification.params, 'live item lifecycle diagnostic');
+      const item = record(params.item, 'live item lifecycle diagnostic');
+      return [{ method: notification.method, itemType: item.type }];
+    });
+    expect(liveItemLifecycles).toEqual(expect.arrayContaining([
+      { method: 'item/completed', itemType: 'agentMessage' },
+      { method: 'item/completed', itemType: 'commandExecution' },
+    ]));
 
     const listA = await historyGet(productBaseUrl, sessionA, '/api/history/threads?limit=50');
     expect(listA.status).toBe(200);
-    const userAOutbox = path.join(
-      temporaryRoot,
-      'data',
-      'tenants',
-      'users',
-      sessionA.userId,
-      'workspaces',
-      sessionA.workspaceId,
-      'product-history-outbox',
-    );
     await pollForHistory(productBaseUrl, sessionA, thread.id, turn.id, userAOutbox);
 
     const emailB = `full-stack-b-${randomUUID()}@example.invalid`;

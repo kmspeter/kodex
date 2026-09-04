@@ -1,9 +1,11 @@
 import { redactSecrets } from '@kodex/shared';
+import path from 'node:path';
 
 const SENSITIVE_FIELD = /(?:authorization|cookie|credential|password|passphrase|secret|token|api.?key|private.?key|encrypted)/iu;
 const SENSITIVE_HEADER = /\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)\s*:\s*[^\r\n]+/giu;
 const SECRET_ASSIGNMENT = /\b(?:OPENAI_API_KEY|DATABASE_URL|AUTH_COOKIE_SECRET|PASSWORD|TOKEN|SECRET)\s*=\s*[^\s,;]+/giu;
 const URI_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu;
+const PATH_FIELD = /^(?:cwd|path)$/iu;
 
 export interface HistorySanitizeLimits {
   maxArrayEntries: number;
@@ -55,6 +57,8 @@ export function sanitizeHistoryValue(
       const key = cleanString(rawKey, 128);
       output[key] = SENSITIVE_FIELD.test(rawKey)
         ? '[REDACTED]'
+        : PATH_FIELD.test(rawKey) && typeof entry === 'string' && path.isAbsolute(entry)
+          ? '[ABSOLUTE_PATH_REDACTED]'
         : sanitizeHistoryValue(entry, limits, depth + 1);
     }
     if (Object.keys(value).length > limits.maxObjectEntries) {

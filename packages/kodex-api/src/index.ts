@@ -12,11 +12,13 @@ import type {
   SkillsListResponse,
   ThreadArchiveResponse,
   ThreadForkResponse,
+  ThreadItemsListResponse,
   ThreadListResponse,
   ThreadReadResponse,
   ThreadResumeResponse,
   ThreadSetNameResponse,
   ThreadStartResponse,
+  ThreadTurnsListResponse,
   ThreadUnarchiveResponse,
   TurnInterruptResponse,
   TurnStartResponse,
@@ -178,6 +180,8 @@ export type ParamsFor<M extends ClientMethod> = RequestFor<M> extends { params?:
 export interface CodexResponseByMethod {
   'thread/start': ThreadStartResponse;
   'thread/list': ThreadListResponse;
+  'thread/turns/list': ThreadTurnsListResponse;
+  'thread/items/list': ThreadItemsListResponse;
   'thread/read': ThreadReadResponse;
   'thread/resume': ThreadResumeResponse;
   'thread/fork': ThreadForkResponse;

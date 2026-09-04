@@ -71,6 +71,17 @@ try {
   const configuredDataRoot = process.env.KODEX_DATA_ROOT
     ? path.resolve(process.env.KODEX_DATA_ROOT)
     : path.join(repositoryRoot, '.kodex-data');
+  const reconciliationRetryInitialMs = positiveInteger(
+    process.env.KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS, 5_000, 60 * 60_000,
+    'KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS',
+  );
+  const reconciliationRetryMaximumMs = positiveInteger(
+    process.env.KODEX_HISTORY_RECONCILIATION_RETRY_MAX_MS, 5 * 60_000, 24 * 60 * 60_000,
+    'KODEX_HISTORY_RECONCILIATION_RETRY_MAX_MS',
+  );
+  if (reconciliationRetryInitialMs > reconciliationRetryMaximumMs) {
+    throw new Error('KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS cannot exceed KODEX_HISTORY_RECONCILIATION_RETRY_MAX_MS.');
+  }
   runtimeManager = new RuntimeManager({
     repositoryRoot,
     dataRoot: configuredDataRoot,
@@ -104,6 +115,32 @@ try {
         process.env.KODEX_HISTORY_RETRY_MAX_MS, 30_000, 60 * 60_000,
         'KODEX_HISTORY_RETRY_MAX_MS',
       ),
+      reconciliationIntervalMs: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_INTERVAL_MS, 15 * 60_000, 24 * 60 * 60_000,
+        'KODEX_HISTORY_RECONCILIATION_INTERVAL_MS',
+      ),
+      reconciliationMaxItemsPerThread: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_MAX_ITEMS_PER_THREAD, 5_000, 100_000,
+        'KODEX_HISTORY_RECONCILIATION_MAX_ITEMS_PER_THREAD',
+      ),
+      reconciliationMaxThreadsPerState: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_MAX_THREADS_PER_STATE, 500, 10_000,
+        'KODEX_HISTORY_RECONCILIATION_MAX_THREADS_PER_STATE',
+      ),
+      reconciliationMaxTurnsPerThread: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_MAX_TURNS_PER_THREAD, 1_000, 10_000,
+        'KODEX_HISTORY_RECONCILIATION_MAX_TURNS_PER_THREAD',
+      ),
+      reconciliationPageSize: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_PAGE_SIZE, 50, 100,
+        'KODEX_HISTORY_RECONCILIATION_PAGE_SIZE',
+      ),
+      reconciliationRequestTimeoutMs: positiveInteger(
+        process.env.KODEX_HISTORY_RECONCILIATION_REQUEST_TIMEOUT_MS, 15_000, 120_000,
+        'KODEX_HISTORY_RECONCILIATION_REQUEST_TIMEOUT_MS',
+      ),
+      reconciliationRetryInitialMs,
+      reconciliationRetryMaximumMs,
     },
     historyLog: (event) => process.stderr.write(
       `Kodex Local Server history state: ${JSON.stringify(event)}\n`,

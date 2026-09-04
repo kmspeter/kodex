@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { HistoryEventSink, HistoryIngestEvent, HistoryScope } from '@kodex/product-db';
+import type { Thread, ThreadItem, Turn } from '@kodex/codex-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DurableHistoryOutbox } from '../../apps/local-server/src/history/durable-outbox.js';
 import { HistoryEventNormalizer } from '../../apps/local-server/src/history/normalizer.js';
@@ -264,6 +265,95 @@ describe('history projection redaction and normalization', () => {
     expect(outbox.status().pendingRecords).toBe(2);
     await outbox.stop(50);
   });
+
+  it('projects stable bounded thread, turn, message, and public tool snapshots without approvals', () => {
+    const normalizer = new HistoryEventNormalizer({
+      repositoryRoot: 'D:\\repository',
+      sourceInstance: 'stable-source',
+      maxEventBytes: 4_096,
+    });
+    const thread = {
+      id: 'thread-snapshot',
+      sessionId: 'session-snapshot',
+      createdAt: 100,
+      updatedAt: 120,
+      cwd: 'D:\\private\\snapshot-project',
+      projectId: 'canonical-project',
+      name: 'Saved snapshot',
+      modelProvider: 'openai',
+      source: 'cli',
+      threadSource: 'desktop',
+      historyMode: 'paginated',
+      parentThreadId: null,
+      forkedFromId: null,
+      status: { type: 'idle' },
+    } as unknown as Thread;
+    const turn = {
+      id: 'turn-snapshot', status: 'completed', startedAt: 101, completedAt: 119,
+      error: null, durationMs: 18_000, items: [], itemsView: 'notLoaded',
+    } as Turn;
+    const hugeSecret = `OPENAI_API_KEY=sk-snapshot-secret ${'x'.repeat(20_000)}`;
+    const items = [
+      { type: 'userMessage', id: 'user-item', clientId: null, content: [{ type: 'text', text: 'hello', text_elements: [] }] },
+      { type: 'agentMessage', id: 'agent-item', text: hugeSecret, phase: null, memoryCitation: null, delivery: null },
+      {
+        type: 'commandExecution', id: 'command-item', pluginId: null, scriptPath: null,
+        command: hugeSecret, cwd: 'D:\\private\\snapshot-project', processId: null,
+        source: 'agent', status: 'completed', commandActions: [], aggregatedOutput: hugeSecret,
+        exitCode: 0, durationMs: 5,
+      },
+      {
+        type: 'mcpToolCall', id: 'mcp-item', server: 'server', tool: 'read', status: 'failed',
+        arguments: { token: 'mcp-secret' }, appContext: null, pluginId: null, readOnlyHint: true,
+        result: null, error: { message: 'failed' }, durationMs: 2,
+      },
+      {
+        type: 'dynamicToolCall', id: 'dynamic-item', namespace: 'host', tool: 'lookup',
+        arguments: { query: 'safe' }, status: 'completed', contentItems: [], success: true, durationMs: 3,
+      },
+      { type: 'fileChange', id: 'file-item', changes: [], status: 'completed' },
+      {
+        type: 'collabAgentToolCall', id: 'collab-item', tool: 'spawnAgent', status: 'interrupted',
+        senderThreadId: 'thread-snapshot', receiverThreadIds: ['child-thread'], prompt: 'bounded',
+        model: null, reasoningEffort: null, agentsStates: {},
+      },
+    ] as unknown as ThreadItem[];
+
+    const threadEvent = normalizer.normalizeThreadSnapshot(thread, true)!;
+    const repeatedThreadEvent = normalizer.normalizeThreadSnapshot(thread, true)!;
+    const turnEvent = normalizer.normalizeTurnSnapshot(thread, true, turn)!;
+    const itemEvents = items.map((item) => normalizer.normalizeItemSnapshot(thread, true, turn, item)!);
+
+    expect(repeatedThreadEvent.eventId).toBe(threadEvent.eventId);
+    expect(threadEvent).toMatchObject({
+      eventType: 'thread.snapshot',
+      project: { externalKey: 'codex:canonical-project', name: 'snapshot-project' },
+      thread: {
+        codexThreadId: 'thread-snapshot', status: 'archived', title: 'Saved snapshot',
+        projectIsAuthoritative: true,
+      },
+    });
+    expect(turnEvent).toMatchObject({
+      eventId: 'thread:thread-snapshot:turn:turn-snapshot:completed',
+      turn: { status: 'completed', lifecycleRank: 2 },
+      thread: { status: 'archived' },
+    });
+    expect(itemEvents.slice(0, 2).map((event) => event.item?.role)).toEqual(['user', 'assistant']);
+    expect(itemEvents.slice(2).map((event) => event.toolCall?.toolName)).toEqual([
+      'shell', 'mcp:server/read', 'dynamic:host/lookup', 'file_change', 'collaboration:spawnAgent',
+    ]);
+    expect(itemEvents.every((event) => event.approval === undefined)).toBe(true);
+    const otherThread = { ...thread, id: 'thread-other', sessionId: 'session-other' } as Thread;
+    expect(normalizer.normalizeItemSnapshot(otherThread, false, turn, items[0])?.eventId)
+      .not.toBe(itemEvents[0].eventId);
+    for (const event of [threadEvent, turnEvent, ...itemEvents]) {
+      const serialized = JSON.stringify(event);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(4_096);
+      expect(serialized).not.toContain('sk-snapshot-secret');
+      expect(serialized).not.toContain('mcp-secret');
+      expect(serialized).not.toContain('D:\\private\\snapshot-project');
+    }
+  });
 });
 
 describe('durable history outbox', () => {
@@ -313,6 +403,28 @@ describe('durable history outbox', () => {
     expect(outbox.status()).toMatchObject({ overflowed: true, pendingRecords: 1 });
     expect(statuses.some((status) => status.overflowed)).toBe(true);
     await outbox.stop(50);
+  });
+
+  it('does not grow the durable queue when the same semantic event is re-enqueued after restart', async () => {
+    const root = await temporaryRoot();
+    const directory = path.join(root, 'deduplicated-outbox');
+    const sink: HistoryEventSink = { ingest: async () => { throw new Error('offline'); } };
+    const first = new DurableHistoryOutbox({
+      directory, scope, sink, retryInitialMs: 10_000, retryMaximumMs: 10_000,
+    });
+    first.start();
+    expect(first.enqueue(historyEvent('same-event'))).toBe(true);
+    expect(first.enqueue(historyEvent('same-event'))).toBe(true);
+    expect(first.status().pendingRecords).toBe(1);
+    await first.stop(50);
+
+    const restarted = new DurableHistoryOutbox({
+      directory, scope, sink, retryInitialMs: 10_000, retryMaximumMs: 10_000,
+    });
+    restarted.start();
+    expect(restarted.enqueue(historyEvent('same-event'))).toBe(true);
+    expect(restarted.status().pendingRecords).toBe(1);
+    await restarted.stop(50);
   });
 
   it('keeps exactly one recorder subscription per tenant runtime across reuse and eviction', async () => {

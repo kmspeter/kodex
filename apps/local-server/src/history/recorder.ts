@@ -3,12 +3,22 @@ import type { HistoryEventSink, HistoryScope } from '@kodex/product-db';
 import type { KodexRuntime } from '../runtime.js';
 import { DurableHistoryOutbox, type HistoryOutboxStatus } from './durable-outbox.js';
 import { HistoryEventNormalizer } from './normalizer.js';
+import {
+  HistoryReconciler,
+  type HistoryReconciliationLogEvent,
+  type HistoryReconciliationStatus,
+} from './reconciler.js';
 
 export type HistoryRecorderLogEvent =
   | { kind: 'history_database_unavailable' }
   | { kind: 'history_event_rejected'; reason: 'disk_write_failed' | 'event_size_limit' }
   | { kind: 'history_outbox_overflow'; maxBytes: number; maxRecords: number }
-  | { kind: 'history_spool_invalid' };
+  | { kind: 'history_spool_invalid' }
+  | HistoryReconciliationLogEvent;
+
+export interface HistoryRecorderStatus extends HistoryOutboxStatus {
+  reconciliation: HistoryReconciliationStatus;
+}
 
 export interface RuntimeHistoryRecorderOptions {
   dataRoot: string;
@@ -19,6 +29,14 @@ export interface RuntimeHistoryRecorderOptions {
   repositoryRoot: string;
   retryInitialMs?: number;
   retryMaximumMs?: number;
+  reconciliationIntervalMs?: number;
+  reconciliationMaxItemsPerThread?: number;
+  reconciliationMaxThreadsPerState?: number;
+  reconciliationMaxTurnsPerThread?: number;
+  reconciliationPageSize?: number;
+  reconciliationRequestTimeoutMs?: number;
+  reconciliationRetryInitialMs?: number;
+  reconciliationRetryMaximumMs?: number;
   runtime: KodexRuntime;
   scope: HistoryScope;
   sink: HistoryEventSink;
@@ -26,9 +44,11 @@ export interface RuntimeHistoryRecorderOptions {
 
 export class RuntimeHistoryRecorder {
   readonly outbox: DurableHistoryOutbox;
+  #activeTurnIds = new Set<string>();
   #lastStatus: HistoryOutboxStatus | undefined;
   #normalizer: HistoryEventNormalizer;
   #onLog: (event: HistoryRecorderLogEvent) => void;
+  #reconciler: HistoryReconciler;
   #runtime: KodexRuntime;
   #started = false;
   #unsubscribe: (() => void) | undefined;
@@ -53,6 +73,20 @@ export class RuntimeHistoryRecorder {
       retryMaximumMs: options.retryMaximumMs,
       onStatus: (status) => this.#onStatus(status),
     });
+    this.#reconciler = new HistoryReconciler({
+      client: this.#runtime.appServer,
+      normalizer: this.#normalizer,
+      enqueue: (event) => this.outbox.enqueue(event),
+      intervalMs: options.reconciliationIntervalMs,
+      maxItemsPerThread: options.reconciliationMaxItemsPerThread,
+      maxThreadsPerState: options.reconciliationMaxThreadsPerState,
+      maxTurnsPerThread: options.reconciliationMaxTurnsPerThread,
+      pageSize: options.reconciliationPageSize,
+      requestTimeoutMs: options.reconciliationRequestTimeoutMs,
+      retryInitialMs: options.reconciliationRetryInitialMs,
+      retryMaximumMs: options.reconciliationRetryMaximumMs,
+      onLog: (event) => this.#onLog(event),
+    });
   }
 
   start(): void {
@@ -60,6 +94,15 @@ export class RuntimeHistoryRecorder {
     this.outbox.start();
     this.#unsubscribe = this.#runtime.subscribe((_sequence, runtimeEvent) => {
       try {
+        if (runtimeEvent.type === 'notification') {
+          if (runtimeEvent.notification.method === 'turn/started') {
+            this.#activeTurnIds.add(runtimeEvent.notification.params.turn.id);
+            this.#reconciler.defer(this.#reconciler.intervalMs);
+          } else if (runtimeEvent.notification.method === 'turn/completed') {
+            this.#activeTurnIds.delete(runtimeEvent.notification.params.turn.id);
+            if (this.#activeTurnIds.size === 0) this.#reconciler.defer(2_000);
+          }
+        }
         const event = this.#normalizer.normalize(runtimeEvent);
         if (!event) return;
         if (!this.outbox.enqueue(event)) {
@@ -81,14 +124,25 @@ export class RuntimeHistoryRecorder {
     this.#started = true;
   }
 
-  status(): HistoryOutboxStatus {
-    return this.outbox.status();
+  startReconciliation(): void {
+    if (!this.#started) return;
+    this.#reconciler.start();
+  }
+
+  cancelReconciliation(): void {
+    this.#reconciler.cancel();
+  }
+
+  status(): HistoryRecorderStatus {
+    return { ...this.outbox.status(), reconciliation: this.#reconciler.status() };
   }
 
   async stop(): Promise<void> {
     if (!this.#started) return;
+    await this.#reconciler.stop();
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
+    this.#activeTurnIds.clear();
     this.#started = false;
     await this.outbox.stop();
   }

@@ -11,6 +11,7 @@ import type {
   HistoryTurnSnapshot,
   HistoryTurnStatus,
 } from '@kodex/product-db';
+import type { Thread, ThreadItem, Turn } from '@kodex/codex-protocol';
 import type { RuntimeEvent } from '../runtime.js';
 import { sanitizeHistoryValue, sanitizedRecordWithinBytes } from './sanitize.js';
 
@@ -258,11 +259,162 @@ export class HistoryEventNormalizer {
         fallbackOccurredAt,
       );
     }
-    if (!event) return undefined;
+    return event ? this.#finalize(event) : undefined;
+  }
+
+  normalizeThreadSnapshot(sourceThread: Thread, archived: boolean): HistoryIngestEvent | undefined {
+    const thread = sourceThread as unknown as UnknownRecord;
+    const threadId = text(thread.id);
+    if (!threadId) return undefined;
+    const occurredAt = isoFromSeconds(number(thread.updatedAt) ?? number(thread.createdAt), new Date(0).toISOString());
+    const project = this.#rememberProject(threadId, thread);
+    const snapshot = this.#snapshotThread(thread, archived, occurredAt);
+    const semanticState = {
+      archived,
+      name: text(thread.name) ?? null,
+      projectId: text(thread.projectId) ?? null,
+      updatedAt: number(thread.updatedAt) ?? null,
+    };
+    const event = this.#base(
+      'thread.snapshot',
+      `thread:${threadId}:snapshot:${eventHash(semanticState)}`,
+      occurredAt,
+      snapshot,
+      cleanObject({ lifecycle: 'snapshot', archived }),
+    );
+    event.project = project;
+    return this.#finalize(event);
+  }
+
+  normalizeTurnSnapshot(sourceThread: Thread, archived: boolean, sourceTurn: Turn): HistoryIngestEvent | undefined {
+    const thread = sourceThread as unknown as UnknownRecord;
+    const turn = sourceTurn as unknown as UnknownRecord;
+    const threadId = text(thread.id);
+    const turnId = text(turn.id);
+    if (!threadId || !turnId) return undefined;
+    const fallback = isoFromSeconds(number(thread.updatedAt) ?? number(thread.createdAt), new Date(0).toISOString());
+    const startedAt = isoFromSeconds(number(turn.startedAt), fallback);
+    const completedAt = number(turn.completedAt) === undefined
+      ? null
+      : isoFromSeconds(number(turn.completedAt), fallback);
+    const terminal = turn.status === 'completed' || turn.status === 'failed' || turn.status === 'interrupted';
+    const occurredAt = terminal ? completedAt ?? startedAt : startedAt;
+    const status = turnStatus(turn.status === 'inProgress' ? undefined : turn.status, terminal ? 'completed' : 'in_progress');
+    this.#rememberProject(threadId, thread);
+    const event = this.#base(
+      terminal ? 'turn.completed' : 'turn.started',
+      `thread:${threadId}:turn:${turnId}:${terminal ? 'completed' : 'started'}`,
+      occurredAt,
+      this.#snapshotThread(thread, archived, fallback),
+      terminal
+        ? cleanObject({ lifecycle: 'completed', error: turn.error, durationMs: turn.durationMs, provenance: 'snapshot' })
+        : { lifecycle: 'started', provenance: 'snapshot' },
+    );
+    event.turn = this.#turn(turnId, startedAt, {
+      status,
+      lifecycleRank: terminal ? 2 : 1,
+      startedAt,
+      completedAt: terminal ? completedAt : null,
+    });
+    return this.#finalize(event);
+  }
+
+  normalizeItemSnapshot(
+    sourceThread: Thread,
+    archived: boolean,
+    sourceTurn: Turn,
+    sourceItem: ThreadItem,
+  ): HistoryIngestEvent | undefined {
+    const thread = sourceThread as unknown as UnknownRecord;
+    const turn = sourceTurn as unknown as UnknownRecord;
+    const item = sourceItem as unknown as UnknownRecord;
+    const threadId = text(thread.id);
+    const turnId = text(turn.id);
+    const itemId = text(item.id);
+    if (!threadId || !turnId || !itemId) return undefined;
+    const fallback = isoFromSeconds(number(thread.updatedAt) ?? number(thread.createdAt), new Date(0).toISOString());
+    const startedAt = isoFromSeconds(number(turn.startedAt), fallback);
+    const turnCompletedAt = number(turn.completedAt) === undefined
+      ? null
+      : isoFromSeconds(number(turn.completedAt), fallback);
+    const itemStatus = text(item.status);
+    const terminalTurn = turn.status === 'completed' || turn.status === 'failed' || turn.status === 'interrupted';
+    const completed = itemStatus === 'completed'
+      || itemStatus === 'failed'
+      || itemStatus === 'declined'
+      || itemStatus === 'interrupted'
+      || (itemStatus !== 'inProgress' && terminalTurn);
+    const occurredAt = completed ? turnCompletedAt ?? startedAt : startedAt;
+    const historyItem = this.#item(item, completed ? 'completed' : 'started', occurredAt);
+    if (!historyItem) return undefined;
+    this.#rememberProject(threadId, thread);
+    const event = this.#base(
+      completed ? 'item.completed' : 'item.started',
+      `thread:${threadId}:turn:${turnId}:item:${itemId}:${completed ? 'completed' : 'started'}`,
+      occurredAt,
+      this.#snapshotThread(thread, archived, fallback),
+      { lifecycle: completed ? 'completed' : 'started', itemType: historyItem.itemType, provenance: 'snapshot' },
+    );
+    const turnStatusValue = turnStatus(
+      turn.status === 'inProgress' ? undefined : turn.status,
+      terminalTurn ? 'completed' : 'in_progress',
+    );
+    event.turn = this.#turn(turnId, startedAt, {
+      status: turnStatusValue,
+      lifecycleRank: terminalTurn ? 2 : 1,
+      startedAt,
+      completedAt: terminalTurn ? turnCompletedAt : null,
+    });
+    event.item = historyItem;
+    const toolCall = toolCallFromItem(item, completed ? 'completed' : 'started', occurredAt);
+    if (toolCall) event.toolCall = toolCall;
+    return this.#finalize(event);
+  }
+
+  #finalize(event: HistoryIngestEvent): HistoryIngestEvent {
     return sanitizedRecordWithinBytes(
       event as unknown as Record<string, unknown>,
       this.maxEventBytes,
     ) as unknown as HistoryIngestEvent;
+  }
+
+  #rememberProject(threadId: string, sourceThread: UnknownRecord): HistoryProjectSnapshot {
+    const cwd = text(sourceThread.cwd);
+    const codexProjectId = text(sourceThread.projectId);
+    const project: HistoryProjectSnapshot = {
+      externalKey: codexProjectId
+        ? `codex:${codexProjectId}`
+        : `cwd:${hash((cwd ?? this.#defaultProject.externalKey).toLocaleLowerCase())}`,
+      name: (cwd ? path.basename(cwd) : this.#defaultProject.name).slice(0, 120),
+      metadata: { source: codexProjectId ? 'codex-project' : 'codex-cwd' },
+    };
+    this.#projectsByThread.set(threadId, project);
+    return project;
+  }
+
+  #snapshotThread(sourceThread: UnknownRecord, archived: boolean, fallback: string): HistoryThreadSnapshot {
+    const threadId = text(sourceThread.id);
+    if (!threadId) throw new Error('Snapshot thread is missing its public ID.');
+    const sourceUpdatedAt = isoFromSeconds(
+      number(sourceThread.updatedAt) ?? number(sourceThread.createdAt),
+      fallback,
+    );
+    return this.#thread(threadId, sourceUpdatedAt, {
+      createdAt: isoFromSeconds(number(sourceThread.createdAt), sourceUpdatedAt),
+      status: archived ? 'archived' : 'active',
+      sourceUpdatedAt,
+      projectIsAuthoritative: true,
+      title: text(sourceThread.name) ?? null,
+      metadata: cleanObject({
+        modelProvider: sourceThread.modelProvider,
+        source: sourceThread.source,
+        threadSource: sourceThread.threadSource,
+        historyMode: sourceThread.historyMode,
+        parentThreadId: sourceThread.parentThreadId,
+        forkedFromId: sourceThread.forkedFromId,
+        runtimeStatus: sourceThread.status,
+      }),
+    });
   }
 
   #base(
@@ -343,16 +495,7 @@ export class HistoryEventNormalizer {
       const threadId = text(sourceThread?.id);
       if (!sourceThread || !threadId) return undefined;
       const occurredAt = isoFromSeconds(number(sourceThread.updatedAt) ?? number(sourceThread.createdAt), fallback);
-      const cwd = text(sourceThread.cwd);
-      const codexProjectId = text(sourceThread.projectId);
-      const project: HistoryProjectSnapshot = {
-        externalKey: codexProjectId
-          ? `codex:${codexProjectId}`
-          : `cwd:${hash((cwd ?? this.#defaultProject.externalKey).toLocaleLowerCase())}`,
-        name: (cwd ? path.basename(cwd) : this.#defaultProject.name).slice(0, 120),
-        metadata: { source: codexProjectId ? 'codex-project' : 'codex-cwd' },
-      };
-      this.#projectsByThread.set(threadId, project);
+      const project = this.#rememberProject(threadId, sourceThread);
       const thread = this.#thread(threadId, occurredAt, {
         createdAt: isoFromSeconds(number(sourceThread.createdAt), occurredAt),
         sourceUpdatedAt: occurredAt,
@@ -426,7 +569,7 @@ export class HistoryEventNormalizer {
       });
       const event = this.#base(
         completed ? 'turn.completed' : 'turn.started',
-        `turn:${turnId}:${completed ? 'completed' : 'started'}`,
+        `thread:${threadId}:turn:${turnId}:${completed ? 'completed' : 'started'}`,
         occurredAt,
         this.#thread(threadId, occurredAt),
         completed
@@ -449,7 +592,7 @@ export class HistoryEventNormalizer {
       if (!item) return undefined;
       const event = this.#base(
         completed ? 'item.completed' : 'item.started',
-        `item:${item.codexItemId}:${completed ? 'completed' : 'started'}`,
+        `thread:${threadId}:turn:${turnId}:item:${item.codexItemId}:${completed ? 'completed' : 'started'}`,
         occurredAt,
         this.#thread(threadId, occurredAt),
         { lifecycle: completed ? 'completed' : 'started', itemType: item.itemType },

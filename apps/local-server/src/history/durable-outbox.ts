@@ -66,6 +66,7 @@ export class DurableHistoryOutbox {
   #overflowed = false;
   #pending: PendingRecord[] = [];
   #pendingBytes = 0;
+  #pendingEventIds = new Map<string, number>();
   #retryDelayMs: number;
   #retryTimer: NodeJS.Timeout | null = null;
   #scope: HistoryScope;
@@ -95,6 +96,7 @@ export class DurableHistoryOutbox {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     this.#pending = [];
     this.#pendingBytes = 0;
+    this.#pendingEventIds.clear();
     let highestSequence = 0;
     for (const filename of readdirSync(this.directory).sort()) {
       const match = RECORD_PATTERN.exec(filename);
@@ -108,6 +110,10 @@ export class DurableHistoryOutbox {
       highestSequence = Math.max(highestSequence, sequence);
       this.#pending.push({ filename, sequence, size });
       this.#pendingBytes += size;
+      try {
+        const parsed = JSON.parse(readFileSync(absolute, 'utf8')) as { eventId?: unknown };
+        if (typeof parsed.eventId === 'string') this.#addPendingEventId(parsed.eventId);
+      } catch { /* Invalid records remain in place and stop ordered replay in #drain. */ }
     }
     this.#pending.sort((left, right) => left.sequence - right.sequence);
     this.#nextSequence = highestSequence + 1;
@@ -121,6 +127,7 @@ export class DurableHistoryOutbox {
 
   enqueue(event: HistoryIngestEvent): boolean {
     if (!this.#accepting) return false;
+    if (this.#pendingEventIds.has(event.eventId)) return true;
     const serialized = JSON.stringify(event);
     const size = Buffer.byteLength(serialized, 'utf8');
     if (
@@ -153,6 +160,7 @@ export class DurableHistoryOutbox {
     }
     this.#pending.push({ filename, sequence, size });
     this.#pendingBytes += size;
+    this.#addPendingEventId(event.eventId);
     this.#report();
     this.#triggerFlush();
     return true;
@@ -220,6 +228,7 @@ export class DurableHistoryOutbox {
       unlinkSync(path.join(this.directory, pending.filename));
       this.#pending.shift();
       this.#pendingBytes -= pending.size;
+      this.#removePendingEventId(event.eventId);
       this.#lastError = null;
       this.#retryDelayMs = this.retryInitialMs;
       this.#report();
@@ -239,5 +248,15 @@ export class DurableHistoryOutbox {
 
   #report(): void {
     this.#onStatus(this.status());
+  }
+
+  #addPendingEventId(eventId: string): void {
+    this.#pendingEventIds.set(eventId, (this.#pendingEventIds.get(eventId) ?? 0) + 1);
+  }
+
+  #removePendingEventId(eventId: string): void {
+    const count = this.#pendingEventIds.get(eventId) ?? 0;
+    if (count <= 1) this.#pendingEventIds.delete(eventId);
+    else this.#pendingEventIds.set(eventId, count - 1);
   }
 }

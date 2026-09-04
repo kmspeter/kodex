@@ -23,6 +23,7 @@ import { ProductApiServer } from '../../apps/api/src/server.js';
 import { DurableHistoryOutbox } from '../../apps/local-server/src/history/durable-outbox.js';
 import { HistoryEventNormalizer } from '../../apps/local-server/src/history/normalizer.js';
 import type { RuntimeEvent } from '../../apps/local-server/src/runtime.js';
+import type { Thread, ThreadItem, Turn } from '@kodex/codex-protocol';
 
 const runPrefix = `history-it-${randomUUID()}`;
 const allowedOrigin = 'http://127.0.0.1:5173';
@@ -328,6 +329,90 @@ describe('PostgreSQL App Server history projection and authenticated read API', 
     });
     expect(result.rows[0].source_updated_at.toISOString())
       .toBe('2026-01-11T00:00:00.000Z');
+  });
+
+  it('converges snapshot and live lifecycle events without duplicates, regressions, or inferred approvals', async () => {
+    const threadId = randomUUID();
+    const turnId = randomUUID();
+    const itemId = randomUUID();
+    const normalizer = new HistoryEventNormalizer({
+      repositoryRoot: root,
+      sourceInstance: `kodex-app-server:${sharedWorkspace}:${userA}`,
+    });
+    const sourceThread = {
+      id: threadId, sessionId: randomUUID(), createdAt: 1_000, updatedAt: 1_010,
+      cwd: root, projectId: null, name: 'Backfilled thread', modelProvider: 'openai',
+      source: 'cli', threadSource: null, historyMode: 'paginated', parentThreadId: null,
+      forkedFromId: null, status: { type: 'idle' },
+    } as unknown as Thread;
+    const sourceTurn = {
+      id: turnId, status: 'completed', startedAt: 1_001, completedAt: 1_009,
+      durationMs: 8_000, error: null, items: [], itemsView: 'notLoaded',
+    } as Turn;
+    const sourceItem = {
+      id: itemId, type: 'commandExecution', status: 'completed',
+      command: 'npm test', cwd: root, commandActions: [], source: 'agent',
+      aggregatedOutput: 'ok', exitCode: 0, durationMs: 10, pluginId: null,
+      scriptPath: null, processId: null,
+    } as ThreadItem;
+    const snapshotEvents = [
+      normalizer.normalizeThreadSnapshot(sourceThread, false)!,
+      normalizer.normalizeTurnSnapshot(sourceThread, false, sourceTurn)!,
+      normalizer.normalizeItemSnapshot(sourceThread, false, sourceTurn, sourceItem)!,
+    ];
+    for (const event of snapshotEvents) await history.ingest(scopeA, event);
+
+    const liveStartedTurn = normalizer.normalize({
+      type: 'notification',
+      notification: {
+        method: 'turn/started', params: {
+          threadId, turn: { id: turnId, status: 'inProgress', startedAt: 1_001, completedAt: null, error: null },
+        },
+      },
+    } as unknown as RuntimeEvent, new Date('1970-01-01T00:16:42.000Z'))!;
+    const liveStartedItem = normalizer.normalize({
+      type: 'notification',
+      notification: {
+        method: 'item/started', params: {
+          threadId, turnId, startedAtMs: 1_001_000,
+          item: { ...sourceItem, status: 'inProgress', aggregatedOutput: null, exitCode: null },
+        },
+      },
+    } as unknown as RuntimeEvent)!;
+    await history.ingest(scopeA, liveStartedTurn);
+    await history.ingest(scopeA, liveStartedItem);
+    for (const event of snapshotEvents) await history.ingest(scopeA, event);
+
+    const rows = await database.query<{
+      approval_count: string;
+      event_count: string;
+      item_status: string;
+      tool_status: string;
+      turn_status: string;
+    }>(
+      `SELECT
+         turn_record.status AS turn_status,
+         item_record.lifecycle_status AS item_status,
+         call_record.status AS tool_status,
+         (SELECT count(*) FROM agent_events event_record
+          WHERE event_record.workspace_id = $1 AND event_record.created_by_user_id = $2
+            AND event_record.thread_id = thread_record.id) AS event_count,
+         (SELECT count(*) FROM approvals approval_record
+          WHERE approval_record.workspace_id = $1 AND approval_record.created_by_user_id = $2
+            AND approval_record.thread_id = thread_record.id) AS approval_count
+       FROM agent_threads thread_record
+       JOIN agent_turns turn_record ON turn_record.thread_id = thread_record.id
+       JOIN agent_items item_record ON item_record.turn_id = turn_record.id
+       JOIN tool_calls call_record ON call_record.item_id = item_record.id
+       WHERE thread_record.workspace_id = $1
+         AND thread_record.created_by_user_id = $2
+         AND thread_record.codex_thread_id = $3`,
+      [sharedWorkspace, userA, threadId],
+    );
+    expect(rows.rows[0]).toMatchObject({
+      turn_status: 'completed', item_status: 'completed', tool_status: 'completed',
+      event_count: '5', approval_count: '0',
+    });
   });
 
   it('keeps separate approvals when a raw JSON-RPC id is reused and resolves each row', async () => {

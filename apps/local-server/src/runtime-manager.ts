@@ -26,7 +26,19 @@ export interface RuntimeManagerOptions {
   historyLog?: (event: HistoryRecorderLogEvent & { userId: string; workspaceId: string }) => void;
   historyOptions?: Pick<
     RuntimeHistoryRecorderOptions,
-    'maxEventBytes' | 'maxOutboxBytes' | 'maxOutboxRecords' | 'retryInitialMs' | 'retryMaximumMs'
+    | 'maxEventBytes'
+    | 'maxOutboxBytes'
+    | 'maxOutboxRecords'
+    | 'reconciliationIntervalMs'
+    | 'reconciliationMaxItemsPerThread'
+    | 'reconciliationMaxThreadsPerState'
+    | 'reconciliationMaxTurnsPerThread'
+    | 'reconciliationPageSize'
+    | 'reconciliationRequestTimeoutMs'
+    | 'reconciliationRetryInitialMs'
+    | 'reconciliationRetryMaximumMs'
+    | 'retryInitialMs'
+    | 'retryMaximumMs'
   >;
   historySink?: HistoryEventSink;
   knowledgeService?: KnowledgeService;
@@ -171,6 +183,9 @@ export class RuntimeManager {
             created.history.start();
           }
           await runtime.initialize();
+          if (created.history && runtime.options.startAppServer !== false) {
+            created.history.startReconciliation();
+          }
           return runtime;
         }),
       };
@@ -291,9 +306,11 @@ export class RuntimeManager {
     entry.stopPromise ??= (async () => {
       try {
         const runtime = entry.runtime ?? await entry.promise;
+        entry.history?.cancelReconciliation();
         await runtime.stop();
         await entry.history?.stop();
       } catch {
+        entry.history?.cancelReconciliation();
         if (entry.runtime) await entry.runtime.stop().catch(() => undefined);
         await entry.history?.stop().catch(() => undefined);
       }
