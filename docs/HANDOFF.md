@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 3924217e19d1f200ccf54d50e02b97fef096c7df..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only d01c10e18beb8e446e617a60e02935d96586152b..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,18 +28,19 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-04 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `3924217e19d1f200ccf54d50e02b97fef096c7df` |
-| 제품 기준 commit | `feat: add workspace rename and soft archive` |
-| 완료 범위 | Phase 1~22 |
-| 다음 핵심 기능 | 기존 Codex thread의 PostgreSQL History initial backfill/reconciliation |
+| 제품 기준 HEAD | `d01c10e18beb8e446e617a60e02935d96586152b` |
+| 제품 기준 commit | `feat: backfill Codex thread history` |
+| 완료 범위 | Phase 1~23 |
+| 다음 핵심 기능 | 배포/upgrade와 backup/restore 재해 복구 |
 
-Phase 1~22에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~23에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
-throttling, workspace rename과 one-way soft archive까지 구현했다. 상세 계약은
+throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
+backfill/reconciliation까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0021](adr/0021-workspace-lifecycle.md)까지가 기준이다.
+[ADR 0022](adr/0022-app-server-history-backfill-reconciliation.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -60,9 +61,10 @@ Electron / React renderer
   검증한다. 같은 workspace의 다른 사용자도 `CODEX_HOME`, outbox와 raw runtime을 공유하지 않는다.
 - 공식 Codex App Server가 실행/resume/archive의 원본이다. PostgreSQL `agent_*`, `tool_calls`,
   `approvals`는 회고용 Saved DB History projection이며 공식 runtime 목록과 병합하지 않는다.
-- History는 공개 notification/server-request stream만 정규화한다. upstream SQLite, rollout JSONL 또는
-  그 밖의 내부 저장소를 제품 코드가 직접 읽거나 polling하지 않는다는
-  [ADR 0004](adr/0004-app-server-history-projection.md)의 경계를 유지한다.
+- History는 공개 notification/server-request stream과 read-only `thread/list`, `thread/turns/list`,
+  `thread/items/list` snapshot만 정규화한다. upstream SQLite, rollout JSONL 또는 그 밖의 내부 저장소를
+  제품 코드가 직접 읽거나 polling하지 않는다는 [ADR 0004](adr/0004-app-server-history-projection.md)의
+  경계를 유지한다.
 - PostgreSQL History와 RAG는 항상 `(workspace_id, created_by_user_id)` private scope다. Workspace
   owner/admin도 다른 사용자의 row를 읽을 수 없다. Archived workspace는 새 Product/Local 접근에서
   제외되지만 관련 DB row와 tenant 파일은 현재 보존된다.
@@ -104,113 +106,46 @@ Phase 22의 원본 결정은 [ADR 0021](adr/0021-workspace-lifecycle.md)이다.
 이는 해당 날짜와 commit의 증거다. Live OpenAI generation, 장시간 운영 재인가 cadence, visual pixel
 fidelity, 배포/복원은 이 결과가 증명하지 않는다.
 
-## 현재 핵심 공백: initial backfill/reconciliation
+## Phase 23 계약과 최종 검증
 
-현재 History는 **runtime-event-only projection**이다. `RuntimeHistoryRecorder`가 tenant runtime 생성 시점
-이후 받은 공개 event만 outbox에 넣으므로, 그 전에 `CODEX_HOME`에 존재하던 공식 Codex thread는 새
-lifecycle event가 발생하지 않으면 PostgreSQL Saved DB History에 나타나지 않는다. DB 장애 뒤 outbox
-replay는 이미 정규화된 event를 복구하지만, recorder가 한 번도 관측하지 않은 과거 thread를 만들지는
-못한다. 이 때문에 공식 sidebar와 Saved DB History 사이의 초기 누락을 메우는 backfill과 이후 bounded
-reconciliation이 없다.
+Phase 23의 원본 결정은 [ADR 0022](adr/0022-app-server-history-backfill-reconciliation.md)다.
 
-Backfill은 공식 runtime 원본을 PostgreSQL 원본으로 바꾸는 기능이 아니다. 읽기 전용 공개 App Server
-method로 tenant의 기존 thread를 열거하고, 현재 projection 형식으로 안전하게 재생성하는 보조 경로여야
-한다. UI의 official thread list와 Saved DB History를 계속 분리한다.
+- 인증된 tenant runtime 초기화 뒤 같은 App Server에서 active/archived thread, turn, item을 공개 pagination으로
+  읽어 기존 sanitizer → durable outbox → PostgreSQL projection 경로에 넣는다. SQLite/rollout/state DB를 직접
+  읽지 않으며 UI RPC, tool 실행, approval 응답을 유발하지 않는다.
+- 모든 공개 `ThreadSourceKind`를 명시하고 opaque cursor loop/malformed response를 fail-visible 처리한다. 기본
+  pass는 active/archived 각각 500 thread, thread당 1,000 turn/5,000 item으로 제한된다.
+- Live와 snapshot event ID는 `thread → turn → item → lifecycle` parent identity를 포함한다. Pending outbox도
+  event ID를 재시작 시 복원해 DB outage 중 반복 scan이 spool을 무한히 늘리지 않는다.
+- 성공 뒤 15분, partial/failure 뒤 5초~5분 backoff로 재실행한다. Active turn은 scan을 미루고, defer timer가
+  실행 중 request보다 먼저 끝나도 follow-up scan을 잃지 않는다. Runtime stop은 scan 취소 뒤 App Server와
+  outbox를 bounded하게 정리한다.
+- Snapshot에는 과거 approval 증거가 없으므로 approval을 합성하지 않는다. Credential-like field와 absolute
+  path는 redaction되고 log/status에는 payload, cursor, ID, response body를 넣지 않는다.
 
-### 구현을 시작할 파일
-
-| 파일 | 현재 책임 / backfill 시 확인할 지점 |
-| --- | --- |
-| [`apps/local-server/src/runtime-manager.ts`](../apps/local-server/src/runtime-manager.ts) | 인증된 tenant runtime 생성·재사용·종료와 recorder 설치 순서. Backfill의 시작, 취소, runtime eviction 상호작용을 여기서 결정한다. |
-| [`apps/local-server/src/runtime.ts`](../apps/local-server/src/runtime.ts) | UI RPC project/cwd 강제, 공개 runtime event와 approval ownership. Browser RPC와 내부 read-only reconciliation 경로를 혼동하지 않는다. |
-| [`apps/local-server/src/process/app-server-client.ts`](../apps/local-server/src/process/app-server-client.ts) | 초기화된 tenant App Server에 typed request를 보내는 경계. 별도 process나 raw store reader를 만들기 전에 이 경로를 사용한다. |
-| [`apps/local-server/src/history/recorder.ts`](../apps/local-server/src/history/recorder.ts) | live event normalizer와 tenant outbox 연결. Backfill과 live recorder가 한 tenant에서 중복 실행돼도 멱등이어야 한다. |
-| [`apps/local-server/src/history/normalizer.ts`](../apps/local-server/src/history/normalizer.ts) | 공개 event → bounded/redacted `HistoryIngestEvent`. Snapshot용 변환을 추가하더라도 sanitizer, lifecycle rank, source timestamp 규칙을 공유한다. |
-| [`apps/local-server/src/history/durable-outbox.ts`](../apps/local-server/src/history/durable-outbox.ts) | atomic rename/fsync, ordered at-least-once, bounded queue와 retry. Backfill도 DB에 직접 우회 insert하지 않는다. |
-| [`apps/local-server/src/history/sanitize.ts`](../apps/local-server/src/history/sanitize.ts) | 민감 키 redaction과 depth/entry/string/serialized-size 상한. 과거 item payload에도 동일하게 적용한다. |
-| [`packages/product-db/src/history-types.ts`](../packages/product-db/src/history-types.ts) | ingest/scope/read 계약. Backfill provenance나 checkpoint가 필요하면 명시적인 계약으로 추가한다. |
-| [`packages/product-db/src/history-repository.ts`](../packages/product-db/src/history-repository.ts) | advisory lock, `agent_events` dedupe ledger, aggregate upsert, lifecycle/source-time 회귀 방지, private read scope. |
-| [`packages/product-db/migrations/0003_agent_history_projection.sql`](../packages/product-db/migrations/0003_agent_history_projection.sql) | 현재 user-scoped history 제약과 index. 이 파일은 immutable이며 필요한 schema는 새 migration으로만 추가한다. |
-| [`apps/api/src/server.ts`](../apps/api/src/server.ts) | Saved DB History read authorization와 public DTO filtering. Backfill 운영 상태를 공개할 필요가 생겨도 credential/source payload를 노출하지 않는다. |
-| [`test/unit/history-projection.test.ts`](../test/unit/history-projection.test.ts) | sanitizer, semantic identity, outbox replay/overflow, recorder lifecycle의 unit 기준. |
-| [`test/integration/history-postgres.test.ts`](../test/integration/history-postgres.test.ts) | 실제 PostgreSQL 멱등, out-of-order, outage replay, tenant isolation과 cursor 기준. |
-| [`test/acceptance/full-stack.test.ts`](../test/acceptance/full-stack.test.ts) | real `codex.exe` → outbox → PostgreSQL → Product History와 workspace/session 격리 acceptance. |
-
-### 사용할 공개 protocol method
-
-- `thread/list`: opaque `cursor`/`nextCursor`로 tenant thread를 page한다. `useStateDbOnly`는 rollout
-  scan-and-repair 의미를 바꾸므로 성능 편의로 임의 활성화하지 않는다. UI 경로는 active project `cwd`를
-  강제하지만 initial tenant backfill의 project 범위는 별도로 결정하고 테스트해야 한다.
-- `thread/read`: metadata-only read가 가능하다. `includeTurns: true` full hydration은 현재 생성 protocol에서
-  deprecated이므로 새 구현의 기본 pagination으로 삼지 않는다.
-- `thread/turns/list`: opaque cursor로 turn을 page한다. 필요한 item detail 수준과 정렬 방향을 명시하고,
-  같은 turn이 live event와 겹칠 때 source timestamp/lifecycle rank를 보존한다.
-- `thread/items/list`: thread 전체 또는 turn별 item을 page한다. Tool snapshot은 공개 item의 최종 필드에서
-  유도하되 output delta를 다시 합성하거나 원본 크기로 저장하지 않는다.
-
-생성 type의 기준은
-[`ThreadListParams`](../packages/codex-protocol/src/generated/v2/ThreadListParams.ts),
-[`ThreadReadParams`](../packages/codex-protocol/src/generated/v2/ThreadReadParams.ts),
-[`ThreadTurnsListParams`](../packages/codex-protocol/src/generated/v2/ThreadTurnsListParams.ts),
-[`ThreadItemsListParams`](../packages/codex-protocol/src/generated/v2/ThreadItemsListParams.ts)다. Generated 파일을
-직접 고치지 않는다. 현재 고정 source가 제공하는 공개 method만 사용하며 SQLite/rollout parsing fallback을
-추가하지 않는다.
-
-### 반드시 유지할 설계 제한
-
-- **Tenant:** backfill scope는 브라우저가 보낸 user/workspace ID가 아니라 현재 인증과 active membership이
-  만든 runtime lease에서만 얻는다. 해당 tenant `CODEX_HOME` 밖을 scan하거나 다른 user/workspace row를
-  연결하지 않는다. Archived workspace를 background 작업이 다시 활성화해서도 안 된다.
-- **멱등성:** event identity는 page cursor, 관측 순서, 실행 시각이 아니라 thread/turn/item ID와 semantic
-  lifecycle/provenance에서 안정적으로 만든다. 재시작·처음부터 재열거·live event 경합이 동일 결과를 내야
-  한다. 기존 `(workspace_id, source_instance, source_event_id)` ledger와 lifecycle rank/source timestamp
-  회귀 방지를 우회하지 않는다.
-- **Outbox:** redaction과 최종 byte bound를 적용한 뒤 tenant outbox에 기록한다. PostgreSQL outage가 agent
-  실행을 막지 않아야 하고, 16 MiB/10,000 record 기본 상한, overflow/invalid spool의 fail-visible 동작을
-  유지한다. 대량 backfill은 queue 용량과 DB 부하를 고려해 bounded page/batch와 양보·취소가 필요하다.
-- **Reconciliation 상태:** opaque protocol cursor를 영구 truth로 간주하지 않는다. 실패 시 안전하게 처음부터
-  재열거해도 dedupe되는 설계를 우선하고, durable checkpoint가 필요하면 새 schema/migration, version,
-  invalid-cursor 복구와 tenant key를 명시한다.
-- **Approval:** live approval은 server-request와 resolve event의 공개 correlation으로만 기록된다. 과거 thread
-  snapshot에 같은 증거가 없다면 approval을 추정하거나 `approved`로 만들어서는 안 된다. Missing approval은
-  명시적 한계로 남기고, backfill이 approval prompt를 다시 열거나 응답, tool 실행, `turn/start`/resume을
-  유발하지 않게 한다.
-- **비밀과 payload:** full path, session/cookie/CSRF, authorization header, DB URL, provider key, raw request ID,
-  credential-like field를 checkpoint, outbox, DB, metric, log에 넣지 않는다. Project 표시에는 현재와 같이
-  canonical project ID 또는 cwd hash와 bounded basename만 사용한다.
-- **권한과 가용성:** backfill은 read-only background 보조 작업이다. 로그인/Local bootstrap/agent turn을
-  기다리게 하지 않고, membership/session 폐기와 runtime stop 시 bounded하게 중단한다.
+2026-09-04에 commit `d01c10e18beb8e446e617a60e02935d96586152b` 대상으로 전체 210 unit test, lint,
+typecheck, build, UI bundle/server-secret 검사, vendored Codex 6,687-file integrity, production smoke가 통과했다.
+격리 실제 PostgreSQL history 8개, real `codex.exe` pre-existing thread full-stack, Electron full-stack와
+workspace lifecycle/invitation/repository RAG acceptance도 통과했다. `test:history-postgres`는 이제 고유한
+`--rm` pgvector container를 만들고 `finally`에서 정리한다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P0 — Backfill/reconciliation ADR과 protocol fixture를 확정한다.** Source 범위, 시작 시점과 반복 정책,
-   pagination, provenance/event ID, live-event 경합, approval 누락, checkpoint/재시작, resource limit와 관측
-   상태를 결정한다. Exit: 새 ADR이 승인되고 고정 protocol fixture로 빈 history, 여러 page, cursor 실패,
-   malformed/oversized payload, runtime stop의 기대 결과가 테스트로 고정되어야 한다.
-2. **P0 — Tenant-scoped initial backfill을 구현한다.** 초기화된 tenant App Server를 공개 read method로만
-   page하고 기존 sanitizer → outbox → repository 경로에 넣는다. Exit: 기존 thread/turn/item/tool이 Saved DB
-   History에 나타나고, 두 번 실행·중간 crash·DB outage·live event 교차 실행 후 row와 상태가 중복/회귀하지
-   않으며 cross-user/workspace와 archived scope가 거부되어야 한다. Approval은 증거가 없을 때 생성되지
-   않아야 한다.
-3. **P0 — Bounded reconciliation과 acceptance를 완성한다.** startup을 막지 않는 scheduling, backoff,
-   cancellation, progress/error의 redacted observability를 추가한다. Exit: unit + 실제 PostgreSQL + real
-   `codex.exe` full-stack에서 사전 존재 thread import, 재시작 resume, outbox capacity, Product History UI 표시와
-   session/membership 폐기를 검증하고 전체 표준 suite가 통과해야 한다.
-4. **P1 — 배포와 upgrade runbook을 만든다.** Versioned Windows artifact, Product API/PostgreSQL 배치,
+1. **P0 — 배포와 upgrade runbook을 만든다.** Versioned Windows artifact, Product API/PostgreSQL 배치,
    migration-before-listen, health/readiness, secret 주입, 실패/rollback 책임을 정한다. Exit: production-like
    clean host에서 설치 → migrate → smoke → version 확인을 재현하고 실패 시 이전 artifact로 서비스 복구가
    문서화·연습되어야 한다.
-5. **P1 — 백업/복원과 재해 복구를 검증한다.** PostgreSQL과 tenant data/outbox의 일관된 범위, 암호화,
+2. **P0 — 백업/복원과 재해 복구를 검증한다.** PostgreSQL과 tenant data/outbox의 일관된 범위, 암호화,
    접근권한, RPO/RTO, WAL/snapshot retention을 정한다. Exit: 격리 환경 restore drill에서 인증, workspace,
    History/RAG와 pending outbox를 검증하고 측정한 RPO/RTO와 키 관리 절차를 기록해야 한다.
-6. **P1 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
+3. **P1 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
    expiry/revoke/rate limit/session 폐기와 generic error를 정한다. Exit: token 원문 비저장, enumeration 방지,
    경합·재사용·만료·세션 폐기와 실제 전달 실패 경로가 PostgreSQL/acceptance에서 검증되어야 한다.
-7. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
+4. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
    payload-free health/metric/alert를 만들고 history/RAG/audit/local file/export/delete/legal-hold 정책을
    별도 결정한다. Exit: failure injection으로 actionable alert와 secret-free diagnostic을 확인하고,
    retention/export/delete가 backup/WAL/replica 한계까지 문서화·검증되어야 한다.
-8. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
+5. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
 
@@ -241,8 +176,8 @@ npm run test:tenant-auth
 npm run test:full-stack
 ```
 
-실제 PostgreSQL 검증 중 `test:history-postgres`와 일부 opt-in suite는 안전한 test DB의 `DATABASE_URL`을
-명시해야 한다. 독립 harness는 실행 중인 Docker daemon과 `pgvector/pgvector:0.8.6-pg17` image를 요구하며
+`test:history-postgres`를 포함한 독립 harness는 실행 중인 Docker daemon과
+`pgvector/pgvector:0.8.6-pg17` image를 요구하며
 자신의 `--rm` container를 정리한다. Docker daemon 자체를 시작하거나 종료하지 않는다.
 
 Phase 22 회귀와 Electron acceptance 4종은 다음으로 재검증한다.
@@ -297,8 +232,9 @@ git status --short
   secure erasure, 사용자 export, workspace별 content retention은 아직 없다.
 - Retention은 일부 terminal auth/invitation/abuse row의 bounded cleanup이다. PostgreSQL MVCC, autovacuum,
   WAL/replica/snapshot/backup과 로컬 tenant file의 삭제를 보장하지 않는다.
-- History는 사용자 private projection이고 지연될 수 있다. 현재 backfill 부재 외에도 outbox가 가득 차거나
-  손상되면 새 event 수신이 fail-visible하게 멈춘다. 운영 metric/alert와 repair 도구는 아직 제한적이다.
+- History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
+  limit 밖 record가 누락될 수 있다. Outbox가 가득 차거나 손상되면 새 event 수신이 fail-visible하게 멈춘다.
+  운영 metric/alert와 repair 도구는 아직 제한적이다.
 - Workspace archive는 one-way 접근 차단이지 데이터 삭제가 아니다. DB row와 로컬 파일이 누적되며 다른
   client의 기존 socket은 기본 bounded 재인가 주기까지 잠시 살아 있을 수 있다.
 - RAG의 OpenAI embedding 경로는 generation provider가 local이어도 별도다. 명시적 consent와 조직의 외부
