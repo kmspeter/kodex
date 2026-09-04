@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { open, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -52,6 +53,33 @@ function waitForExit(child, timeoutMs = 20_000) {
     new Promise((resolve) => child.once('exit', () => resolve(true))),
     new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
+}
+
+function runPackagedVerifier() {
+  return new Promise((resolve, reject) => {
+    const appRoot = path.join(releaseRoot, 'resources', 'app');
+    const child = spawn(
+      path.join(releaseRoot, 'electron.exe'),
+      [path.join(appRoot, 'operations', 'kodex-release.mjs'), 'verify', '--path', releaseRoot],
+      {
+        cwd: releaseRoot,
+        env: {
+          ELECTRON_RUN_AS_NODE: '1',
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+        },
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore',
+      },
+    );
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0
+      ? resolve()
+      : reject(new Error(`Packaged release verifier exited with ${code ?? 'unknown'}.`)));
+  });
 }
 
 async function startReleasedApi(port) {
@@ -119,6 +147,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   });
   const manifest = await verifyReleaseArtifact(releaseRoot);
   expect(manifest.database.migrations.at(-1)?.version).toBe(10);
+  await runPackagedVerifier();
 
   const firstPort = await unusedLoopbackPort();
   const first = await startReleasedApi(firstPort);

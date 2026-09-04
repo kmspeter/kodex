@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import process from 'node:process';
 import { createReleaseArtifact, verifyReleaseArtifact } from './lib/release-artifact.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (process.versions.electron) process.noAsar = true;
 
 function argumentsFor(values) {
   const [command, ...rest] = values;
