@@ -4,6 +4,8 @@ Kodex는 공식 오픈소스 [OpenAI Codex](https://github.com/openai/codex)의 
 
 Kodex는 네트워크 차단기가 아닙니다. 모델 호출, Web Search, 원격 MCP, Git 네트워크 작업과 패키지 설치는 공식 Codex의 sandbox·approval과 사용자 설정에 따라 사용할 수 있습니다. Local Server는 생성 모델을 직접 호출하거나 tool을 선택하지 않으며, 공식 Codex App Server의 stdio JSONL을 localhost HTTP/WebSocket UI에 연결합니다. 예외적으로 private RAG를 명시적으로 켜면 등록 문서 chunk, 사용자가 preview에서 선택하고 다시 동의한 repository 파일 chunk, Knowledge 검색 미리보기 질의, 일반 turn의 첫 text 질의 embedding을 공식 Embeddings API에 직접 요청합니다. 자동화 prompt는 별도 opt-in일 때만 포함됩니다.
 
+현재 구현 기준, 검증 상태와 다음 작업은 [프로젝트 handoff](docs/HANDOFF.md)에 유지합니다.
+
 ## 구조
 
 ```text
