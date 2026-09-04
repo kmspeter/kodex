@@ -77,6 +77,12 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
+function setInput(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -137,6 +143,56 @@ describe('workspace switching UI', () => {
     await act(async () => betaAccountButton.click());
     const current = container.querySelector<HTMLButtonElement>('.workspace-option[aria-current="true"]');
     expect(current?.textContent).toContain('Beta');
+  });
+
+  it('immediately removes an archived active workspace and keeps stale account refreshes from restoring it', async () => {
+    const alphaClient = fakeClient(Promise.resolve(bootstrap));
+    const betaClient = fakeClient(Promise.resolve(bootstrap));
+    const clients = new Map([[workspaceA, alphaClient], [workspaceB, betaClient]]);
+    const createClient = vi.fn((workspaceId: string) => clients.get(workspaceId)!);
+    const authClient = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members: [] }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      archiveWorkspace: vi.fn().mockResolvedValue(undefined),
+      me: vi.fn().mockResolvedValue(account),
+    } as unknown as ProductAuthClient;
+    const onAccountRefresh = vi.fn();
+    const render = () => root.render(<ProductWorkspaceApp
+      account={account}
+      authClient={authClient}
+      loggingOut={false}
+      onLogout={vi.fn()}
+      onAccountRefresh={onAccountRefresh}
+      createClient={createClient}
+    />);
+
+    await act(async () => { render(); await flush(); });
+    await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.click());
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Workspace 관리'))?.click();
+      await flush();
+    });
+    const confirmation = container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')!;
+    await act(async () => { setInput(confirmation, 'Alpha'); });
+    await act(async () => {
+      container.querySelector<HTMLFormElement>('.workspace-archive-form')!.requestSubmit();
+      await flush();
+    });
+
+    expect(authClient.archiveWorkspace).toHaveBeenCalledWith(workspaceA, 'Alpha');
+    expect(authClient.me).toHaveBeenCalledOnce();
+    expect(onAccountRefresh).toHaveBeenCalledWith(account);
+    expect(alphaClient.close).toHaveBeenCalledOnce();
+    expect(createClient).toHaveBeenLastCalledWith(workspaceB);
+    expect(container.querySelector<HTMLButtonElement>('.account-button')?.getAttribute('aria-label')).toContain('Beta workspace');
+
+    await act(async () => { render(); await flush(); });
+    expect(container.querySelector<HTMLButtonElement>('.account-button')?.getAttribute('aria-label')).toContain('Beta workspace');
+    await act(async () => container.querySelector<HTMLButtonElement>('.account-button')!.click());
+    const options = Array.from(container.querySelectorAll<HTMLButtonElement>('.workspace-option'));
+    expect(options.some((option) => option.textContent?.includes('Alpha'))).toBe(false);
+    expect(options.some((option) => option.textContent?.includes('Beta'))).toBe(true);
   });
 
   it('preserves a selected membership on fresh context, scopes knowledge/history, and falls back on downgrade', async () => {

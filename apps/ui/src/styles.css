@@ -447,6 +447,11 @@ button { -webkit-tap-highlight-color: transparent; }
 .workspace-member-row span { color: var(--muted); font-size: 8.5px; }
 .workspace-permission-note, .workspace-management-error { border-radius: 7px; background: var(--panel-soft); padding: 9px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .workspace-management-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #9b3e38; }
+.workspace-danger-section { border: 1px solid #e6bcbc !important; border-radius: 10px; background: #fff8f7; padding: 12px !important; }
+.workspace-danger-section .dialog-icon { border-color: #e6bcbc; background: var(--red-soft); color: var(--red); }
+.workspace-danger-section .dialog-intro { padding-bottom: 10px; }
+.workspace-archive-note { margin: 0 2px 10px; color: #8b4a45; font-size: 9px; line-height: 1.5; }
+.workspace-archive-form .danger-action { min-height: 32px; border: 1px solid #dfaaa5; border-radius: 7px; padding: 0 10px; }
 .workspace-page-more { justify-self: center; margin-top: 4px; }
 .workspace-subheading { margin: 14px 0 7px; color: var(--muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
 .workspace-invitation-list { display: grid; gap: 5px; }

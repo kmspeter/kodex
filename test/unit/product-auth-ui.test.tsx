@@ -348,6 +348,36 @@ describe('product authentication UI', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores child context updates captured before a session generation change', async () => {
+    const client = new ProductAuthClient({
+      apiBase: 'http://localhost:47832',
+      development: true,
+      pageUrl: 'http://localhost:5173/',
+      fetch: vi.fn().mockResolvedValue(jsonResponse(responseContext)),
+    });
+    let updateContext!: (next: ProductAuthContext) => void;
+
+    await act(async () => {
+      root.render(<ProductAuthGate client={client}>{(account, _logout, _loggingOut, _client, update) => {
+        updateContext = update;
+        return <div>{account.user.displayName}</div>;
+      }}</ProductAuthGate>);
+      await flush();
+    });
+    expect(container.textContent).toContain('Person');
+
+    client.clearMemory();
+    await act(async () => {
+      updateContext({
+        ...context,
+        user: { ...context.user, displayName: 'Stale Person' },
+      });
+      await flush();
+    });
+    expect(container.textContent).toContain('Person');
+    expect(container.textContent).not.toContain('Stale Person');
+  });
+
   it('deduplicates focus/visibility checks and cleans timer, listeners, and pending fetch on unmount', async () => {
     vi.useFakeTimers();
     vi.setSystemTime('2026-08-31T00:00:00.000Z');

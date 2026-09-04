@@ -56,10 +56,23 @@ export function ProductWorkspaceApp(props: {
   createClient?: KodexClientFactory;
 }) {
   const [selection, setSelection] = useState<ProductRuntimeWorkspaceSelection | null>(null);
+  const [locallyArchived, setLocallyArchived] = useState<{ ids: Set<string>; userId: string }>(() => ({
+    ids: new Set(),
+    userId: props.account.user.id,
+  }));
   const [transitionTargetId, setTransitionTargetId] = useState<string | null>(null);
   const [managingWorkspace, setManagingWorkspace] = useState(false);
   const [managingSecurity, setManagingSecurity] = useState(false);
-  const account = props.account;
+  const archivedIds = locallyArchived.userId === props.account.user.id
+    ? locallyArchived.ids
+    : new Set<string>();
+  const account = archivedIds.size === 0 ? props.account : {
+    ...props.account,
+    workspaces: props.account.workspaces.filter((entry) => !archivedIds.has(entry.id)),
+    ...(props.account.defaultWorkspace && archivedIds.has(props.account.defaultWorkspace.id)
+      ? { defaultWorkspace: undefined }
+      : {}),
+  };
   const reconciledSelection = reconcileProductRuntimeWorkspace(account, selection);
   const workspace = reconciledSelection
     ? account.workspaces.find((membership) => membership.id === reconciledSelection.workspaceId)
@@ -77,6 +90,15 @@ export function ProductWorkspaceApp(props: {
     setSelection(reconciledSelection);
   }, [reconciledSelection, selection]);
 
+  function handleWorkspaceArchived(userId: string, workspaceId: string): void {
+    setLocallyArchived((current) => ({
+      userId,
+      ids: new Set(current.userId === userId ? [...current.ids, workspaceId] : [workspaceId]),
+    }));
+    setTransitionTargetId(null);
+    setManagingWorkspace(false);
+  }
+
   if (!workspace) {
     return <><main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="workspace-required-title">
       <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
@@ -88,7 +110,7 @@ export function ProductWorkspaceApp(props: {
       <button className="auth-submit" type="button" onClick={() => setManagingWorkspace(true)}>새 workspace 만들기</button>
       <button className="secondary-action" type="button" onClick={() => setManagingSecurity(true)}>Security</button>
       <button className="secondary-action" type="button" disabled={props.loggingOut} onClick={() => void props.onLogout()}>로그아웃</button>
-    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
+    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
   }
   return <><AuthenticatedApp
     key={`${props.account.user.id}:${workspace.id}`}
@@ -105,7 +127,7 @@ export function ProductWorkspaceApp(props: {
     onManageWorkspace={() => setManagingWorkspace(true)}
     onManageSecurity={() => setManagingSecurity(true)}
     workspaceId={workspace.id}
-  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
+  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
 }
 
 function AuthenticatedApp(props: {

@@ -58,7 +58,8 @@ export type WorkspaceOperationErrorCode =
   | 'forbidden'
   | 'not_found'
   | 'conflict'
-  | 'last_owner';
+  | 'last_owner'
+  | 'confirmation_mismatch';
 
 export type WorkspaceInvitationErrorCode =
   | 'conflict'
@@ -90,6 +91,7 @@ export class WorkspaceCursorError extends Error {
 
 export interface WorkspaceApplication {
   addMember(actorUserId: string, workspaceId: string, email: string, role: WorkspaceRole): Promise<WorkspaceMember>;
+  archiveWorkspace(actorUserId: string, workspaceId: string, confirmationName: string): Promise<void>;
   createWorkspace(actorUserId: string, name: string): Promise<WorkspaceRecord>;
   listMembers(actorUserId: string, workspaceId: string, options: WorkspacePageOptions): Promise<WorkspaceMemberPage>;
   removeMember(actorUserId: string, workspaceId: string, targetUserId: string): Promise<void>;
@@ -98,5 +100,6 @@ export interface WorkspaceApplication {
   createInvitation(actorUserId: string, workspaceId: string, email: string, role: WorkspaceInvitationRole): Promise<CreatedWorkspaceInvitation>;
   listInvitations(actorUserId: string, workspaceId: string, options: WorkspacePageOptions): Promise<WorkspaceInvitationPage>;
   previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
+  renameWorkspace(actorUserId: string, workspaceId: string, name: string): Promise<WorkspaceRecord>;
   revokeInvitation(actorUserId: string, workspaceId: string, invitationId: string): Promise<void>;
 }

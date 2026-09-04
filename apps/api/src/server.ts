@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import {
   isUuid,
+  isValidProductWorkspaceName,
   PRODUCT_HISTORY_DEFAULT_LIMIT,
   PRODUCT_HISTORY_MAX_LIMIT,
   PRODUCT_HISTORY_PREVIEW_CHARACTERS,
@@ -162,7 +163,8 @@ async function readJsonBody(request: IncomingMessage, limit: number): Promise<un
     throw new HttpError(400, 'invalid_request', 'Request body is invalid.');
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+    return JSON.parse(text) as unknown;
   } catch {
     throw new HttpError(400, 'invalid_request', 'Request body is invalid.');
   }
@@ -280,6 +282,7 @@ function errorResponse(response: ServerResponse, error: unknown): void {
       not_found: [404, 'not_found', 'The existing account or membership was not found.'],
       conflict: [409, 'membership_conflict', 'That account is already a workspace member.'],
       last_owner: [409, 'last_owner', 'A workspace must keep at least one owner.'],
+      confirmation_mismatch: [409, 'archive_confirmation_mismatch', 'Workspace archive confirmation did not match.'],
     } as const;
     const [status, code, message] = responses[error.code];
     json(response, status, { ok: false, error: { code, message } });
@@ -532,6 +535,29 @@ export class ProductApiServer {
         requireJson(request);
         const input = validateCreateWorkspace(await readJsonBody(request, this.config.maxBodyBytes));
         json(response, 201, publicWorkspace(await application.createWorkspace(context.user.id, input.name)));
+        return;
+      }
+      const workspaceMatch = /^\/api\/workspaces\/([^/]+)$/u.exec(url.pathname);
+      if (workspaceMatch && request.method === 'PATCH') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceMatch[1]);
+        requireJson(request);
+        const input = validateRenameWorkspace(await readJsonBody(request, this.config.maxBodyBytes));
+        json(response, 200, publicWorkspace(await this.#requireWorkspaces().renameWorkspace(
+          context.user.id,
+          workspaceId,
+          input.name,
+        )));
+        return;
+      }
+      if (workspaceMatch && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        const workspaceId = decodeUuidPath(workspaceMatch[1]);
+        requireJson(request);
+        const input = validateArchiveWorkspace(await readJsonBody(request, this.config.maxBodyBytes));
+        await this.#requireWorkspaces().archiveWorkspace(context.user.id, workspaceId, input.confirmationName);
+        response.statusCode = 204;
+        response.end();
         return;
       }
       const workspaceInvitationsMatch = /^\/api\/workspaces\/([^/]+)\/invitations$/u.exec(url.pathname);
@@ -1026,19 +1052,7 @@ function invalidWorkspaceInput(): never {
 }
 
 function workspaceName(value: unknown): string {
-  if (typeof value !== 'string' || value !== value.trim() || value !== value.normalize('NFC')) {
-    return invalidWorkspaceInput();
-  }
-  const characters = Array.from(value);
-  if (
-    characters.length < 1
-    || characters.length > 100
-    || /\s{2,}/u.test(value)
-    || characters.some((character) => {
-      const code = character.codePointAt(0) ?? 0;
-      return code < 32 || code === 127 || (code >= 0xD800 && code <= 0xDFFF);
-    })
-  ) return invalidWorkspaceInput();
+  if (!isValidProductWorkspaceName(value)) return invalidWorkspaceInput();
   return value;
 }
 
@@ -1070,6 +1084,16 @@ function workspaceEmail(value: unknown): string {
 function validateCreateWorkspace(value: unknown): { name: string } {
   if (!isRecord(value) || !exactKeys(value, ['name'])) return invalidWorkspaceInput();
   return { name: workspaceName(value.name) };
+}
+
+function validateRenameWorkspace(value: unknown): { name: string } {
+  if (!isRecord(value) || !exactKeys(value, ['name'])) return invalidWorkspaceInput();
+  return { name: workspaceName(value.name) };
+}
+
+function validateArchiveWorkspace(value: unknown): { confirmationName: string } {
+  if (!isRecord(value) || !exactKeys(value, ['confirmationName'])) return invalidWorkspaceInput();
+  return { confirmationName: workspaceName(value.confirmationName) };
 }
 
 function validateAddWorkspaceMember(value: unknown): { email: string; role: WorkspaceRole } {

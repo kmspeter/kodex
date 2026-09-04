@@ -40,12 +40,14 @@ Windows의 App Server가 command lifecycle을 실제로 만들기 전에 read-on
 | 경계 | acceptance harness가 사용하는 실제 계약 | 확인 항목 |
 | --- | --- | --- |
 | 프론트 인증 계약 | Product API `register`, `logout`, `login`, `me` HTTP + cookie/CSRF | default runnable workspace, session 폐기와 재로그인 |
-| Product API | build된 `apps/api/dist/main.js` process | 인증 상태 코드, Saved DB History list/detail, user/workspace scope |
-| Local Server | build된 `apps/local-server/dist/main.js` HTTP/WS process | product session bootstrap, local CSRF 설정, replay와 RPC, periodic session revalidation |
+| Product API | build된 `apps/api/dist/main.js` process | 인증 상태 코드, invitation/accept, 실제 workspace archive, Saved DB History list/detail, user/workspace scope |
+| Local Server | build된 `apps/local-server/dist/main.js` HTTP/WS process | product session bootstrap, local CSRF 설정, replay와 RPC, periodic session/workspace authorization revalidation |
 | 공식 agent process | 저장소 `bin/codex.exe app-server` stdio JSONL | `thread/start`, `turn/start`, tool call/output round trip, 공식 `turn/completed` |
 | PostgreSQL projection | 실제 migration과 `PostgresHistoryRepository`/Product history API | thread, completed turn, assistant item, completed shell result의 bounded polling |
 | tenant isolation | 사용자 A/B의 별도 cookie와 workspace | B의 A detail `404`, non-member workspace `403`, 별도 tenant data root, cross-scope WS 거부 |
-| session revocation | A의 실제 logout 후 Product API와 Local Server 재검증 | Product API `401`, 새 bootstrap/WS `401`, 기존 WS code `1008` 종료 |
+| workspace archive | owner A와 invited member B가 연결된 workspace의 실제 `DELETE /api/workspaces/:id` | `204`, A/B의 열린 workspace socket 모두 `1008`, 두 `/api/auth/me`는 `200`이며 archived workspace만 제외, Product history와 Local bootstrap/새 WS `403` |
+| unrelated scope 생존 | A의 별도 fallback workspace/socket, B의 personal workspace/socket | archive 뒤 두 socket 모두 `OPEN` 유지 |
+| session revocation | archive 검증 뒤 A의 실제 logout과 fallback scope 재검증 | Product history와 Local bootstrap/새 WS `401`, 기존 fallback WS code `1008` 종료 |
 
 흐름은 다음과 같다.
 
@@ -55,7 +57,9 @@ Product register/logout/login
   -> Local WebSocket replay + thread/start + turn/start
   -> real codex.exe -> keyless loopback Responses -> real shell tool -> final message
   -> Local history recorder/outbox -> PostgreSQL -> Product Saved DB History
-  -> user B isolation checks -> user A logout -> HTTP 401 + WS revocation
+  -> user B isolation/invitation -> shared workspace owner/member sockets
+  -> Product workspace archive -> archived HTTP/새 WS 403 + 기존 두 WS 1008
+  -> unrelated fallback/personal sockets survive -> user A logout -> fallback HTTP/새 WS 401 + 기존 WS 1008
 ```
 
 각 readiness, RPC, turn completion, projection, revocation과 전체 process에는 독립적인 timeout과 단계 이름을
@@ -79,5 +83,7 @@ test다. live OpenAI generation, live embedding, Web Search, remote MCP와 외�
 로컬과 opt-in CI job에는 Node/npm dependencies, 실행 중인 Docker daemon과 저장소에서 검증된
 `bin/codex.exe`가 필요하다. Docker image를 처음 받는 실행은 registry 접근도 필요하다. 기본 `npm test`에는
 이 파일을 포함하지 않아 Docker/build/process 비용을 추가하지 않는다. `KODEX_AUTH_REVALIDATE_MS`는 운영 기본
-5분을 유지하되 이 acceptance process만 100ms로 낮춰 logout 후 기존 socket 폐기를 bounded하게 관찰한다.
-기존 migration, vendor source와 generated protocol은 변경하지 않는다.
+5분을 유지하되 이 acceptance process가 시작한 Local Server에서만 100ms로 낮춰 archive와 logout 뒤 기존 socket
+폐기를 bounded하게 관찰한다. 이는 production 기본 5분의 실제 시간 경과를 검증하는 것이 아니라 동일한 DB
+재인가 경로를 테스트 interval로 가속하는 것이다. 기존 migration, vendor source와 generated protocol은 변경하지
+않는다.

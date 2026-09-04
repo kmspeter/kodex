@@ -159,6 +159,169 @@ describe('real PostgreSQL workspace membership product flow', () => {
     expect((await request(owner, `/api/workspaces/${workspace.id}/members/${owner.userId}`, 'DELETE')).status).toBe(409);
   });
 
+  it('renames and one-way archives without deleting product rows, while serializing invitation acceptance', async () => {
+    const [owner, admin, member, invitee, pending] = await Promise.all([
+      register('lifecycle-owner'),
+      register('lifecycle-admin'),
+      register('lifecycle-member'),
+      register('lifecycle-invitee'),
+      register('lifecycle-pending'),
+    ]);
+    const originalName = 'Lifecycle Original';
+    const renamedName = 'Lifecycle Renamed';
+    const workspace = await request(owner, '/api/workspaces', 'POST', { name: originalName })
+      .then((response) => response.json()) as { id: string };
+    expect((await request(owner, `/api/workspaces/${workspace.id}/members`, 'POST', {
+      email: email('lifecycle-admin'), role: 'admin',
+    })).status).toBe(201);
+    expect((await request(owner, `/api/workspaces/${workspace.id}/members`, 'POST', {
+      email: email('lifecycle-member'), role: 'member',
+    })).status).toBe(201);
+
+    const renamed = await request(admin, `/api/workspaces/${workspace.id}`, 'PATCH', { name: renamedName });
+    expect(renamed.status).toBe(200);
+    expect(await renamed.json()).toMatchObject({ id: workspace.id, name: renamedName, role: 'admin' });
+    expect((await request(member, `/api/workspaces/${workspace.id}`, 'PATCH', { name: 'Denied Rename' })).status).toBe(403);
+    expect((await request(admin, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: renamedName })).status).toBe(403);
+    expect((await request(owner, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: originalName })).status).toBe(409);
+
+    const acceptedInvitation = await request(owner, `/api/workspaces/${workspace.id}/invitations`, 'POST', {
+      email: email('lifecycle-invitee'), role: 'member',
+    }).then((response) => response.json()) as { invitation: { id: string }; token: string };
+    const pendingInvitation = await request(owner, `/api/workspaces/${workspace.id}/invitations`, 'POST', {
+      email: email('lifecycle-pending'), role: 'viewer',
+    }).then((response) => response.json()) as { invitation: { id: string }; token: string };
+
+    const retained = await database.transaction(async (client) => {
+      const project = await client.query<{ id: string }>(
+        `INSERT INTO projects (workspace_id, created_by_user_id, name, external_key)
+         VALUES ($1, $2, 'retained project', $3) RETURNING id`,
+        [workspace.id, owner.userId, `${prefix}-retained-project`],
+      );
+      const thread = await client.query<{ id: string }>(
+        `INSERT INTO agent_threads (workspace_id, project_id, created_by_user_id, codex_thread_id, title)
+         VALUES ($1, $2, $3, $4, 'retained thread') RETURNING id`,
+        [workspace.id, project.rows[0].id, owner.userId, `${prefix}-retained-thread`],
+      );
+      const source = await client.query<{ id: string }>(
+        `INSERT INTO knowledge_sources
+           (workspace_id, created_by_user_id, source_type, external_key, name, status)
+         VALUES ($1, $2, 'text', $3, 'retained source', 'ready') RETURNING id`,
+        [workspace.id, owner.userId, `${prefix}-retained-source`],
+      );
+      const document = await client.query<{ id: string }>(
+        `INSERT INTO documents
+           (workspace_id, source_id, created_by_user_id, source_document_id, title, content_text)
+         VALUES ($1, $2, $3, $4, 'retained document', 'retained content') RETURNING id`,
+        [workspace.id, source.rows[0].id, owner.userId, `${prefix}-retained-document`],
+      );
+      await client.query(
+        `INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, details)
+         VALUES ($1, $2, 'retained.marker', 'workspace', $3, '{"operation":"retain"}'::jsonb)`,
+        [workspace.id, owner.userId, workspace.id],
+      );
+      return { projectId: project.rows[0].id, threadId: thread.rows[0].id, sourceId: source.rows[0].id, documentId: document.rows[0].id };
+    });
+
+    const [acceptResponse, archiveResponse] = await Promise.all([
+      request(invitee, '/api/invitations/accept', 'POST', { token: acceptedInvitation.token }),
+      request(owner, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: renamedName }),
+    ]);
+    expect(archiveResponse.status).toBe(204);
+    expect([200, 410]).toContain(acceptResponse.status);
+
+    const archivedRow = await database.query<{ deleted_at: Date; name: string }>(
+      'SELECT deleted_at, name FROM workspaces WHERE id = $1', [workspace.id],
+    );
+    expect(archivedRow.rows[0]).toMatchObject({ name: renamedName });
+    expect(archivedRow.rows[0].deleted_at).toBeInstanceOf(Date);
+    const archivedAt = archivedRow.rows[0].deleted_at.toISOString();
+    expect((await request(owner, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: renamedName })).status).toBe(403);
+    expect((await database.query<{ deleted_at: Date }>('SELECT deleted_at FROM workspaces WHERE id = $1', [workspace.id])).rows[0].deleted_at.toISOString()).toBe(archivedAt);
+
+    const invitationRows = await database.query<{ accepted_at: Date | null; id: string; revoked_at: Date | null }>(
+      `SELECT id, accepted_at, revoked_at FROM workspace_invitations
+       WHERE id = ANY($1::uuid[]) ORDER BY id`,
+      [[acceptedInvitation.invitation.id, pendingInvitation.invitation.id]],
+    );
+    const unresolved = invitationRows.rows.find((entry) => entry.id === pendingInvitation.invitation.id)!;
+    expect(unresolved.accepted_at).toBeNull();
+    expect(unresolved.revoked_at).toBeInstanceOf(Date);
+    const raced = invitationRows.rows.find((entry) => entry.id === acceptedInvitation.invitation.id)!;
+    expect(Boolean(raced.accepted_at) !== Boolean(raced.revoked_at)).toBe(true);
+
+    const preserved = await database.query<{
+      audit_count: string; document_count: string; member_count: string; project_count: string; source_count: string; thread_count: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM workspace_members WHERE workspace_id = $1) AS member_count,
+         (SELECT count(*) FROM projects WHERE workspace_id = $1 AND id = $2) AS project_count,
+         (SELECT count(*) FROM agent_threads WHERE workspace_id = $1 AND id = $3) AS thread_count,
+         (SELECT count(*) FROM knowledge_sources WHERE workspace_id = $1 AND id = $4) AS source_count,
+         (SELECT count(*) FROM documents WHERE workspace_id = $1 AND id = $5) AS document_count,
+         (SELECT count(*) FROM audit_logs WHERE workspace_id = $1) AS audit_count`,
+      [workspace.id, retained.projectId, retained.threadId, retained.sourceId, retained.documentId],
+    );
+    expect(Number(preserved.rows[0].member_count)).toBeGreaterThanOrEqual(3);
+    expect(preserved.rows[0]).toMatchObject({ project_count: '1', thread_count: '1', source_count: '1', document_count: '1' });
+    expect(Number(preserved.rows[0].audit_count)).toBeGreaterThanOrEqual(3);
+
+    const me = await request(owner, '/api/auth/me').then((response) => response.json()) as { workspaces: Array<{ id: string }> };
+    expect(me.workspaces.some((entry) => entry.id === workspace.id)).toBe(false);
+    const deniedRequests = await Promise.all([
+      request(owner, `/api/workspaces/${workspace.id}/members`),
+      request(owner, `/api/workspaces/${workspace.id}/invitations`),
+      request(owner, `/api/workspaces/${workspace.id}`, 'PATCH', { name: 'No Resurrection' }),
+      request(owner, `/api/workspaces/${workspace.id}/members`, 'POST', { email: email('lifecycle-pending'), role: 'viewer' }),
+      request(owner, `/api/workspaces/${workspace.id}/members/${member.userId}`, 'PATCH', { role: 'viewer' }),
+      request(owner, `/api/workspaces/${workspace.id}/members/${member.userId}`, 'DELETE'),
+      request(owner, `/api/workspaces/${workspace.id}/invitations`, 'POST', { email: email('lifecycle-pending'), role: 'viewer' }),
+      request(owner, `/api/workspaces/${workspace.id}/invitations/${pendingInvitation.invitation.id}`, 'DELETE'),
+    ]);
+    expect(deniedRequests.map((response) => response.status)).toEqual(Array(8).fill(403));
+    expect((await request(pending, '/api/invitations/accept', 'POST', { token: pendingInvitation.token })).status).toBe(410);
+    const preview = await fetch(`${baseUrl}/api/invitations/preview`, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: pendingInvitation.token }),
+    });
+    expect(preview.status).toBe(410);
+
+    const lifecycleAudit = await database.query<{ action: string; details: Record<string, string>; target_id: string }>(
+      `SELECT action, details, target_id FROM audit_logs
+       WHERE workspace_id = $1 AND action IN ('workspace.renamed', 'workspace.archived') ORDER BY id`,
+      [workspace.id],
+    );
+    expect(lifecycleAudit.rows).toEqual([
+      { action: 'workspace.renamed', details: { operation: 'rename' }, target_id: workspace.id },
+      { action: 'workspace.archived', details: { operation: 'archive' }, target_id: workspace.id },
+    ]);
+    const serializedAudit = JSON.stringify(lifecycleAudit.rows);
+    for (const secretValue of [originalName, renamedName, email('lifecycle-invitee'), acceptedInvitation.token, pendingInvitation.token]) {
+      expect(serializedAudit).not.toContain(secretValue);
+    }
+  });
+
+  it('serializes concurrent rename and archive without resurrecting an archived workspace', async () => {
+    const owner = await register('rename-archive-race');
+    const workspace = await request(owner, '/api/workspaces', 'POST', { name: 'Rename Race' })
+      .then((response) => response.json()) as { id: string };
+    const [renameResponse, archiveResponse] = await Promise.all([
+      request(owner, `/api/workspaces/${workspace.id}`, 'PATCH', { name: 'Rename Won' }),
+      request(owner, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: 'Rename Race' }),
+    ]);
+    const statuses = [renameResponse.status, archiveResponse.status];
+    expect([[403, 204], [200, 409]]).toContainEqual(statuses);
+    if (archiveResponse.status === 409) {
+      expect((await request(owner, `/api/workspaces/${workspace.id}`, 'DELETE', { confirmationName: 'Rename Won' })).status).toBe(204);
+    }
+    const row = await database.query<{ deleted_at: Date | null; name: string }>(
+      'SELECT name, deleted_at FROM workspaces WHERE id = $1', [workspace.id],
+    );
+    expect(row.rows[0].deleted_at).toBeInstanceOf(Date);
+    expect(['Rename Race', 'Rename Won']).toContain(row.rows[0].name);
+    expect((await request(owner, `/api/workspaces/${workspace.id}`, 'PATCH', { name: 'Resurrected' })).status).toBe(403);
+  });
+
   it('paginates a large tied member set with opaque scoped keysets across a middle mutation', async () => {
     const owner = await register('page-owner');
     const workspace = await request(owner, '/api/workspaces', 'POST', { name: 'Paged Members' })

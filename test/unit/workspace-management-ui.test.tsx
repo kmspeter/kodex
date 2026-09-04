@@ -31,6 +31,12 @@ function setInput(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -89,6 +95,79 @@ describe('workspace management dialog', () => {
     expect(container.querySelector('[aria-label="새 workspace 초대 링크"]')).toBeNull();
   });
 
+  it('allows a 100-code-point astral name through create, rename, and archive confirmation', async () => {
+    const astralBoundary = '😀'.repeat(100);
+    const astralWorkspace = { ...base.workspaces[0], name: astralBoundary };
+    const astralAccount: ProductAuthContext = { ...base, workspaces: [astralWorkspace] };
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      createWorkspace: vi.fn().mockResolvedValue({ ...astralWorkspace, id: createdId }),
+      renameWorkspace: vi.fn().mockResolvedValue(astralWorkspace),
+      archiveWorkspace: vi.fn().mockResolvedValue(undefined),
+      me: vi.fn().mockResolvedValue(astralAccount),
+    } as unknown as ProductAuthClient;
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+
+    const createInput = container.querySelector<HTMLInputElement>('input[placeholder="예: Platform Team"]')!;
+    const createForm = createInput.closest('form')!;
+    expect(createInput.maxLength).toBe(200);
+    await act(async () => { setInput(createInput, astralBoundary); });
+    expect(createForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    await act(async () => { createForm.requestSubmit(); await flush(); });
+    expect(client.createWorkspace).toHaveBeenCalledWith(astralBoundary);
+
+    const renameInput = container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!;
+    const renameForm = renameInput.closest('form')!;
+    expect(renameInput.maxLength).toBe(200);
+    await act(async () => { setInput(renameInput, astralBoundary); });
+    expect(renameForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    await act(async () => { renameForm.requestSubmit(); await flush(); });
+    expect(client.renameWorkspace).toHaveBeenCalledWith(workspaceId, astralBoundary);
+
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={astralAccount} activeWorkspace={astralWorkspace} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+    const archiveInput = container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')!;
+    const archiveForm = archiveInput.closest('form')!;
+    expect(archiveInput.maxLength).toBe(200);
+    await act(async () => { setInput(archiveInput, astralBoundary); });
+    expect(archiveForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    await act(async () => { archiveForm.requestSubmit(); await flush(); });
+    expect(client.archiveWorkspace).toHaveBeenCalledWith(workspaceId, astralBoundary);
+  });
+
+  it('defensively blocks over-limit create and rename submissions', async () => {
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      createWorkspace: vi.fn(),
+      renameWorkspace: vi.fn(),
+    } as unknown as ProductAuthClient;
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+
+    const createInput = container.querySelector<HTMLInputElement>('input[placeholder="예: Platform Team"]')!;
+    const createForm = createInput.closest('form')!;
+    await act(async () => { setInput(createInput, 'a'.repeat(101)); });
+    expect(createForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    await act(async () => { createForm.requestSubmit(); await flush(); });
+    expect(client.createWorkspace).not.toHaveBeenCalled();
+
+    const renameInput = container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!;
+    const renameForm = renameInput.closest('form')!;
+    await act(async () => { setInput(renameInput, '😀'.repeat(101)); });
+    expect(renameForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    await act(async () => { renameForm.requestSubmit(); await flush(); });
+    expect(client.renameWorkspace).not.toHaveBeenCalled();
+  });
+
   it('offers manual selection when clipboard access fails', async () => {
     const invitation = {
       id: '40000000-0000-4000-8000-000000000001', workspaceId, targetEmail: 'member@example.com',
@@ -111,19 +190,210 @@ describe('workspace management dialog', () => {
     expect(container.querySelector<HTMLInputElement>('[aria-label="새 workspace 초대 링크"]')?.selectionStart).toBe(0);
   });
 
-  it('shows member/viewer permission guidance and disables every management control', async () => {
+  it('shows rename to owners and admins, archive only to owners, and no lifecycle controls to members', async () => {
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+    } as unknown as ProductAuthClient;
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+    expect(container.querySelector('.workspace-rename-form')).not.toBeNull();
+    expect(container.querySelector('.workspace-archive-form')).not.toBeNull();
+    expect(container.textContent).toContain('새 접근은 즉시 차단');
+    expect(container.textContent).toContain('최대 5분 주기의 재인가');
+
+    const adminAccount = { ...base, workspaces: [{ ...base.workspaces[0], role: 'admin' as const }] };
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={adminAccount} activeWorkspace={adminAccount.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+    expect(container.querySelector('.workspace-rename-form')).not.toBeNull();
+    expect(container.querySelector('.workspace-archive-form')).toBeNull();
+
     const memberAccount = { ...base, workspaces: [{ ...base.workspaces[0], role: 'member' as const }] };
-    const client = { workspaceMembers: vi.fn().mockResolvedValue({ members }), workspaceInvitations: vi.fn() } as unknown as ProductAuthClient;
     await act(async () => {
       root.render(<WorkspaceManagementDialog account={memberAccount} activeWorkspace={memberAccount.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
       await flush();
     });
+    expect(container.querySelector('.workspace-rename-form')).toBeNull();
+    expect(container.querySelector('.workspace-archive-form')).toBeNull();
     expect(container.textContent).toContain('관리할 수 없습니다');
     expect(container.querySelector('.member-add-form')).toBeNull();
     const memberRole = container.querySelector<HTMLSelectElement>('[aria-label="member@example.com 역할"]');
     const remove = container.querySelector<HTMLButtonElement>('[aria-label="member@example.com 제거"]');
     expect(memberRole?.disabled).toBe(true);
     expect(remove?.disabled).toBe(true);
+  });
+
+  it('validates rename input, reports failures, and refreshes the account after success', async () => {
+    const refreshed: ProductAuthContext = {
+      ...base,
+      defaultWorkspace: { ...base.workspaces[0], name: 'Platform Core' },
+      workspaces: [{ ...base.workspaces[0], name: 'Platform Core' }],
+    };
+    const renameWorkspace = vi.fn()
+      .mockRejectedValueOnce(new Error('rename denied'))
+      .mockResolvedValueOnce({ ...base.workspaces[0], name: 'Platform Core' });
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      renameWorkspace,
+      me: vi.fn().mockResolvedValue(refreshed),
+    } as unknown as ProductAuthClient;
+    const onRefresh = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={onRefresh} />);
+      await flush();
+    });
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!;
+    const form = container.querySelector<HTMLFormElement>('.workspace-rename-form')!;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    await act(async () => { setInput(input, ' Platform Core'); });
+    expect(submit.disabled).toBe(true);
+    await act(async () => { form.requestSubmit(); await flush(); });
+    expect(renameWorkspace).not.toHaveBeenCalled();
+
+    await act(async () => { setInput(input, 'Rejected Team'); });
+    await act(async () => { form.requestSubmit(); await flush(); });
+    expect(renameWorkspace).toHaveBeenCalledWith(workspaceId, 'Rejected Team');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('rename denied');
+    expect(client.me).not.toHaveBeenCalled();
+
+    await act(async () => { setInput(input, 'Platform Core'); });
+    await act(async () => { form.requestSubmit(); await flush(); });
+    expect(renameWorkspace).toHaveBeenLastCalledWith(workspaceId, 'Platform Core');
+    expect(client.me).toHaveBeenCalledOnce();
+    expect(onRefresh).toHaveBeenCalledWith(refreshed);
+  });
+
+  it('requires an exact archive confirmation, prevents duplicate submission, and refreshes after local removal', async () => {
+    const archiveResult = deferred<void>();
+    const accountResult = deferred<ProductAuthContext>();
+    const archiveWorkspace = vi.fn(() => archiveResult.promise);
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      archiveWorkspace,
+      me: vi.fn(() => accountResult.promise),
+    } as unknown as ProductAuthClient;
+    const onArchived = vi.fn();
+    const onRefresh = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onArchived={onArchived} onClose={vi.fn()} onRefresh={onRefresh} />);
+      await flush();
+    });
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')!;
+    const form = container.querySelector<HTMLFormElement>('.workspace-archive-form')!;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submit.disabled).toBe(true);
+    await act(async () => { setInput(input, 'platform'); });
+    expect(submit.disabled).toBe(true);
+    await act(async () => { setInput(input, 'Platform'); });
+    expect(submit.disabled).toBe(false);
+
+    await act(async () => {
+      form.requestSubmit();
+      form.requestSubmit();
+      await Promise.resolve();
+    });
+    expect(archiveWorkspace).toHaveBeenCalledOnce();
+    expect(archiveWorkspace).toHaveBeenCalledWith(workspaceId, 'Platform');
+
+    await act(async () => { archiveResult.resolve(undefined); await flush(); });
+    expect(onArchived).toHaveBeenCalledWith(ownerId, workspaceId);
+    expect(client.me).toHaveBeenCalledOnce();
+    expect(onRefresh).not.toHaveBeenCalled();
+
+    const refreshed = { ...base, defaultWorkspace: undefined, workspaces: [] };
+    await act(async () => { accountResult.resolve(refreshed); await flush(); });
+    expect(onRefresh).toHaveBeenCalledWith(refreshed);
+  });
+
+  it('aborts and ignores a delayed archive refresh after the dialog unmounts', async () => {
+    const accountResult = deferred<ProductAuthContext>();
+    let refreshSignal: AbortSignal | undefined;
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      archiveWorkspace: vi.fn().mockResolvedValue(undefined),
+      me: vi.fn((options?: { signal?: AbortSignal }) => {
+        refreshSignal = options?.signal;
+        return accountResult.promise;
+      }),
+    } as unknown as ProductAuthClient;
+    const onRefresh = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onArchived={vi.fn()} onClose={vi.fn()} onRefresh={onRefresh} />);
+      await flush();
+    });
+    await act(async () => {
+      setInput(container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')!, 'Platform');
+      container.querySelector<HTMLFormElement>('.workspace-archive-form')!.requestSubmit();
+      await flush();
+    });
+    expect(refreshSignal?.aborted).toBe(false);
+
+    await act(async () => root.render(<div>archived workspace removed</div>));
+    expect(refreshSignal?.aborted).toBe(true);
+    await act(async () => {
+      accountResult.resolve({ ...base, defaultWorkspace: undefined, workspaces: [] });
+      await flush();
+    });
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('does not let a stale rename completion unlock or refresh a newer workspace request', async () => {
+    const otherWorkspaceId = '20000000-0000-4000-8000-000000000003';
+    const otherWorkspace = { id: otherWorkspaceId, name: 'Other Workspace', slug: 'other', role: 'owner' as const };
+    const otherAccount: ProductAuthContext = { ...base, defaultWorkspace: otherWorkspace, workspaces: [...base.workspaces, otherWorkspace] };
+    const refreshed: ProductAuthContext = {
+      ...otherAccount,
+      defaultWorkspace: { ...otherWorkspace, name: 'Other Updated' },
+      workspaces: [base.workspaces[0], { ...otherWorkspace, name: 'Other Updated' }],
+    };
+    const first = deferred<(typeof base.workspaces)[number]>();
+    const second = deferred<typeof otherWorkspace>();
+    const renameWorkspace = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      renameWorkspace,
+      me: vi.fn().mockResolvedValue(refreshed),
+    } as unknown as ProductAuthClient;
+    const onRefresh = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={onRefresh} />);
+      await flush();
+    });
+    await act(async () => { setInput(container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!, 'Old Updated'); });
+    await act(async () => {
+      container.querySelector<HTMLFormElement>('.workspace-rename-form')!.requestSubmit();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={otherAccount} activeWorkspace={otherWorkspace} client={client} onClose={vi.fn()} onRefresh={onRefresh} />);
+      await flush();
+    });
+    const nextForm = container.querySelector<HTMLFormElement>('.workspace-rename-form')!;
+    await act(async () => { setInput(container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!, 'Other Updated'); });
+    await act(async () => { nextForm.requestSubmit(); await Promise.resolve(); });
+    expect(renameWorkspace).toHaveBeenCalledTimes(2);
+
+    await act(async () => { first.resolve({ ...base.workspaces[0], name: 'Old Updated' }); await flush(); });
+    expect(onRefresh).not.toHaveBeenCalled();
+    await act(async () => { nextForm.requestSubmit(); await flush(); });
+    expect(renameWorkspace).toHaveBeenCalledTimes(2);
+
+    await act(async () => { second.resolve({ ...otherWorkspace, name: 'Other Updated' }); await flush(); });
+    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(onRefresh).toHaveBeenCalledWith(refreshed);
   });
 
   it('keeps first-page data while independently retrying and accumulating more pages', async () => {
@@ -222,13 +492,21 @@ describe('workspace management dialog', () => {
       await flush();
     });
     const emailInput = container.querySelector<HTMLInputElement>('input[type="email"]')!;
-    await act(async () => { setInput(emailInput, 'stale@example.com'); });
+    const renameInput = container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')!;
+    const archiveInput = container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')!;
+    await act(async () => {
+      setInput(emailInput, 'stale@example.com');
+      setInput(renameInput, 'Stale Rename');
+      setInput(archiveInput, 'Platform');
+    });
     await act(async () => {
       root.render(<WorkspaceManagementDialog account={otherAccount} activeWorkspace={otherAccount.workspaces[1]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
       await flush();
     });
     expect(firstSignal?.aborted).toBe(true);
     expect(container.querySelector<HTMLInputElement>('input[type="email"]')?.value).toBe('');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="새 workspace 이름"]')?.value).toBe('Other Workspace');
+    expect(container.querySelector<HTMLInputElement>('[aria-label="보관할 workspace 이름 확인"]')?.value).toBe('');
     await act(async () => { resolveFirst({ members }); await flush(); });
     expect(container.textContent).toContain('Other');
     expect(container.textContent).not.toContain('member@example.com');

@@ -101,6 +101,14 @@ export class ProductAuthConfigurationError extends Error {
   }
 }
 
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function abortError(): DOMException {
+  return new DOMException('The operation was aborted.', 'AbortError');
+}
+
 interface ParsedAuthResponse {
   context: ProductAuthContext;
   csrfToken: string;
@@ -312,6 +320,7 @@ export class ProductAuthClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #unauthenticatedListeners = new Set<() => void>();
   #csrfToken: string | null = null;
+  #sessionGeneration = 0;
 
   constructor(options: ProductAuthClientOptions = {}) {
     const pageUrl = options.pageUrl ?? window.location.href;
@@ -328,11 +337,13 @@ export class ProductAuthClient {
   }
 
   async me(options: { signal?: AbortSignal } = {}): Promise<ProductAuthContext> {
+    const generation = this.#sessionGeneration;
     const response = await this.#request('/api/auth/me', {
       method: 'GET',
       signal: options.signal,
     });
     const parsed = parseProductAuthResponse(await this.#json(response), false);
+    if (options.signal?.aborted || generation !== this.#sessionGeneration) throw abortError();
     this.#csrfToken = parsed.csrfToken;
     return parsed.context;
   }
@@ -350,18 +361,21 @@ export class ProductAuthClient {
   }
 
   async logout(): Promise<void> {
-    if (!this.#csrfToken) {
+    const csrfToken = this.#csrfToken;
+    if (!csrfToken) {
       throw new ProductAuthError('invalid-response', 'No CSRF proof is available for logout.');
     }
+    // Invalidate every request started by the authenticated render before the
+    // network round trip, while retaining a local proof for this logout only.
+    this.clearMemory();
     const response = await this.#request('/api/auth/logout', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.#csrfToken },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
       body: '{}',
     });
     if (response.status !== 204) {
       throw new ProductAuthError('invalid-response', 'The logout response was invalid.', response.status);
     }
-    this.#csrfToken = null;
   }
 
   async sessions(): Promise<ProductSession[]> {
@@ -420,6 +434,33 @@ export class ProductAuthClient {
       return parseProductWorkspace(await this.#json(response));
     } catch {
       throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid workspace.');
+    }
+  }
+
+  async renameWorkspace(workspaceId: string, name: string): Promise<ProductWorkspace> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, ''),
+      'PATCH',
+      { name },
+    );
+    if (response.status !== 200) {
+      throw new ProductAuthError('invalid-response', 'The workspace rename response was invalid.', response.status);
+    }
+    try {
+      return parseProductWorkspace(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid workspace.');
+    }
+  }
+
+  async archiveWorkspace(workspaceId: string, confirmationName: string): Promise<void> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, ''),
+      'DELETE',
+      { confirmationName },
+    );
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The workspace archive response was invalid.', response.status);
     }
   }
 
@@ -584,6 +625,11 @@ export class ProductAuthClient {
 
   clearMemory(): void {
     this.#csrfToken = null;
+    this.#sessionGeneration += 1;
+  }
+
+  get sessionGeneration(): number {
+    return this.#sessionGeneration;
   }
 
   onUnauthenticated(listener: () => void): () => void {
@@ -658,7 +704,7 @@ export class ProductAuthClient {
   }
 
   #invalidateSession(): void {
-    this.#csrfToken = null;
+    this.clearMemory();
     for (const listener of this.#unauthenticatedListeners) listener();
   }
 
@@ -706,6 +752,7 @@ export class ProductAuthClient {
     expectedStatus: number,
     input: Record<string, unknown>,
   ): Promise<ProductAuthContext> {
+    const generation = this.#sessionGeneration;
     const response = await this.#request(pathname, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -715,11 +762,14 @@ export class ProductAuthClient {
       throw new ProductAuthError('invalid-response', 'The authentication response status was invalid.', response.status);
     }
     const parsed = parseProductAuthResponse(await this.#json(response), true);
+    if (generation !== this.#sessionGeneration) throw abortError();
+    this.clearMemory();
     this.#csrfToken = parsed.csrfToken;
     return parsed.context;
   }
 
   async #request(pathname: string, init: RequestInit): Promise<Response> {
+    const generation = this.#sessionGeneration;
     let response: Response;
     try {
       const headers = init.headers instanceof Headers || Array.isArray(init.headers)
@@ -732,14 +782,16 @@ export class ProductAuthClient {
         cache: 'no-store',
         headers,
       });
-    } catch {
+    } catch (error) {
+      if (init.signal?.aborted || isAbortError(error)) throw abortError();
       throw new ProductAuthError('unavailable', 'The authentication API is unavailable.');
     }
     if (response.ok) return response;
 
     const error = parseErrorResponse(await this.#json(response));
+    if (init.signal?.aborted) throw abortError();
     if (response.status === 401 && error.code === 'unauthenticated') {
-      this.#invalidateSession();
+      if (generation === this.#sessionGeneration) this.#invalidateSession();
       throw new ProductAuthError('unauthenticated', error.message, response.status, error.code);
     }
     if (response.status >= 500) {

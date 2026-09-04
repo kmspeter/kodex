@@ -3,7 +3,9 @@
 - 상태: 승인
 - 날짜: 2026-09-03
 
-> 후속 결정: pending copy-link invitation은 ADR 0016에서 추가되었다. 이 문서의 existing-account 직접 추가
+> 후속 결정: pending copy-link invitation은 [ADR 0016](0016-hash-only-workspace-invitations.md), keyset
+> pagination은 [ADR 0018](0018-workspace-management-keyset-pagination.md), workspace rename과 one-way soft
+> archive는 [ADR 0021](0021-workspace-lifecycle.md)에서 추가되었다. 이 문서의 existing-account 직접 추가
 > 계약과 last-owner 정책은 그대로 유지된다.
 
 ## 배경과 결정
@@ -66,6 +68,7 @@ document, chunk, query/citation은 계속 `(workspace_id, created_by_user_id)` �
 
 ## 남은 한계
 
-초대/이메일/가입 전 pending member, workspace 삭제·rename, 대량 member 관리, 감사 로그 UI/export, 분산 rate
-limit은 범위 밖이다. member 목록은 현재 최대 10,000개의 strict response를 허용하지만 server pagination은
-없다. owner transfer는 원자적인 단일 제품 동작이 아니라 위의 안전한 두 단계 절차다.
+외부 email delivery와 reminder/resend, workspace restore/hard delete/secure erasure/cascading cleanup,
+대량 member 관리, 감사 로그 UI/export와 distributed edge/multi-database global rate limit은 범위 밖이다.
+owner transfer는 원자적인 단일 제품 동작이 아니라 위의 안전한 두 단계 절차다. 현재 제공되는 pending
+copy-link invitation, keyset pagination과 workspace lifecycle의 상세 경계는 위 후속 ADR을 따른다.

@@ -2,6 +2,26 @@
 export const PRODUCT_SESSION_COOKIE_NAME = 'kodex_product_session';
 export const PRODUCT_WORKSPACE_HEADER_NAME = 'X-Kodex-Workspace-Id';
 export const PRODUCT_WORKSPACE_QUERY_PARAM = 'workspace_id';
+export const PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS = 100;
+export const PRODUCT_WORKSPACE_NAME_MAX_UTF8_BYTES = 400;
+/** HTML maxLength counts UTF-16 code units; a Unicode code point can require two. */
+export const PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS = PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS * 2;
+
+/** Browser-safe workspace-name predicate shared by Product API and UI boundaries. */
+export function isValidProductWorkspaceName(value: unknown): value is string {
+  if (typeof value !== 'string' || value !== value.trim() || value !== value.normalize('NFC')) {
+    return false;
+  }
+  const characters = Array.from(value);
+  return characters.length >= 1
+    && characters.length <= PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS
+    && new TextEncoder().encode(value).byteLength <= PRODUCT_WORKSPACE_NAME_MAX_UTF8_BYTES
+    && !/\s{2,}/u.test(value)
+    && !characters.some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127 || (code >= 0xD800 && code <= 0xDFFF);
+    });
+}
 
 export const workspaceRoles = ['owner', 'admin', 'member', 'viewer'] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -27,6 +47,15 @@ export interface ProductWorkspaceDto {
   name: string;
   role: WorkspaceRole;
   slug: string;
+}
+
+export interface ProductWorkspaceRenameRequestDto {
+  name: string;
+}
+
+/** Exact-name confirmation used only for the one-way soft-archive operation. */
+export interface ProductWorkspaceArchiveRequestDto {
+  confirmationName: string;
 }
 
 export interface ProductWorkspaceMemberDto {
@@ -258,12 +287,7 @@ export function parseProductWorkspace(value: unknown): ProductWorkspaceDto {
     !workspaceRecord(value)
     || !exactWorkspaceKeys(value, ['id', 'name', 'role', 'slug'])
     || !isUuid(value.id)
-    || typeof value.name !== 'string'
-    || Array.from(value.name).length < 1
-    || Array.from(value.name).length > 100
-    || value.name !== value.name.trim()
-    || value.name !== value.name.normalize('NFC')
-    || /\s{2,}/u.test(value.name)
+    || !isValidProductWorkspaceName(value.name)
     || typeof value.slug !== 'string'
     || !/^[a-z0-9][a-z0-9-]{0,127}$/u.test(value.slug)
     || !workspaceRoles.includes(value.role as WorkspaceRole)
@@ -359,10 +383,7 @@ export function parseProductWorkspaceInvitationPreview(value: unknown): ProductW
     || value.targetEmailHint.length < 3
     || value.targetEmailHint.length > 320
     || !value.targetEmailHint.includes('*@')
-    || typeof value.workspaceName !== 'string'
-    || Array.from(value.workspaceName).length < 1
-    || Array.from(value.workspaceName).length > 100
-    || value.workspaceName !== value.workspaceName.trim()
+    || !isValidProductWorkspaceName(value.workspaceName)
   ) throw new Error('Invalid workspace invitation preview response.');
   return value as unknown as ProductWorkspaceInvitationPreviewDto;
 }

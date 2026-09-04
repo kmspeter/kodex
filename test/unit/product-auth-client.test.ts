@@ -226,6 +226,87 @@ describe('product auth browser contract', () => {
     await expect(client.logout()).rejects.toMatchObject({ kind: 'invalid-response' });
   });
 
+  it('does not let a delayed me response restore CSRF after the session generation changes', async () => {
+    let resolveBody!: (value: unknown) => void;
+    const delayedBody = new Promise<unknown>((resolve) => { resolveBody = resolve; });
+    const delayedResponse = new Response(null, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    vi.spyOn(delayedResponse, 'json').mockImplementation(() => delayedBody);
+    const nextCsrf = 'C'.repeat(43);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(delayedResponse)
+      .mockResolvedValueOnce(jsonResponse(authBody({ csrfToken: nextCsrf })))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+
+    await client.me();
+    const stale = client.me();
+    await Promise.resolve();
+    client.clearMemory();
+    await client.login({ email: 'person@example.com', password: 'current password' });
+    resolveBody(authBody({ csrfToken: 'B'.repeat(43) }));
+
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' });
+    await client.logout();
+    expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get('X-CSRF-Token')).toBe(nextCsrf);
+  });
+
+  it('preserves AbortError and never applies a me body parsed after abort', async () => {
+    let resolveBody!: (value: unknown) => void;
+    const delayedBody = new Promise<unknown>((resolve) => { resolveBody = resolve; });
+    const delayedResponse = new Response(null, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    vi.spyOn(delayedResponse, 'json').mockImplementation(() => delayedBody);
+    const fetchMock = vi.fn().mockResolvedValue(delayedResponse);
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const controller = new AbortController();
+
+    const pending = client.me({ signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    resolveBody(authBody());
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(client.logout()).rejects.toMatchObject({ kind: 'invalid-response' });
+  });
+
+  it('does not let a stale me 401 invalidate a newly established session', async () => {
+    let resolveStale!: (response: Response) => void;
+    const staleResponse = new Promise<Response>((resolve) => { resolveStale = resolve; });
+    const nextCsrf = 'D'.repeat(43);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockImplementationOnce(() => staleResponse)
+      .mockResolvedValueOnce(jsonResponse(authBody({ csrfToken: nextCsrf })))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const invalidated = vi.fn();
+    client.onUnauthenticated(invalidated);
+
+    await client.me();
+    const stale = client.me();
+    client.clearMemory();
+    await client.login({ email: 'person@example.com', password: 'current password' });
+    resolveStale(jsonResponse(errorBody('unauthenticated'), 401));
+
+    await expect(stale).rejects.toMatchObject({ kind: 'unauthenticated' });
+    expect(invalidated).not.toHaveBeenCalled();
+    await client.logout();
+    expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get('X-CSRF-Token')).toBe(nextCsrf);
+  });
+
   it('strictly parses safe session DTOs and sends CSRF on every security mutation', async () => {
     const session = {
       id: '10000000-0000-4000-8000-000000000001',
@@ -357,6 +438,8 @@ describe('product auth browser contract', () => {
       .mockResolvedValueOnce(jsonResponse({ members: [member], nextCursor: 'member_next' }))
       .mockResolvedValueOnce(jsonResponse(member, 201))
       .mockResolvedValueOnce(jsonResponse({ ...member, role: 'viewer' }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ ...workspace, name: 'Renamed' }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = new ProductAuthClient({
       apiBase: 'http://127.0.0.1:47832', development: true,
@@ -368,6 +451,8 @@ describe('product auth browser contract', () => {
     await expect(client.addWorkspaceMember(workspaceId, member.email, 'member')).resolves.toEqual(member);
     await expect(client.updateWorkspaceMember(workspaceId, userId, 'viewer')).resolves.toMatchObject({ role: 'viewer' });
     await client.removeWorkspaceMember(workspaceId, userId);
+    await expect(client.renameWorkspace(workspaceId, 'Renamed')).resolves.toMatchObject({ name: 'Renamed' });
+    await client.archiveWorkspace(workspaceId, 'Renamed');
 
     expect(fetchMock.mock.calls.slice(1).map(([url]) => String(url))).toEqual([
       'http://127.0.0.1:47832/api/workspaces',
@@ -375,10 +460,14 @@ describe('product auth browser contract', () => {
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members`,
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,
       `http://127.0.0.1:47832/api/workspaces/${workspaceId}/members/${userId}`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}`,
+      `http://127.0.0.1:47832/api/workspaces/${workspaceId}`,
     ]);
-    for (const [, init] of [fetchMock.mock.calls[1], fetchMock.mock.calls[3], fetchMock.mock.calls[4], fetchMock.mock.calls[5]]) {
+    for (const [, init] of [fetchMock.mock.calls[1], fetchMock.mock.calls[3], fetchMock.mock.calls[4], fetchMock.mock.calls[5], fetchMock.mock.calls[6], fetchMock.mock.calls[7]]) {
       expect(new Headers(init.headers).get('X-CSRF-Token')).toBe(csrfToken);
     }
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({ name: 'Renamed' });
+    expect(JSON.parse(String(fetchMock.mock.calls[7]?.[1]?.body))).toEqual({ confirmationName: 'Renamed' });
 
     const malformed = new ProductAuthClient({
       apiBase: 'http://127.0.0.1:47832', development: true,

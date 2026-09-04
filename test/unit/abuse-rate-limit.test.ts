@@ -53,6 +53,7 @@ function workspaceApplication(): WorkspaceApplication {
       id: workspaceId, name: 'Shared', role: 'member' as const, slug: 'shared',
     })),
     addMember: vi.fn(),
+    archiveWorkspace: vi.fn(),
     createInvitation: vi.fn(),
     createWorkspace: vi.fn(),
     listInvitations: vi.fn(),
@@ -64,6 +65,7 @@ function workspaceApplication(): WorkspaceApplication {
       workspaceName: 'Shared',
     })),
     removeMember: vi.fn(),
+    renameWorkspace: vi.fn(),
     revokeInvitation: vi.fn(),
     updateMemberRole: vi.fn(),
   };

@@ -38,6 +38,11 @@ interface HistoryDetail {
   turns: Array<{ status: string; turnId: string }>;
 }
 
+interface ProductWorkspaceSummary {
+  id: string;
+  name: string;
+}
+
 const repositoryRoot = path.resolve(import.meta.dirname, '..', '..');
 const productMain = path.join(repositoryRoot, 'apps', 'api', 'dist', 'main.js');
 const localMain = path.join(repositoryRoot, 'apps', 'local-server', 'dist', 'main.js');
@@ -191,6 +196,67 @@ async function logout(productBaseUrl: string, origin: string, session: AuthSessi
   });
 }
 
+async function createProductWorkspace(
+  productBaseUrl: string,
+  origin: string,
+  session: AuthSession,
+  name: string,
+): Promise<ProductWorkspaceSummary> {
+  const response = await fetch(`${productBaseUrl}/api/workspaces`, {
+    method: 'POST',
+    headers: {
+      Origin: origin,
+      Cookie: session.cookie,
+      'X-CSRF-Token': session.csrfToken,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name }),
+  });
+  expect(response.status, 'Product workspace create status').toBe(201);
+  const body = record(await response.json(), 'Product workspace create');
+  if (typeof body.id !== 'string' || typeof body.name !== 'string') {
+    throw new Error('Product workspace create did not return its ID and name.');
+  }
+  return { id: body.id, name: body.name };
+}
+
+async function archiveProductWorkspace(
+  productBaseUrl: string,
+  origin: string,
+  session: AuthSession,
+  workspaceId: string,
+  confirmationName: string,
+): Promise<Response> {
+  return fetch(`${productBaseUrl}/api/workspaces/${workspaceId}`, {
+    method: 'DELETE',
+    headers: {
+      Origin: origin,
+      Cookie: session.cookie,
+      'X-CSRF-Token': session.csrfToken,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ confirmationName }),
+  });
+}
+
+async function productWorkspaces(
+  productBaseUrl: string,
+  session: AuthSession,
+  phase: string,
+): Promise<{ response: Response; workspaces: ProductWorkspaceSummary[] }> {
+  const response = await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: session.cookie } });
+  const body = record(await response.json(), phase);
+  if (!Array.isArray(body.workspaces)) throw new Error(`${phase} did not return a workspace list.`);
+  const workspaces = body.workspaces.map((entry) => {
+    const workspace = record(entry, `${phase} workspace`);
+    if (typeof workspace.id !== 'string' || typeof workspace.name !== 'string') {
+      throw new Error(`${phase} returned a workspace without its ID and name.`);
+    }
+    return { id: workspace.id, name: workspace.name };
+  });
+  return { response, workspaces };
+}
+
 async function bootstrapLocal(
   localBaseUrl: string,
   origin: string,
@@ -315,6 +381,25 @@ async function expectSocketRejected(
   });
 }
 
+function waitForSocketCloseCode(
+  socket: WebSocket,
+  phase: string,
+  timeoutMs = 10_000,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    function onClose(code: number) {
+      clearTimeout(timer);
+      socket.off('close', onClose);
+      resolve(code);
+    }
+    const timer = setTimeout(() => {
+      socket.off('close', onClose);
+      reject(new Error(`${phase} did not close within ${timeoutMs} ms.`));
+    }, timeoutMs);
+    socket.once('close', onClose);
+  });
+}
+
 async function closeSocket(socket: WebSocket | undefined): Promise<void> {
   if (!socket || socket.readyState === WebSocket.CLOSED) return;
   const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
@@ -420,7 +505,7 @@ async function pollForHistory(
   throw new Error(`PostgreSQL Saved DB History projection did not contain the thread, completed turn, assistant item, and tool result within 20 seconds. Last structural state: ${lastObservation}. Pending structural outbox state: ${pendingObservation}`);
 }
 
-it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreSQL history -> isolation -> logout over HTTP/WS (no browser UI)', async () => {
+it('accepts auth -> built services/codex.exe -> PostgreSQL history -> isolation -> workspace archive -> logout over HTTP/WS', async () => {
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) throw new Error('DATABASE_URL is required. Use npm run test:full-stack.');
   if (!existsSync(codexBinary)) throw new Error(`Repository Codex binary is missing at ${codexBinary}.`);
@@ -445,8 +530,9 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
   let productProcess: ManagedProcess | undefined;
   let localProcess: ManagedProcess | undefined;
   let loopback: ResponsesLoopbackFixture | undefined;
-  let socketA: SocketClient | undefined;
-  let socketB: SocketClient | undefined;
+  let socketAOriginal: SocketClient | undefined;
+  let socketAFallback: SocketClient | undefined;
+  let socketBPersonal: SocketClient | undefined;
   let socketBShared: SocketClient | undefined;
   try {
     productProcess = startProcess('Product API', productMain, {
@@ -519,18 +605,18 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
       provider: { mode: 'local', baseUrl: loopback.baseUrl, model: 'kodex-loopback-model' },
     });
 
-    socketA = await connectSocket(localPort, origin, sessionA, localSessionToken);
-    const threadResult = record(await socketA.rpc('thread/start', {}), 'thread/start');
+    socketAOriginal = await connectSocket(localPort, origin, sessionA, localSessionToken);
+    const threadResult = record(await socketAOriginal.rpc('thread/start', {}), 'thread/start');
     const thread = record(threadResult.thread, 'thread/start');
     if (typeof thread.id !== 'string') throw new Error('thread/start did not return a thread ID.');
-    const turnResult = record(await socketA.rpc('turn/start', {
+    const turnResult = record(await socketAOriginal.rpc('turn/start', {
       threadId: thread.id,
       input: [{ type: 'text', text: 'Run the provided local echo tool, then answer.', text_elements: [] }],
     }), 'turn/start');
     const turn = record(turnResult.turn, 'turn/start');
     if (typeof turn.id !== 'string') throw new Error('turn/start did not return a turn ID.');
     await waitForSocketMessage(
-      socketA.messages,
+      socketAOriginal.messages,
       (message) => {
         if (message.type !== 'notification') return false;
         const notification = record(message.notification, 'turn completion notification');
@@ -573,7 +659,7 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
     expect(bootstrapB.response.status).toBe(200);
     const localSessionB = bootstrapB.body.sessionToken;
     if (typeof localSessionB !== 'string') throw new Error('User B Local bootstrap did not return a session proof.');
-    socketB = await connectSocket(localPort, origin, sessionB, localSessionB);
+    socketBPersonal = await connectSocket(localPort, origin, sessionB, localSessionB);
 
     const deniedBeforeInvitation = await bootstrapLocal(localBaseUrl, origin, sessionB, sessionA.workspaceId);
     expect(deniedBeforeInvitation.response.status).toBe(403);
@@ -622,26 +708,104 @@ it('accepts auth -> built Product API/Local Server -> real codex.exe -> PostgreS
       sessionA.workspaceId,
     )).status).toBe(404);
 
-    const existingSocketClosed = new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Existing Local WebSocket was not revoked within 10 seconds after logout.')), 10_000);
-      socketA!.socket.once('close', (code) => { clearTimeout(timer); resolve(code); });
-    });
+    const fallbackWorkspaceA = await createProductWorkspace(
+      productBaseUrl,
+      origin,
+      sessionA,
+      `Acceptance Fallback ${randomUUID().slice(0, 8)}`,
+    );
+    const fallbackBootstrapA = await bootstrapLocal(localBaseUrl, origin, sessionA, fallbackWorkspaceA.id);
+    expect(fallbackBootstrapA.response.status).toBe(200);
+    const fallbackLocalSessionA = fallbackBootstrapA.body.sessionToken;
+    if (typeof fallbackLocalSessionA !== 'string') {
+      throw new Error('User A fallback Local bootstrap did not return a session proof.');
+    }
+    socketAFallback = await connectSocket(
+      localPort,
+      origin,
+      sessionA,
+      fallbackLocalSessionA,
+      fallbackWorkspaceA.id,
+    );
+
+    const beforeArchiveA = await productWorkspaces(productBaseUrl, sessionA, 'User A /me before archive');
+    expect(beforeArchiveA.response.status).toBe(200);
+    const archivedWorkspace = beforeArchiveA.workspaces.find((workspace) => workspace.id === sessionA.workspaceId);
+    if (!archivedWorkspace) throw new Error('User A /me did not contain the workspace selected for archive.');
+    expect(socketAOriginal.socket.readyState).toBe(WebSocket.OPEN);
+    expect(socketBShared.socket.readyState).toBe(WebSocket.OPEN);
+    const ownerArchivedSocketClosed = waitForSocketCloseCode(
+      socketAOriginal.socket,
+      'Owner Local WebSocket for archived workspace',
+    );
+    const memberArchivedSocketClosed = waitForSocketCloseCode(
+      socketBShared.socket,
+      'Member Local WebSocket for archived workspace',
+    );
+    const archiveResponse = await archiveProductWorkspace(
+      productBaseUrl,
+      origin,
+      sessionA,
+      archivedWorkspace.id,
+      archivedWorkspace.name,
+    );
+    expect(archiveResponse.status).toBe(204);
+    await expect(Promise.all([ownerArchivedSocketClosed, memberArchivedSocketClosed])).resolves.toEqual([1008, 1008]);
+
+    const [afterArchiveA, afterArchiveB] = await Promise.all([
+      productWorkspaces(productBaseUrl, sessionA, 'User A /me after archive'),
+      productWorkspaces(productBaseUrl, sessionB, 'User B /me after archive'),
+    ]);
+    expect([afterArchiveA.response.status, afterArchiveB.response.status]).toEqual([200, 200]);
+    expect(afterArchiveA.workspaces.map((workspace) => workspace.id)).toContain(fallbackWorkspaceA.id);
+    expect(afterArchiveB.workspaces.map((workspace) => workspace.id)).toContain(sessionB.workspaceId);
+    expect(afterArchiveA.workspaces.map((workspace) => workspace.id)).not.toContain(archivedWorkspace.id);
+    expect(afterArchiveB.workspaces.map((workspace) => workspace.id)).not.toContain(archivedWorkspace.id);
+
+    expect((await historyGet(
+      productBaseUrl,
+      sessionA,
+      '/api/history/threads?limit=50',
+      archivedWorkspace.id,
+    )).status).toBe(403);
+    const [archivedBootstrapA, archivedBootstrapB] = await Promise.all([
+      bootstrapLocal(localBaseUrl, origin, sessionA, archivedWorkspace.id),
+      bootstrapLocal(localBaseUrl, origin, sessionB, archivedWorkspace.id),
+    ]);
+    expect([archivedBootstrapA.response.status, archivedBootstrapB.response.status]).toEqual([403, 403]);
+    await Promise.all([
+      expectSocketRejected(localPort, origin, sessionA, localSessionToken, archivedWorkspace.id, 403),
+      expectSocketRejected(localPort, origin, sessionB, localSessionB, archivedWorkspace.id, 403),
+    ]);
+    expect(socketAFallback.socket.readyState).toBe(WebSocket.OPEN);
+    expect(socketBPersonal.socket.readyState).toBe(WebSocket.OPEN);
+
+    const fallbackSocketClosedAfterLogout = waitForSocketCloseCode(
+      socketAFallback.socket,
+      'Existing fallback Local WebSocket after logout',
+    );
     expect((await logout(productBaseUrl, origin, sessionA)).status).toBe(204);
     expect((await fetch(`${productBaseUrl}/api/auth/me`, { headers: { Cookie: sessionA.cookie } })).status).toBe(401);
-    expect((await historyGet(productBaseUrl, sessionA, '/api/history/threads?limit=50')).status).toBe(401);
-    expect((await bootstrapLocal(localBaseUrl, origin, sessionA)).response.status).toBe(401);
+    expect((await historyGet(
+      productBaseUrl,
+      sessionA,
+      '/api/history/threads?limit=50',
+      fallbackWorkspaceA.id,
+    )).status).toBe(401);
+    expect((await bootstrapLocal(localBaseUrl, origin, sessionA, fallbackWorkspaceA.id)).response.status).toBe(401);
     await expectSocketRejected(
       localPort,
       origin,
       sessionA,
-      localSessionToken,
-      sessionA.workspaceId,
+      fallbackLocalSessionA,
+      fallbackWorkspaceA.id,
       401,
     );
-    await expect(existingSocketClosed).resolves.toBe(1008);
+    await expect(fallbackSocketClosedAfterLogout).resolves.toBe(1008);
   } finally {
-    await closeSocket(socketA?.socket);
-    await closeSocket(socketB?.socket);
+    await closeSocket(socketAOriginal?.socket);
+    await closeSocket(socketAFallback?.socket);
+    await closeSocket(socketBPersonal?.socket);
     await closeSocket(socketBShared?.socket);
     await loopback?.close();
     await stopProcess(localProcess);

@@ -199,14 +199,18 @@ function postgresCode(error: unknown): string | undefined {
     : undefined;
 }
 
-async function lockWorkspace(client: PoolClient, workspaceId: string): Promise<void> {
-  const result = await client.query('SELECT id FROM workspaces WHERE id = $1 AND deleted_at IS NULL FOR UPDATE', [workspaceId]);
+async function lockWorkspace(client: PoolClient, workspaceId: string): Promise<{ id: string; name: string; slug: string }> {
+  const result = await client.query<{ id: string; name: string; slug: string }>(
+    'SELECT id, name, slug FROM workspaces WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+    [workspaceId],
+  );
   if (!result.rowCount) throw new WorkspaceOperationError('forbidden');
+  return result.rows[0];
 }
 
 async function roleFor(client: PoolClient, workspaceId: string, userId: string): Promise<WorkspaceRole> {
   const result = await client.query<{ role: WorkspaceRole }>(
-    'SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2',
+    'SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE',
     [workspaceId, userId],
   );
   const role = result.rows[0]?.role;
@@ -278,6 +282,60 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
       );
       await audit(client, workspace.id, actorUserId, 'workspace.created', workspace.id, { role: 'owner' }, 'workspace');
       return { ...workspace, role: 'owner' };
+    });
+  }
+
+  async renameWorkspace(actorUserId: string, workspaceId: string, name: string): Promise<WorkspaceRecord> {
+    return this.database.transaction(async (client) => {
+      const workspace = await lockWorkspace(client, workspaceId);
+      const actorRole = await roleFor(client, workspaceId, actorUserId);
+      requireManager(actorRole);
+      const result = await client.query<{ id: string; name: string; slug: string }>(
+        `UPDATE workspaces SET name = $2, updated_at = now()
+         WHERE id = $1 AND deleted_at IS NULL
+         RETURNING id, name, slug`,
+        [workspace.id, name],
+      );
+      if (!result.rowCount) throw new WorkspaceOperationError('forbidden');
+      await audit(
+        client,
+        workspaceId,
+        actorUserId,
+        'workspace.renamed',
+        workspaceId,
+        { operation: 'rename' },
+        'workspace',
+      );
+      return { ...result.rows[0], role: actorRole };
+    });
+  }
+
+  async archiveWorkspace(actorUserId: string, workspaceId: string, confirmationName: string): Promise<void> {
+    await this.database.transaction(async (client) => {
+      const workspace = await lockWorkspace(client, workspaceId);
+      const actorRole = await roleFor(client, workspaceId, actorUserId);
+      if (actorRole !== 'owner') throw new WorkspaceOperationError('forbidden');
+      if (workspace.name !== confirmationName) throw new WorkspaceOperationError('confirmation_mismatch');
+      await client.query(
+        `UPDATE workspace_invitations SET revoked_at = now()
+         WHERE workspace_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`,
+        [workspaceId],
+      );
+      const archived = await client.query(
+        `UPDATE workspaces SET deleted_at = now(), updated_at = now()
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [workspaceId],
+      );
+      if (archived.rowCount !== 1) throw new WorkspaceOperationError('forbidden');
+      await audit(
+        client,
+        workspaceId,
+        actorUserId,
+        'workspace.archived',
+        workspaceId,
+        { operation: 'archive' },
+        'workspace',
+      );
     });
   }
 
@@ -518,7 +576,12 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
       );
       const workspaceId = located.rows[0]?.workspace_id;
       if (!workspaceId) throw new WorkspaceInvitationError('invalid');
-      await lockWorkspace(client, workspaceId);
+      try {
+        await lockWorkspace(client, workspaceId);
+      } catch (error) {
+        if (error instanceof WorkspaceOperationError) throw new WorkspaceInvitationError('invalid');
+        throw error;
+      }
       const selected = await client.query<InvitationRow & { accepted_at: Date | null; active: boolean; revoked_at: Date | null }>(
         `SELECT id, workspace_id, target_email, requested_role, created_by_user_id, expires_at, created_at,
                 accepted_at, revoked_at, expires_at > now() AS active

@@ -1,12 +1,15 @@
-import { Building2, Check, Copy, LoaderCircle, Mail, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
+import { Archive, Building2, Check, Copy, LoaderCircle, Mail, Pencil, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  isValidProductWorkspaceName,
   PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
+  PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS,
   workspaceInvitationRoles,
   workspaceRoles,
   type WorkspaceInvitationRole,
   type WorkspaceRole,
 } from '@kodex/product-contract';
+import { isAbortError } from '../auth/product-auth';
 import type {
   ProductAuthClient,
   ProductAuthContext,
@@ -21,6 +24,7 @@ export function WorkspaceManagementDialog(props: {
   account: ProductAuthContext;
   activeWorkspace?: ProductWorkspace;
   client: ProductAuthClient;
+  onArchived?: (userId: string, workspaceId: string) => void;
   onClose: () => void;
   onRefresh: (context: ProductAuthContext, selectedWorkspaceId?: string) => void;
 }) {
@@ -38,6 +42,12 @@ export function WorkspaceManagementDialog(props: {
   const [invitationsMoreError, setInvitationsMoreError] = useState('');
   const [actionError, setActionError] = useState('');
   const [pending, setPending] = useState('');
+  const [renameName, setRenameName] = useState(props.activeWorkspace?.name ?? '');
+  const [renameError, setRenameError] = useState('');
+  const [renamePending, setRenamePending] = useState(false);
+  const [archiveConfirmation, setArchiveConfirmation] = useState('');
+  const [archiveError, setArchiveError] = useState('');
+  const [archivePending, setArchivePending] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceInvitationRole>('member');
@@ -48,10 +58,16 @@ export function WorkspaceManagementDialog(props: {
   const requestsRef = useRef(new Set<AbortController>());
   const scopeRef = useRef(0);
   const mountedRef = useRef(true);
+  const renameRequestRef = useRef<symbol | null>(null);
+  const archiveRequestRef = useRef<symbol | null>(null);
   const active = props.activeWorkspace;
   const activeId = active?.id;
+  const activeName = active?.name ?? '';
   const accountUserId = props.account.user.id;
   const canManage = active?.role === 'owner' || active?.role === 'admin';
+  const dialogBusy = Boolean(pending) || renamePending || archivePending;
+  const createValid = isValidProductWorkspaceName(name);
+  const renameValid = isValidProductWorkspaceName(renameName);
 
   const abortPageRequests = useCallback(() => {
     for (const controller of requestsRef.current) controller.abort();
@@ -153,6 +169,14 @@ export function WorkspaceManagementDialog(props: {
     setCreatedLink('');
     setCopyStatus('');
     setActionError('');
+    setRenameName(activeName);
+    setRenameError('');
+    setRenamePending(false);
+    renameRequestRef.current = null;
+    setArchiveConfirmation('');
+    setArchiveError('');
+    setArchivePending(false);
+    archiveRequestRef.current = null;
     setEmail('');
     setRole('member');
     if (activeId) void reloadFirstPages(activeId, canManage);
@@ -167,32 +191,142 @@ export function WorkspaceManagementDialog(props: {
     return () => {
       abortPageRequests();
     };
-  }, [abortPageRequests, accountUserId, activeId, canManage, reloadFirstPages]);
+  }, [abortPageRequests, accountUserId, activeId, activeName, canManage, reloadFirstPages]);
 
   useEffect(() => () => {
     mountedRef.current = false;
     abortPageRequests();
   }, [abortPageRequests]);
 
-  async function revalidate(selectedWorkspaceId?: string): Promise<ProductAuthContext> {
-    const context = await props.client.me();
-    props.onRefresh(context, selectedWorkspaceId);
-    return context;
+  async function revalidate(options: {
+    controller?: AbortController;
+    expectedUserId?: string;
+    scope?: number;
+    selectedWorkspaceId?: string;
+  } = {}): Promise<ProductAuthContext | null> {
+    const controller = options.controller ?? new AbortController();
+    const scope = options.scope ?? scopeRef.current;
+    const generation = props.client.sessionGeneration;
+    requestsRef.current.add(controller);
+    try {
+      if (controller.signal.aborted || !mountedRef.current || scopeRef.current !== scope) return null;
+      const context = await props.client.me({ signal: controller.signal });
+      if (
+        controller.signal.aborted
+        || !mountedRef.current
+        || scopeRef.current !== scope
+        || props.client.sessionGeneration !== generation
+        || (options.expectedUserId !== undefined && context.user.id !== options.expectedUserId)
+      ) return null;
+      if (options.selectedWorkspaceId === undefined) props.onRefresh(context);
+      else props.onRefresh(context, options.selectedWorkspaceId);
+      return context;
+    } catch (error) {
+      if (
+        controller.signal.aborted
+        || scopeRef.current !== scope
+        || props.client.sessionGeneration !== generation
+        || isAbortError(error)
+      ) return null;
+      throw error;
+    } finally {
+      requestsRef.current.delete(controller);
+    }
   }
 
   async function create(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (pending) return;
+    if (pending || !isValidProductWorkspaceName(name)) return;
     setPending('create');
     setActionError('');
     try {
       const created = await props.client.createWorkspace(name);
-      await revalidate(created.id);
+      await revalidate({ selectedWorkspaceId: created.id });
       if (mountedRef.current) setName('');
     } catch (nextError) {
       if (mountedRef.current) setActionError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
       if (mountedRef.current) setPending('');
+    }
+  }
+
+  async function rename(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (
+      !active
+      || !canManage
+      || renameRequestRef.current
+      || archiveRequestRef.current
+      || !isValidProductWorkspaceName(renameName)
+      || renameName === active.name
+    ) return;
+    const scope = scopeRef.current;
+    const workspaceId = active.id;
+    const userId = accountUserId;
+    const request = Symbol('rename-workspace');
+    renameRequestRef.current = request;
+    setRenamePending(true);
+    setRenameError('');
+    try {
+      const renamed = await props.client.renameWorkspace(workspaceId, renameName);
+      const context = await revalidate({ expectedUserId: userId, scope });
+      if (
+        !context
+        || !mountedRef.current
+        || scopeRef.current !== scope
+        || props.account.user.id !== userId
+        || activeId !== workspaceId
+      ) return;
+      setRenameName(renamed.name);
+      setArchiveConfirmation('');
+    } catch (nextError) {
+      if (mountedRef.current && scopeRef.current === scope) {
+        setRenameError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      if (renameRequestRef.current === request) {
+        renameRequestRef.current = null;
+        if (mountedRef.current && scopeRef.current === scope) setRenamePending(false);
+      }
+    }
+  }
+
+  async function archive(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (
+      !active
+      || active.role !== 'owner'
+      || archiveRequestRef.current
+      || renameRequestRef.current
+      || archiveConfirmation !== active.name
+    ) return;
+    const scope = scopeRef.current;
+    const workspaceId = active.id;
+    const userId = accountUserId;
+    const request = Symbol('archive-workspace');
+    archiveRequestRef.current = request;
+    setArchivePending(true);
+    setArchiveError('');
+    let archived = false;
+    let refreshController: AbortController | null = null;
+    try {
+      await props.client.archiveWorkspace(workspaceId, archiveConfirmation);
+      archived = true;
+      if (!mountedRef.current || scopeRef.current !== scope || props.account.user.id !== userId || activeId !== workspaceId) return;
+      refreshController = new AbortController();
+      requestsRef.current.add(refreshController);
+      props.onArchived?.(userId, workspaceId);
+      await revalidate({ controller: refreshController, expectedUserId: userId, scope });
+    } catch (nextError) {
+      if (!archived && mountedRef.current && scopeRef.current === scope) {
+        setArchiveError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      if (refreshController) requestsRef.current.delete(refreshController);
+      if (archiveRequestRef.current === request) {
+        archiveRequestRef.current = null;
+        if (mountedRef.current && scopeRef.current === scope) setArchivePending(false);
+      }
     }
   }
 
@@ -247,6 +381,7 @@ export function WorkspaceManagementDialog(props: {
     try {
       await props.client.updateWorkspaceMember(active.id, member.userId, nextRole);
       const context = await revalidate();
+      if (!context) return;
       const current = context.workspaces.find((workspace) => workspace.id === active.id);
       if (current) await reloadFirstPages(active.id, current.role === 'owner' || current.role === 'admin');
     } catch (nextError) {
@@ -263,6 +398,7 @@ export function WorkspaceManagementDialog(props: {
     try {
       await props.client.removeWorkspaceMember(active.id, member.userId);
       const context = await revalidate();
+      if (!context) return;
       const current = context.workspaces.find((workspace) => workspace.id === active.id);
       if (current) await reloadFirstPages(active.id, current.role === 'owner' || current.role === 'admin');
     } catch (nextError) {
@@ -287,12 +423,16 @@ export function WorkspaceManagementDialog(props: {
     props.onClose();
   }
 
-  return <div className="dialog-backdrop"><section className="app-dialog workspace-management-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-management-title" aria-busy={Boolean(pending)}>
-    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>Product account</span><h2 id="workspace-management-title">Workspace 관리</h2></div></div><button ref={closeRef} className="icon-button" aria-label="Close" disabled={Boolean(pending)} onClick={closeDialog}><X size={16} /></button></header>
+  return <div className="dialog-backdrop"><section className="app-dialog workspace-management-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-management-title" aria-busy={dialogBusy}>
+    <header className="dialog-header"><div className="dialog-title-lockup"><KodexMark compact /><div><span>Product account</span><h2 id="workspace-management-title">Workspace 관리</h2></div></div><button ref={closeRef} className="icon-button" aria-label="Close" disabled={dialogBusy} onClick={closeDialog}><X size={16} /></button></header>
     <div className="dialog-body workspace-management-body">
       <section className="workspace-management-section" aria-labelledby="create-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Building2 size={20} /></div><div><h3 id="create-workspace-title">새 workspace</h3><p>생성자는 owner가 되며, 생성 직후 이 workspace로 runtime을 전환합니다.</p></div></div>
-        <form className="workspace-inline-form" onSubmit={(event) => void create(event)}><label>Workspace 이름<input required maxLength={100} value={name} disabled={Boolean(pending)} onChange={(event) => setName(event.target.value)} placeholder="예: Platform Team" /></label><button className="primary-action" type="submit" disabled={Boolean(pending) || !name.trim()}>{pending === 'create' ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />} 생성</button></form>
+        <form className="workspace-inline-form" onSubmit={(event) => void create(event)}><label>Workspace 이름<input required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} value={name} disabled={Boolean(pending)} onChange={(event) => setName(event.target.value)} placeholder="예: Platform Team" /></label><button className="primary-action" type="submit" disabled={Boolean(pending) || !createValid}>{pending === 'create' ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />} 생성</button></form>
       </section>
+      {active && canManage && <section className="workspace-management-section" aria-labelledby="rename-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Pencil size={20} /></div><div><h3 id="rename-workspace-title">Workspace 이름 변경</h3><p>표시 이름만 갱신하며 현재 runtime 연결은 다시 시작하지 않습니다.</p></div></div>
+        <form className="workspace-inline-form workspace-rename-form" onSubmit={(event) => void rename(event)}><label>새 workspace 이름<input aria-label="새 workspace 이름" required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} value={renameName} disabled={renamePending || archivePending} onChange={(event) => setRenameName(event.target.value)} /></label><button className="primary-action" type="submit" disabled={renamePending || archivePending || !renameValid || renameName === active.name}>{renamePending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />} 이름 변경</button></form>
+        {renameError && <div className="workspace-management-error" role="alert"><span>{renameError}</span></div>}
+      </section>}
       {active && <section className="workspace-management-section" aria-labelledby="workspace-members-title"><div className="dialog-intro"><div className="dialog-icon"><Users size={20} /></div><div><h3 id="workspace-members-title">{active.name} 멤버</h3><p>Workspace membership은 Saved DB History와 RAG 문서를 공유하지 않습니다. 두 데이터는 사용자별 private scope입니다.</p></div></div>
         {!canManage && <p className="workspace-permission-note">현재 {active.role} 역할은 멤버 목록을 볼 수 있지만 관리할 수 없습니다. Owner 또는 admin 권한이 필요합니다.</p>}
         {canManage && <><form className="workspace-inline-form member-add-form" onSubmit={(event) => void invite(event)}><label>초대할 email<input type="email" required maxLength={320} value={email} disabled={Boolean(pending)} onChange={(event) => setEmail(event.target.value)} placeholder="member@example.com" /></label><label>역할<select aria-label="초대할 역할" value={role} disabled={Boolean(pending)} onChange={(event) => setRole(event.target.value as WorkspaceInvitationRole)}>{workspaceInvitationRoles.filter((entry) => active.role === 'owner' || entry === 'member' || entry === 'viewer').map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select></label><button className="primary-action" type="submit" disabled={Boolean(pending) || !email.trim()}>{pending === 'invite' ? <LoaderCircle className="spin" size={13} /> : <Mail size={13} />} 초대 링크 생성</button></form>
@@ -317,6 +457,11 @@ export function WorkspaceManagementDialog(props: {
           {!membersInitialLoading && !membersMoreError && membersCursor && <button className="secondary-action workspace-page-more" type="button" disabled={Boolean(pending) || membersMoreLoading} onClick={() => void loadMemberPage(active.id, membersCursor, scopeRef.current)}>{membersMoreLoading ? <LoaderCircle className="spin" size={12} /> : null} 멤버 더 보기</button>}
         </div>
         {actionError && <div className="workspace-management-error" role="alert"><span>{actionError}</span></div>}
+      </section>}
+      {active?.role === 'owner' && <section className="workspace-management-section workspace-danger-section" aria-labelledby="archive-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Archive size={20} /></div><div><h3 id="archive-workspace-title">워크스페이스 보관</h3><p>새 접근은 즉시 차단되고 현재 UI runtime은 즉시 전환되거나 종료됩니다. 다른 곳에서 이미 열린 연결은 세션 만료 또는 최대 5분 주기의 재인가 때 닫힙니다. Database, history, RAG, audit 행과 로컬 tenant 파일은 그대로 유지되며 안전한 삭제가 아닙니다.</p></div></div>
+        <p className="workspace-archive-note">이 단계의 보관은 한 방향이며 self-service 복원 기능이 없습니다. 계속하려면 현재 이름 <strong>{active.name}</strong>을 정확히 입력하세요.</p>
+        <form className="workspace-inline-form workspace-archive-form" onSubmit={(event) => void archive(event)}><label>현재 workspace 이름 확인<input aria-label="보관할 workspace 이름 확인" required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} autoComplete="off" value={archiveConfirmation} disabled={archivePending || renamePending} onChange={(event) => setArchiveConfirmation(event.target.value)} /></label><button className="danger-action" type="submit" disabled={archivePending || renamePending || archiveConfirmation !== active.name}>{archivePending ? <LoaderCircle className="spin" size={13} /> : <Archive size={13} />} 워크스페이스 보관</button></form>
+        {archiveError && <div className="workspace-management-error" role="alert"><span>{archiveError}</span></div>}
       </section>}
       {!active && <p className="workspace-permission-note">현재 실행 가능한 workspace가 없습니다. 새 workspace를 생성하면 owner로 바로 시작할 수 있습니다.</p>}
     </div>

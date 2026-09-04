@@ -34,6 +34,7 @@ function application(): WorkspaceApplication {
   };
   return {
     acceptInvitation: vi.fn(async () => ({ id: workspaceId, name: 'Platform', role: 'member' as const, slug: 'workspace-platform' })),
+    archiveWorkspace: vi.fn(async () => undefined),
     createInvitation: vi.fn(),
     listInvitations: vi.fn(async () => ({ invitations: [] })),
     previewInvitation: vi.fn(),
@@ -45,6 +46,9 @@ function application(): WorkspaceApplication {
     addMember: vi.fn(async () => member),
     updateMemberRole: vi.fn(async (_actor, _workspace, _target, role) => ({ ...member, role })),
     removeMember: vi.fn(async () => undefined),
+    renameWorkspace: vi.fn(async (_actor, _workspace, name) => ({
+      id: workspaceId, name, role: 'owner' as const, slug: 'workspace-platform',
+    })),
   };
 }
 
@@ -99,6 +103,20 @@ describe('workspace Product API boundary', () => {
       });
       expect(workspaces.createWorkspace).toHaveBeenCalledWith(userId, 'Platform');
 
+      const astralBoundary = '😀'.repeat(100);
+      const createdAstral = await fetch(`${base}/api/workspaces`, {
+        method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ name: astralBoundary }),
+      });
+      expect(createdAstral.status).toBe(201);
+      expect(workspaces.createWorkspace).toHaveBeenLastCalledWith(userId, astralBoundary);
+      for (const invalidName of ['a'.repeat(101), '😀'.repeat(101)]) {
+        const rejected = await fetch(`${base}/api/workspaces`, {
+          method: 'POST', headers: mutationHeaders(), body: JSON.stringify({ name: invalidName }),
+        });
+        expect(rejected.status).toBe(422);
+      }
+      expect(workspaces.createWorkspace).toHaveBeenCalledTimes(2);
+
       const listed = await fetch(`${base}/api/workspaces/${workspaceId}/members`, {
         headers: { Cookie: cookie },
       });
@@ -123,6 +141,97 @@ describe('workspace Product API boundary', () => {
       });
       expect(removed.status).toBe(204);
       expect(workspaces.removeMember).toHaveBeenCalledWith(userId, workspaceId, memberId);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('enforces exact rename and owner-confirmed archive request contracts', async () => {
+    const workspaces = application();
+    const config: ProductApiConfig = {
+      host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
+      cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 4_096,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(async () => context()), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
+    }, config, undefined, undefined, undefined, workspaces);
+    const port = await server.listen();
+    const path = `http://127.0.0.1:${port}/api/workspaces/${workspaceId}`;
+    try {
+      const withoutOrigin = await fetch(path, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(withoutOrigin.status).toBe(403);
+      expect(workspaces.renameWorkspace).not.toHaveBeenCalled();
+
+      const withoutCsrf = await fetch(path, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: origin },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(withoutCsrf.status).toBe(403);
+
+      for (const body of [
+        { name: 'Renamed', extra: true },
+        { name: ' padded ' },
+        { name: 'not  normalized' },
+        { name: '\u0065\u0301' },
+        { confirmationName: 'Platform' },
+      ]) {
+        const response = await fetch(path, {
+          method: 'PATCH', headers: mutationHeaders(), body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(422);
+      }
+
+      const astralBoundary = '😀'.repeat(100);
+      const astralRename = await fetch(path, {
+        method: 'PATCH', headers: mutationHeaders(), body: JSON.stringify({ name: astralBoundary }),
+      });
+      expect(astralRename.status).toBe(200);
+      expect(workspaces.renameWorkspace).toHaveBeenLastCalledWith(userId, workspaceId, astralBoundary);
+
+      const renamed = await fetch(path, {
+        method: 'PATCH', headers: mutationHeaders(), body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(renamed.status).toBe(200);
+      expect(renamed.headers.get('cache-control')).toContain('no-store');
+      expect(await renamed.json()).toMatchObject({ id: workspaceId, name: 'Renamed', role: 'owner' });
+      expect(workspaces.renameWorkspace).toHaveBeenCalledWith(userId, workspaceId, 'Renamed');
+
+      const wrongType = await fetch(path, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, Origin: origin, 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ confirmationName: 'Renamed' }),
+      });
+      expect(wrongType.status).toBe(415);
+      const extraConfirmation = await fetch(path, {
+        method: 'DELETE', headers: mutationHeaders(),
+        body: JSON.stringify({ confirmationName: 'Renamed', name: 'Renamed' }),
+      });
+      expect(extraConfirmation.status).toBe(422);
+      const archived = await fetch(path, {
+        method: 'DELETE', headers: mutationHeaders(), body: JSON.stringify({ confirmationName: 'Renamed' }),
+      });
+      expect(archived.status).toBe(204);
+      expect(archived.headers.get('cache-control')).toContain('no-store');
+      expect(workspaces.archiveWorkspace).toHaveBeenCalledWith(userId, workspaceId, 'Renamed');
+
+      expect((await fetch(`http://127.0.0.1:${port}/api/workspaces/not-a-uuid`, {
+        method: 'DELETE', headers: mutationHeaders(), body: JSON.stringify({ confirmationName: 'Renamed' }),
+      })).status).toBe(404);
+
+      vi.mocked(workspaces.archiveWorkspace).mockRejectedValueOnce(new WorkspaceOperationError('confirmation_mismatch'));
+      const mismatch = await fetch(path, {
+        method: 'DELETE', headers: mutationHeaders(), body: JSON.stringify({ confirmationName: 'Renamed' }),
+      });
+      expect(mismatch.status).toBe(409);
+      expect(await mismatch.json()).toEqual({
+        ok: false,
+        error: { code: 'archive_confirmation_mismatch', message: 'Workspace archive confirmation did not match.' },
+      });
     } finally {
       await server.close();
     }

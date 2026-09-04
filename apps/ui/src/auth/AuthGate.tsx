@@ -9,6 +9,7 @@ import {
 import { AlertTriangle, LoaderCircle, LockKeyhole, Mail, RefreshCw, UserPlus, X } from 'lucide-react';
 import { KodexMark } from '../components/Brand';
 import {
+  isAbortError,
   ProductAuthClient,
   ProductAuthConfigurationError,
   ProductAuthError,
@@ -116,7 +117,6 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
     if (!client) return;
     return client.onUnauthenticated(() => {
       revalidationControl.stop();
-      client.clearMemory();
       setLoggingOut(false);
       setState({ status: 'unauthenticated' });
     });
@@ -126,11 +126,14 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
     if (!client) return;
     let active = true;
     const controller = new AbortController();
+    const generation = client.sessionGeneration;
     setState({ status: 'checking', message: '제품 세션을 확인하는 중…' });
     void client.me({ signal: controller.signal }).then((context) => {
-      if (active) setState({ status: 'authenticated', context });
+      if (active && generation === client.sessionGeneration) {
+        setState({ status: 'authenticated', context });
+      }
     }).catch((error: unknown) => {
-      if (!active) return;
+      if (!active || generation !== client.sessionGeneration || isAbortError(error)) return;
       if (error instanceof ProductAuthError && error.kind === 'unauthenticated') {
         setState({ status: 'unauthenticated' });
       } else {
@@ -168,6 +171,7 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
     }
     const authClient = client;
     const contextAtStart = authenticatedContext;
+    const generationAtStart = client.sessionGeneration;
 
     let active = true;
     let timer: number | null = null;
@@ -194,6 +198,7 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
       const now = Date.now();
       if (
         !active
+        || generationAtStart !== authClient.sessionGeneration
         || validating
         || (trigger === 'foreground'
           && now - lastValidatedAt < FOREGROUND_REVALIDATION_THROTTLE_MS)
@@ -206,14 +211,23 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
       pendingController = controller;
       try {
         const context = await authClient.me({ signal: controller.signal });
-        if (!active || pendingController !== controller) return;
+        if (
+          !active
+          || pendingController !== controller
+          || generationAtStart !== authClient.sessionGeneration
+        ) return;
         lastValidatedAt = Date.now();
         setState({ status: 'authenticated', context });
         schedule(context);
       } catch (error) {
-        if (!active || pendingController !== controller || controller.signal.aborted) return;
+        if (
+          !active
+          || pendingController !== controller
+          || controller.signal.aborted
+          || generationAtStart !== authClient.sessionGeneration
+          || isAbortError(error)
+        ) return;
         if (error instanceof ProductAuthError && error.kind === 'unauthenticated') {
-          authClient.clearMemory();
           setState({ status: 'unauthenticated' });
         } else {
           setState({ status: 'unavailable', message: unavailableMessage(error) });
@@ -260,18 +274,21 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
     // Unmount the runtime before waiting for the network so sockets and in-memory
     // Codex credentials are removed immediately when logout begins.
     setState({ status: 'checking', message: '세션을 종료하는 중…' });
+    const request = client.logout();
+    const generation = client.sessionGeneration;
     try {
-      await client.logout();
+      await request;
+      if (generation !== client.sessionGeneration) return;
       setState({ status: 'unauthenticated' });
     } catch (error) {
+      if (generation !== client.sessionGeneration || isAbortError(error)) return;
       if (error instanceof ProductAuthError && error.kind === 'unauthenticated') {
         setState({ status: 'unauthenticated' });
       } else {
         setState({ status: 'unavailable', message: unavailableMessage(error) });
       }
     } finally {
-      client.clearMemory();
-      setLoggingOut(false);
+      if (generation === client.sessionGeneration) setLoggingOut(false);
     }
   }, [client, loggingOut, revalidationControl]);
 
@@ -327,12 +344,18 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
       }}
     />;
   }
+  const childGeneration = client.sessionGeneration;
   return children(
     state.context,
     logout,
     loggingOut,
     client,
-    (context) => setState({ status: 'authenticated', context }),
+    (context) => {
+      if (childGeneration !== client.sessionGeneration) return;
+      setState((current) => current.status === 'authenticated'
+        ? { status: 'authenticated', context }
+        : current);
+    },
   );
 }
 
