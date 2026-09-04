@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only f1d833d352d9d86bb99dc5af797693e08c1a66cf..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only dcfe022e8c1d02f36da3e3a6ae4a7dcddb58c243..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,20 +28,20 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-04 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `f1d833d352d9d86bb99dc5af797693e08c1a66cf` |
-| 제품 기준 commit | `fix: verify release as physical files` |
-| 완료 범위 | Phase 1~25 |
-| 다음 핵심 기능 | 계정 복구와 운영 관측성 |
+| 제품 기준 HEAD | `dcfe022e8c1d02f36da3e3a6ae4a7dcddb58c243` |
+| 제품 기준 commit | `feat: add payload-free operational observability` |
+| 완료 범위 | Phase 1~27 |
+| 다음 핵심 기능 | 데이터 수명주기와 사용자 export/delete |
 
-Phase 1~25에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~27에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
-forward-only deployment/upgrade까지 구현했다. 상세 계약은
+forward-only deployment/upgrade, secure password-reset recovery와 payload-free 운영 관측성까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0024](adr/0024-versioned-release-and-upgrade.md)까지가 기준이다.
+[ADR 0026](adr/0026-payload-free-operational-observability.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -200,12 +200,33 @@ failure 보상을 확인했다. Retention, abuse, auth lifecycle, invitation, ba
 API/Local full-stack와 기존 Electron full-stack도 통과했다. 새 `test:desktop-password-reset`은 실제 Electron DOM,
 PostgreSQL과 loopback provider에서 register→logout→request→fragment→complete→session revoke→new login을 통과했다.
 
+### Phase 27 — Payload-free operational observability
+
+- Public Product `/api/health/live`/`ready`와 Local `/api/health`의 최소 응답은 유지한다. 별도
+  `/api/operations/status`는 component별 32자 이상 server-only bearer가 있을 때만 활성화되고, exact bearer를
+  constant-time으로 확인하며 Browser Origin 요청을 거부한다. 미설정은 404다.
+- Product는 process/DB probe/retention, Local은 process/DB/runtime/App Server/outbox/reconciliation/authorization
+  revalidation을 fixed schema로 집계한다. User/workspace/thread ID, email, path, payload, cursor, 오류문과 secret은
+  endpoint와 metric/log label에 넣지 않는다.
+- DB, retention, runtime capacity, App Server, outbox overflow/DB/spool, reconciliation과 reauthorization 503은
+  stable alert code와 severity를 가진다. Logout/archive의 expected 401/403은 counter에는 남지만 장애 alert가 아니다.
+- UI/Vite child environment는 password-reset delivery와 두 operations bearer를 명시적으로 제거한다. Compose는
+  Product token을 secret 환경으로 전달할 수 있고 Local token은 desktop/source server 환경에만 둔다.
+
+2026-09-04에 commit `dcfe022e8c1d02f36da3e3a6ae4a7dcddb58c243` 대상으로 전체 230 test, lint,
+typecheck, build, UI bundle integrity와 production smoke가 통과했다. `test:observability`은 실제 Product/Local HTTP
+server에 credential/path를 포함한 DB failure, runtime/App Server/outbox/reconciliation/revalidation failure를
+주입해 fixed alert만 나오고 secret-free인지 및 recovery alert 해제를 확인했다. 자체 PostgreSQL History,
+retention fresh/upgrade, auth lifecycle, browserless full-stack와 실제 Electron full-stack도 통과했다. 외부
+`DATABASE_URL`을 요구하는 opt-in `test:tenant-auth` 자체는 현재 shell에 값이 없어 시작 전 중단됐지만, 같은 Local
+HTTP/WS 재인가 경계를 self-contained `test:auth-lifecycle-postgres`와 `test:full-stack`이 통과했다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
-   payload-free health/metric/alert를 만들고 history/RAG/audit/local file/export/delete/legal-hold 정책을
-   별도 결정한다. Exit: failure injection으로 actionable alert와 secret-free diagnostic을 확인하고,
-   retention/export/delete가 backup/WAL/replica 한계까지 문서화·검증되어야 한다.
+1. **P1 — 데이터 수명주기를 운영 수준으로 확장한다.** History/RAG/audit/local tenant file의 보존 기간과
+   legal hold를 결정하고, 사용자 export와 계정/workspace delete를 asynchronous bounded job으로 구현한다.
+   Exit: cross-tenant/경합/중단·재개를 실제 PostgreSQL+filesystem에서 검증하고, application delete와
+   backup/WAL/replica/snapshot의 물리 보존 한계를 UI·API·runbook에 명시해야 한다.
 2. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
@@ -226,6 +247,7 @@ npm test
 npm run build
 npm run verify:ui-bundle
 npm run smoke:production
+npm run test:observability
 ```
 
 History/backfill 변경의 최소 직접 검증은 다음이다.
