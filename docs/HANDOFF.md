@@ -176,16 +176,37 @@ lint, typecheck, build, UI/vendor integrity, API/Electron full-stack, backup res
 통과했다. 실제 Docker image build/import/OCI label을 확인한 뒤 test tag를 정리했다. Clean HEAD에서 생성한
 `runtime/Kodex-0.2.0-windows-x64-f1d833d352d9`는 내부 verifier와 `Kodex.cmd --smoke`를 통과했다.
 
+## Phase 26 계약과 최종 검증
+
+Phase 26의 원본 결정은 [ADR 0025](adr/0025-password-reset-account-recovery.md), 운영 절차는
+[account recovery runbook](operations/account-recovery.md)이다.
+
+- Opt-in HTTPS webhook 전달 경계와 fragment-only URL을 사용한다. UI bootstrap은 React/API 시작 전에 reset
+  token을 주소 표시줄에서 제거한다. Provider 실패도 account 존재 여부와 같은 `202 {"ok":true}`이며 고정
+  aggregate diagnostic만 남긴다.
+- DB에는 CSPRNG 256-bit token의 domain-separated SHA-256만 저장한다. Email/raw token/reset URL은 reset row,
+  audit, log에 넣지 않는다. 새 요청은 user lock 아래 이전 pending request를 폐기한다.
+- Request/complete는 PostgreSQL 공유 address+email/address+token HMAC limiter를 사용한다. Request는 기본
+  750 ms floor로 빠른 unknown-account timing 차이를 줄인다.
+- Complete는 Argon2id hash를 먼저 계산하고 user/reset row를 잠가 exactly-once 소비한다. Credential 교체,
+  다른 reset 폐기와 모든 active session 폐기가 한 transaction이며 invalid/expired/revoked/reused는 같은 410이다.
+- Migration 0011과 retention coordinator가 terminal reset을 기본 30일 뒤 bounded oldest-first `SKIP LOCKED`로
+  정리한다. Delivery 실패 request는 즉시 failed/revoked되어 재사용되지 않는다.
+
+2026-09-04에 commit `fc6cbf5d14faeba7cbd185843cc80daeb69f58f8` 대상으로 전체 227 unit test, lint, typecheck, build, UI/vendor integrity와
+production smoke가 통과했다. 실제 PostgreSQL fresh 0001~0011/immutable 0001~0010 upgrade에서 generic 응답,
+hash-only schema, 동시 단회 소비, superseded/expired/reused token, 세션 전부 폐기, 이전/새 비밀번호와 delivery
+failure 보상을 확인했다. Retention, abuse, auth lifecycle, invitation, backup/restore, sealed release deployment,
+API/Local full-stack와 기존 Electron full-stack도 통과했다. 새 `test:desktop-password-reset`은 실제 Electron DOM,
+PostgreSQL과 loopback provider에서 register→logout→request→fragment→complete→session revoke→new login을 통과했다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P0 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
-   expiry/revoke/rate limit/session 폐기와 generic error를 정한다. Exit: token 원문 비저장, enumeration 방지,
-   경합·재사용·만료·세션 폐기와 실제 전달 실패 경로가 PostgreSQL/acceptance에서 검증되어야 한다.
-2. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
+1. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
    payload-free health/metric/alert를 만들고 history/RAG/audit/local file/export/delete/legal-hold 정책을
    별도 결정한다. Exit: failure injection으로 actionable alert와 secret-free diagnostic을 확인하고,
    retention/export/delete가 backup/WAL/replica 한계까지 문서화·검증되어야 한다.
-3. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
+2. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
 
@@ -248,7 +269,7 @@ git status --short
 ## 안전 규칙
 
 - 적용된 migration은 checksum ledger 계약이다. `packages/product-db/migrations/0001_*.sql`부터
-  `0010_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
+  `0011_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
   fresh DB 및 실제 upgrade ledger 검증으로 추가한다.
 - `vendor/openai-codex/`, `VENDOR_SOURCE_SHA256.json`, `CODEX_UPSTREAM_COMMIT`, `bin/codex-build.json`,
   `packages/codex-protocol/src/generated/`와 `schema/`를 일반 기능 작업에서 손대지 않는다. Upstream pin을
@@ -271,9 +292,9 @@ git status --short
 - 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 자동 배포 control plane을
   제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
-- Password reset/email verification, SMTP invitation delivery, self-service workspace restore, hard delete,
+- Email verification, SMTP invitation delivery, self-service workspace restore, hard delete,
   secure erasure, 사용자 export, workspace별 content retention은 아직 없다.
-- Retention은 일부 terminal auth/invitation/abuse row의 bounded cleanup이다. PostgreSQL MVCC, autovacuum,
+- Retention은 일부 terminal auth/invitation/password-reset/abuse row의 bounded cleanup이다. PostgreSQL MVCC, autovacuum,
   WAL/replica/snapshot/backup과 로컬 tenant file의 삭제를 보장하지 않는다.
 - History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
   limit 밖 record가 누락될 수 있다. Outbox가 가득 차거나 손상되면 새 event 수신이 fail-visible하게 멈춘다.
