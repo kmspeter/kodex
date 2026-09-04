@@ -1,5 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { canUseWorkspaceRuntime, isUuid } from '@kodex/product-contract';
 import type { HistoryEventSink, KnowledgeService, RagConfig } from '@kodex/product-db';
 import {
@@ -106,6 +108,7 @@ export class RuntimeManager {
     this.dataRoot = path.resolve(options.dataRoot ?? path.join(this.repositoryRoot, '.kodex-data'));
     this.tenantRoot = path.resolve(options.tenantRoot ?? path.join(this.dataRoot, 'tenants'));
     this.#validateDataRoots();
+    mkdirSync(this.dataRoot, { recursive: true, mode: 0o700 });
     this.maxActiveRuntimes = positiveInteger(options.maxActiveRuntimes, 8, 'maxActiveRuntimes');
     this.idleTimeoutMs = positiveInteger(options.idleTimeoutMs, 15 * 60_000, 'idleTimeoutMs');
     this.sweepIntervalMs = positiveInteger(options.sweepIntervalMs, 60_000, 'sweepIntervalMs');
@@ -156,8 +159,23 @@ export class RuntimeManager {
         return existing;
       }
       await this.#makeCapacity();
+      const runtimeStartIntent = path.join(
+        this.dataRoot,
+        `.kodex-runtime-start.${randomUUID()}.lock`,
+      );
+      writeFileSync(runtimeStartIntent, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      if (existsSync(path.join(this.dataRoot, '.kodex-offline-maintenance.lock'))) {
+        unlinkSync(runtimeStartIntent);
+        throw new Error('KODEX_DATA_ROOT is locked for offline backup or restore.');
+      }
       const root = this.dataRootFor(scope);
-      const runtimeResult = this.#createRuntime(scope, root);
+      let runtimeResult: KodexRuntime | Promise<KodexRuntime>;
+      try {
+        runtimeResult = this.#createRuntime(scope, root);
+      } catch (error) {
+        unlinkSync(runtimeStartIntent);
+        throw error;
+      }
       const created: RuntimeEntry = {
         key,
         scope: copyScope(scope),
@@ -187,6 +205,8 @@ export class RuntimeManager {
             created.history.startReconciliation();
           }
           return runtime;
+        }).finally(() => {
+          try { unlinkSync(runtimeStartIntent); } catch { /* Backup remains fail-closed on a stale intent. */ }
         }),
       };
       this.#entries.set(key, created);
@@ -249,6 +269,9 @@ export class RuntimeManager {
       || path.isAbsolute(relativeTenantRoot)
     ) {
       throw new Error('KODEX_TENANT_ROOT must remain inside the trusted KODEX_DATA_ROOT.');
+    }
+    if (existsSync(path.join(this.dataRoot, '.kodex-offline-maintenance.lock'))) {
+      throw new Error('KODEX_DATA_ROOT is locked for offline backup or restore.');
     }
   }
 

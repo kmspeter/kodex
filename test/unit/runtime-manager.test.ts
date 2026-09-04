@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { KnowledgeService, RagConfig } from '@kodex/product-db';
@@ -32,6 +32,50 @@ async function root(): Promise<string> {
 }
 
 describe('tenant RuntimeManager', () => {
+  it('refuses to start while the data root is locked for offline maintenance', async () => {
+    const repositoryRoot = await root();
+    const dataRoot = path.join(repositoryRoot, 'data');
+    await mkdir(dataRoot, { recursive: true });
+    await writeFile(path.join(dataRoot, '.kodex-offline-maintenance.lock'), '{}\n', 'utf8');
+    expect(() => new RuntimeManager({
+      repositoryRoot,
+      dataRoot,
+      tenantRoot: path.join(dataRoot, 'tenants'),
+      runtimeOptions: { startAppServer: false },
+    })).toThrow('locked for offline backup or restore');
+  });
+
+  it('keeps a visible runtime-start intent until asynchronous initialization settles', async () => {
+    const repositoryRoot = await root();
+    const dataRoot = path.join(repositoryRoot, 'data');
+    const tenantRoot = path.join(dataRoot, 'tenants');
+    let resolveRuntime: ((runtime: KodexRuntime) => void) | undefined;
+    const pendingRuntime = new Promise<KodexRuntime>((resolve) => { resolveRuntime = resolve; });
+    const manager = new RuntimeManager({
+      repositoryRoot,
+      dataRoot,
+      tenantRoot,
+      createRuntime: () => pendingRuntime,
+    });
+    const acquiring = manager.acquire(scope(userA, workspaceA));
+    await vi.waitFor(async () => {
+      const entries = await readdir(dataRoot);
+      expect(entries.some((entry) => entry.startsWith('.kodex-runtime-start.'))).toBe(true);
+    });
+    await writeFile(path.join(dataRoot, '.kodex-offline-maintenance.lock'), '{}\n', 'utf8');
+    resolveRuntime?.(new KodexRuntime(repositoryRoot, undefined, {
+      dataRoot: path.join(tenantRoot, 'resolved'),
+      startAppServer: false,
+    }));
+    const lease = await acquiring;
+    await vi.waitFor(async () => {
+      const entries = await readdir(dataRoot);
+      expect(entries.some((entry) => entry.startsWith('.kodex-runtime-start.'))).toBe(false);
+    });
+    lease.release();
+    await manager.close();
+  });
+
   it('does not install any retrieval path when RAG is disabled', async () => {
     const repositoryRoot = await root();
     const retrieve = vi.fn();

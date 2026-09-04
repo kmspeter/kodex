@@ -46,8 +46,21 @@ describe('product database configuration', () => {
         DATABASE_URL: 'postgresql://example.invalid/kodex',
         PRODUCT_DB_POOL_MAX: '4',
         PRODUCT_DB_SSL: 'verify-full',
+        PRODUCT_DB_CA_CERT: '-----BEGIN CERTIFICATE-----\\ntest-ca\\n-----END CERTIFICATE-----',
       }),
-    ).toMatchObject({ max: 4, ssl: { rejectUnauthorized: true } });
+    ).toMatchObject({
+      max: 4,
+      ssl: {
+        rejectUnauthorized: true,
+        ca: '-----BEGIN CERTIFICATE-----\ntest-ca\n-----END CERTIFICATE-----\n',
+      },
+    });
+
+    expect(() => productDatabaseConfigFromEnv({
+      DATABASE_URL: 'postgresql://example.invalid/kodex',
+      PRODUCT_DB_SSL: 'verify-full',
+      PRODUCT_DB_CA_CERT: 'not-a-pem',
+    })).toThrow('PRODUCT_DB_CA_CERT must contain a bounded PEM certificate chain');
 
     expect(() =>
       productDatabaseConfigFromEnv({

@@ -30,7 +30,22 @@ function parsePositiveInteger(value: string | undefined, name: string, fallback:
   return parsed;
 }
 
-function parseSslMode(value: string | undefined): ProductDatabaseConfig['ssl'] | undefined {
+function parseCaCertificate(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const certificate = value.replaceAll('\\n', '\n').trim();
+  if (
+    Buffer.byteLength(certificate, 'utf8') > 256 * 1024
+    || !certificate.startsWith('-----BEGIN CERTIFICATE-----')
+    || !certificate.endsWith('-----END CERTIFICATE-----')
+    || certificate.includes('\0')
+  ) return configurationError('PRODUCT_DB_CA_CERT must contain a bounded PEM certificate chain');
+  return `${certificate}\n`;
+}
+
+function parseSslMode(
+  value: string | undefined,
+  caCertificate: string | undefined,
+): ProductDatabaseConfig['ssl'] | undefined {
   if (value === undefined || value.trim() === '') {
     return undefined;
   }
@@ -43,7 +58,8 @@ function parseSslMode(value: string | undefined): ProductDatabaseConfig['ssl'] |
     return { rejectUnauthorized: false };
   }
   if (mode === 'verify-full') {
-    return { rejectUnauthorized: true };
+    const ca = parseCaCertificate(caCertificate);
+    return { rejectUnauthorized: true, ...(ca ? { ca } : {}) };
   }
   return configurationError('PRODUCT_DB_SSL must be disable, require, or verify-full');
 }
@@ -93,7 +109,7 @@ export function productDatabaseConfigFromEnv(
     ),
   };
 
-  const ssl = parseSslMode(env.PRODUCT_DB_SSL);
+  const ssl = parseSslMode(env.PRODUCT_DB_SSL, env.PRODUCT_DB_CA_CERT);
   if (ssl !== undefined) {
     config.ssl = ssl;
   }

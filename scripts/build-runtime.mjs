@@ -72,6 +72,8 @@ await Promise.all([
   copy('apps/desktop/runtime-processes.mjs', 'desktop/runtime-processes.mjs'),
   copy('apps/desktop/smoke-service.mjs', 'desktop/smoke-service.mjs'),
   copy('apps/desktop/verify-runtime.mjs', 'desktop/verify-runtime.mjs'),
+  copy('scripts/kodex-backup.mjs', 'operations/kodex-backup.mjs'),
+  copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
   copy('apps/api/dist', 'product-api'),
   copy('apps/local-server/dist', 'server'),
   copy('apps/ui/dist', 'ui'),
@@ -101,6 +103,7 @@ for (const name of ['codex-protocol', 'kodex-api', 'product-contract', 'product-
 }
 await writeFile(path.join(appRoot, 'package.json'), `${JSON.stringify({ name: 'kodex-runtime', version: '0.2.0', private: true, type: 'module', main: 'desktop/main.mjs' }, null, 2)}\n`, 'utf8');
 await writeFile(path.join(output, 'Kodex.cmd'), '@echo off\r\n"%~dp0electron.exe" "%~dp0resources\\app" %*\r\n', 'utf8');
+await writeFile(path.join(output, 'Kodex-Backup.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\n', 'utf8');
 
 const bundledFiles = await walk();
 for (const filename of bundledFiles) {
@@ -117,6 +120,8 @@ for (const filename of bundledFiles) {
 }
 for (const relative of [
   'product-api/main.js',
+  'operations/kodex-backup.mjs',
+  'operations/lib/offline-backup.mjs',
   'node_modules/@kodex/product-contract/dist/index.js',
   'node_modules/@kodex/product-db/dist/index.js',
   'node_modules/@kodex/product-db/migrations/0001_initial_product_schema.sql',

@@ -252,7 +252,9 @@ npm run runtime:bundle
 # runtime\Kodex-win32-x64\Kodex.exe 실행
 ```
 
-bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0010, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
+bundle은 Windows x64 Electron, Product API/Local Server/UI dist, SQL migration 0001~0010, 공식 `codex.exe`, `pg`/`argon2` runtime과 Windows native asset을 포함합니다. `Kodex-Backup.cmd`는 같은 runtime의 product-db 코드로 PostgreSQL과 tenant data를 함께 offline backup/restore합니다. Root `node_modules`, `.env.local`/`kodex.env`, DB URL/key, tenant data는 포함하지 않습니다. PostgreSQL service, 자동 updater, installer/signing은 portable bundle 범위 밖입니다.
+
+운영 backup은 실행 중인 Local Server/Electron을 먼저 종료하고 새 output directory에만 만듭니다. Restore는 checksum을 먼저 검증하며 빈 PostgreSQL DB와 존재하지 않는 새 data root에만 허용됩니다. Source checkout에서는 `npm run backup:create|backup:verify|backup:restore -- --path <directory>`, runtime에서는 `Kodex-Backup.cmd create|verify|restore --path <directory>`를 사용합니다. Backup 자체 암호화와 서명, WAL/PITR은 운영 책임입니다. 정확한 quiesce·복원·rollback 절차는 [offline backup/restore runbook](docs/operations/backup-restore.md)과 [ADR 0023](docs/adr/0023-offline-backup-restore.md)에 있습니다.
 
 ## 검증
 
@@ -287,6 +289,8 @@ npm run test:workspace-postgres
 npm run test:workspace-invitations-postgres
 # 독립 임시 pgvector DB에서 실제 snapshot/live 수렴, history projection/outbox/API 검증
 npm run test:history-postgres
+# source/target 두 실제 pgvector DB에서 auth/workspace/History/RAG/outbox restore drill
+npm run test:backup-restore
 # 독립 --rm pgvector 컨테이너를 만들고 항상 정리하는 실제 RAG 검증
 npm run test:rag-postgres
 # 인증부터 pre-existing codex.exe thread backfill, live projection, 격리/workspace archive/logout까지의 opt-in API/WS acceptance
@@ -301,7 +305,7 @@ npm run test:desktop-workspace-invitation
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:abuse-rate-limit-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:history-postgres`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-lifecycle`, `test:desktop-workspace-invitation`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0010`을 upgrade하고, retention harness는 fresh 0001~0010과 실제 0001~0008 ledger의 0009~0010 upgrade를 검증합니다. Abuse limiter harness는 fresh 0001~0010과 immutable 0001~0009 ledger의 0010-only upgrade를 검증합니다. Invitation harness는 fresh 0001~0010, 실제 0001~0006 ledger에서 0007~0010, 0001~0007 ledger에서 0008~0010, 0001~0008 ledger에서 0009~0010을 각각 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:abuse-rate-limit-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:history-postgres`, `test:backup-restore`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-lifecycle`, `test:desktop-workspace-invitation`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. Backup/restore harness만 source/target 두 container를 사용합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0010`을 upgrade하고, retention harness는 fresh 0001~0010과 실제 0001~0008 ledger의 0009~0010 upgrade를 검증합니다. Abuse limiter harness는 fresh 0001~0010과 immutable 0001~0009 ledger의 0010-only upgrade를 검증합니다. Invitation harness는 fresh 0001~0010, 실제 0001~0006 ledger에서 0007~0010, 0001~0007 ledger에서 0008~0010, 0001~0008 ledger에서 0009~0010을 각각 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
 
