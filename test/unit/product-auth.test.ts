@@ -229,6 +229,8 @@ describe('product API configuration and cookies', () => {
         register: { maxAttempts: 5, windowMs: 3_600_000, blockMs: 3_600_000 },
         invitation_preview: { maxAttempts: 10, windowMs: 900_000, blockMs: 900_000 },
         invitation_accept: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
+        password_reset_request: { maxAttempts: 5, windowMs: 3_600_000, blockMs: 3_600_000 },
+        password_reset_complete: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
       },
       workspaceInvitationPendingLimit: 100,
       workspaceInvitationTtlMs: 604_800_000,
@@ -265,6 +267,14 @@ describe('product API configuration and cookies', () => {
       AUTH_COOKIE_SECRET: 'A'.repeat(43),
       AUTH_INVITATION_ACCEPT_RATE_LIMIT_BLOCK_SECONDS: '86401',
     })).toThrow('no greater than 86400');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_ATTEMPTS: '1',
+    })).toThrow('between 2 and 100');
+    expect(() => productApiConfigFromEnv({
+      AUTH_COOKIE_SECRET: 'A'.repeat(43),
+      AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_WINDOW_SECONDS: '59',
+    })).toThrow('between 60 and 86400');
     expect(() => productApiConfigFromEnv({
       AUTH_COOKIE_SECRET: 'A'.repeat(43),
       WORKSPACE_INVITATION_TTL_HOURS: '721',

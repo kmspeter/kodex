@@ -83,6 +83,21 @@ export {
   argon2idParameters,
   type PasswordHasher,
 } from './password.js';
+export {
+  PostgresPasswordResetRepository,
+  PasswordResetUnavailableError,
+  type ConsumePasswordResetInput,
+  type CreatePasswordResetInput,
+  type PasswordResetAccount,
+  type PasswordResetRepository,
+} from './password-reset-repository.js';
+export {
+  PasswordResetService,
+  PasswordResetServiceError,
+  hashPasswordResetToken,
+  type PasswordResetDelivery,
+  type PasswordResetServiceOptions,
+} from './password-reset-service.js';
 export { PostgresHistoryRepository } from './history-repository.js';
 export {
   HistoryCursorError,

@@ -16,6 +16,7 @@ const requiredTables = [
   'documents',
   'knowledge_sources',
   'password_credentials',
+  'password_reset_requests',
   'product_abuse_rate_limits',
   'projects',
   'retrieval_citations',
@@ -193,7 +194,7 @@ describe('product database migrations', () => {
     const result = await database.query<{ checksum: string; version: string }>(
       'SELECT version, checksum FROM schema_migrations ORDER BY version',
     );
-    expect(result.rows).toHaveLength(10);
+    expect(result.rows).toHaveLength(11);
     expect(result.rows[0]).toMatchObject({ version: '1' });
     expect(result.rows[1]).toMatchObject({ version: '2' });
     expect(result.rows[2]).toMatchObject({ version: '3' });
@@ -204,6 +205,7 @@ describe('product database migrations', () => {
     expect(result.rows[7]).toMatchObject({ version: '8' });
     expect(result.rows[8]).toMatchObject({ version: '9' });
     expect(result.rows[9]).toMatchObject({ version: '10' });
+    expect(result.rows[10]).toMatchObject({ version: '11' });
     expect(result.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[4].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[5].checksum).toMatch(/^[a-f0-9]{64}$/);
@@ -211,6 +213,7 @@ describe('product database migrations', () => {
     expect(result.rows[7].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[8].checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(result.rows[9].checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.rows[10].checksum).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('is a no-op when migrations are run again', async () => {

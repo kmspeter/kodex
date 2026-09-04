@@ -92,7 +92,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -102,7 +102,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(10);
+    expect(migrations).toHaveLength(11);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -217,5 +217,15 @@ describe('product database migration SQL', () => {
     expect(abuseLimitSql).toContain('octet_length(subject_hash) = 32');
     expect(abuseLimitSql).toContain('product_abuse_rate_limits_updated_idx');
     expect(abuseLimitSql).not.toMatch(/raw_email|raw_token|ip_address|session_id|user_id/iu);
+
+    const passwordResetSql = migrations[10].sql;
+    expect(migrations[10].version).toBe(11);
+    expect(passwordResetSql).toContain('CREATE TABLE password_reset_requests');
+    expect(passwordResetSql).toContain('token_hash bytea NOT NULL UNIQUE');
+    expect(passwordResetSql).toContain('password_reset_requests_pending_user_uq');
+    expect(passwordResetSql).toContain('password_reset_requests_retention_terminal_idx');
+    expect(passwordResetSql).toContain("'password_reset_request'");
+    expect(passwordResetSql).toContain("'password_reset_complete'");
+    expect(passwordResetSql).not.toMatch(/\b(raw_token|reset_url|email)\s+(?:text|bytea)/iu);
   });
 });

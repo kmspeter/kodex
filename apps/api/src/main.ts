@@ -7,11 +7,13 @@ import {
   PostgresAuthRepository,
   PostgresHistoryRepository,
   PostgresLoginRateLimiter,
+  PostgresPasswordResetRepository,
   PostgresRetentionRepository,
   PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
+  PasswordResetService,
 } from '@kodex/product-db';
 import dotenv from 'dotenv';
 import {
@@ -26,6 +28,10 @@ import {
 } from './retention-maintenance.js';
 import { ProductApiServer } from './server.js';
 import { loadProductReleaseIdentity } from './release-identity.js';
+import {
+  passwordResetDeliveryConfigFromEnv,
+  WebhookPasswordResetDelivery,
+} from './password-reset-delivery.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -66,16 +72,18 @@ try {
   const config = productApiConfigFromEnv();
   const release = await loadProductReleaseIdentity(repositoryRoot);
   const retentionConfig = productRetentionMaintenanceConfigFromEnv();
+  const passwordResetConfig = passwordResetDeliveryConfigFromEnv();
   database = requireProductDatabaseFromEnv();
   await database.migrate();
   const repository = new PostgresAuthRepository(database);
+  const passwordHasher = new Argon2idPasswordHasher();
   if (!config.abuseRateLimitPolicies) throw new ProductApiConfigurationError('Abuse rate limit policies are required');
   const abuseRateLimiter = new PostgresAbuseRateLimiter(
     database,
     config.cookieSecret,
     config.abuseRateLimitPolicies,
   );
-  const auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
+  const auth = await AuthService.create(repository, passwordHasher, {
     abuseRateLimiter,
     sessionTtlMs: config.sessionTtlMs,
     loginRateLimitSecret: config.cookieSecret,
@@ -86,6 +94,15 @@ try {
     }),
   });
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
+  const passwordReset = passwordResetConfig
+    ? new PasswordResetService(
+      new PostgresPasswordResetRepository(database),
+      passwordHasher,
+      new WebhookPasswordResetDelivery(passwordResetConfig),
+      abuseRateLimiter,
+      { ttlMs: passwordResetConfig.ttlMs },
+    )
+    : undefined;
   validateKnowledgeBodyCapacity(config, knowledgeRuntime.config);
   server = new ProductApiServer(
     auth,
@@ -100,6 +117,7 @@ try {
     }),
     abuseRateLimiter,
     release,
+    passwordReset,
   );
   retentionMaintenance = new ProductRetentionMaintenance(
     new PostgresRetentionRepository(database),

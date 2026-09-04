@@ -70,10 +70,10 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     await database?.close();
   });
 
-  it('applies immutable migrations through 0010 for fresh and 0001-0008 upgrade databases', async () => {
-    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9, 10] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  it('applies immutable migrations through 0011 for fresh and 0001-0008 upgrade databases', async () => {
+    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9, 10, 11] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     const indexes = await database.query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
        WHERE schemaname = 'public' AND indexname LIKE '%_retention_terminal_idx'
@@ -81,6 +81,7 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     );
     expect(indexes.rows.map((row) => row.indexname)).toEqual([
       'auth_sessions_retention_terminal_idx',
+      'password_reset_requests_retention_terminal_idx',
       'workspace_invitations_retention_terminal_idx',
     ]);
   });
@@ -129,6 +130,17 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
        ($4, '2026-01-01T00:00:00Z', 5, '2026-09-03T13:00:00.000Z', '2026-08-04T11:59:59.999Z')`,
       [40, 41, 42, 43].map(hashByte),
     );
+    const resetIds = Array.from({ length: 5 }, () => randomUUID());
+    await database.query(
+      `INSERT INTO password_reset_requests
+         (id, user_id, token_hash, created_at, expires_at, consumed_at, revoked_at) VALUES
+       ($1, $6, $7,  '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-08-04T11:59:59.999Z', NULL),
+       ($2, $6, $8,  '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', NULL, '2026-08-04T11:59:59.999Z'),
+       ($3, $6, $9,  '2026-01-01T00:00:00Z', '2026-08-04T11:59:59.999Z', NULL, NULL),
+       ($4, $6, $10, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-08-04T12:00:00.000Z', NULL),
+       ($5, $6, $11, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', NULL, '2026-09-03T11:00:00.000Z')`,
+      [...resetIds, userId, ...[120, 121, 122, 123, 124].map(hashByte)],
+    );
     await database.query(
       `INSERT INTO audit_logs (workspace_id, actor_user_id, action)
        VALUES ($1, $2, 'retention.boundary_fixture')`,
@@ -137,6 +149,7 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
 
     await expect(repository.deleteTerminalSessionsBatch({ batchSize: 100, cutoff })).resolves.toBe(2);
     await expect(repository.deleteTerminalInvitationsBatch({ batchSize: 100, cutoff })).resolves.toBe(3);
+    await expect(repository.deleteTerminalPasswordResetsBatch({ batchSize: 100, cutoff })).resolves.toBe(3);
     await expect(repository.deleteStaleLoginRateLimitsBatch({
       batchSize: 100,
       cutoff,
@@ -151,6 +164,10 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
       'SELECT id FROM workspace_invitations WHERE workspace_id = $1 ORDER BY id', [workspaceId],
     );
     expect(invitations.rows.map((row) => row.id).sort()).toEqual(invitationIds.slice(3).sort());
+    const resets = await database.query<{ id: string }>(
+      'SELECT id FROM password_reset_requests WHERE user_id = $1 ORDER BY id', [userId],
+    );
+    expect(resets.rows.map((row) => row.id).sort()).toEqual(resetIds.slice(3).sort());
     expect((await database.query('SELECT 1 FROM users WHERE id = $1', [userId])).rowCount).toBe(1);
     expect((await database.query(
       `SELECT 1 FROM audit_logs WHERE workspace_id = $1 AND action = 'retention.boundary_fixture'`,
@@ -158,6 +175,7 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     )).rowCount).toBe(1);
     await expect(repository.deleteTerminalSessionsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
     await expect(repository.deleteTerminalInvitationsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
+    await expect(repository.deleteTerminalPasswordResetsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
     await expect(repository.deleteStaleLoginRateLimitsBatch({ batchSize: 100, cutoff, referenceTime })).resolves.toBe(0);
   });
 
@@ -238,9 +256,18 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
          LIMIT 10 FOR UPDATE SKIP LOCKED`,
         [cutoff],
       );
-      return [sessions.rows[0]['QUERY PLAN'], invitations.rows[0]['QUERY PLAN']];
+      const resets = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT id FROM password_reset_requests
+         WHERE COALESCE(consumed_at, revoked_at, expires_at) < $1
+         ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id
+         LIMIT 10 FOR UPDATE SKIP LOCKED`,
+        [cutoff],
+      );
+      return [sessions.rows[0]['QUERY PLAN'], invitations.rows[0]['QUERY PLAN'], resets.rows[0]['QUERY PLAN']];
     });
     expect(JSON.stringify(plans[0])).toContain('auth_sessions_retention_terminal_idx');
     expect(JSON.stringify(plans[1])).toContain('workspace_invitations_retention_terminal_idx');
+    expect(JSON.stringify(plans[2])).toContain('password_reset_requests_retention_terminal_idx');
   });
 });

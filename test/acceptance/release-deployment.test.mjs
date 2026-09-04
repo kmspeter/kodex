@@ -146,7 +146,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
     vendorManifestSha256: await sha256File(path.join(appRoot, 'metadata', 'VENDOR_SOURCE_SHA256.json')),
   });
   const manifest = await verifyReleaseArtifact(releaseRoot);
-  expect(manifest.database.migrations.at(-1)?.version).toBe(10);
+  expect(manifest.database.migrations.at(-1)?.version).toBe(11);
   await runPackagedVerifier();
 
   const firstPort = await unusedLoopbackPort();
@@ -155,11 +155,11 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   const version = await fetch(`http://127.0.0.1:${firstPort}/api/version`);
   expect(await version.json()).toEqual({ version: application.version, commit: releaseCommit });
   const ledger = await database.query('SELECT count(*)::integer AS count, max(version)::integer AS latest FROM schema_migrations');
-  expect(ledger.rows[0]).toEqual({ count: 10, latest: 10 });
+  expect(ledger.rows[0]).toEqual({ count: 11, latest: 11 });
   await stopRuntimeChildren([first]);
 
   await database.query(
-    'INSERT INTO schema_migrations (version, name, checksum) VALUES (11, $1, $2)',
+    'INSERT INTO schema_migrations (version, name, checksum) VALUES (12, $1, $2)',
     ['future_release_only', '0'.repeat(64)],
   );
   const rejectedPort = await unusedLoopbackPort();
@@ -167,7 +167,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   expect(await waitForExit(rejected)).toBe(true);
   await expect(fetch(`http://127.0.0.1:${rejectedPort}/api/health/live`)).rejects.toThrow();
 
-  await database.query('DELETE FROM schema_migrations WHERE version = 11');
+  await database.query('DELETE FROM schema_migrations WHERE version = 12');
   const recoveredPort = await unusedLoopbackPort();
   const recovered = await startReleasedApi(recoveredPort);
   await waitForReady(recovered, `http://127.0.0.1:${recoveredPort}/api/health/ready`, 'Recovered Product API', 30_000);

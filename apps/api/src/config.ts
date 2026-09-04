@@ -2,6 +2,8 @@ export interface ProductApiConfig {
   abuseRateLimitPolicies?: {
     invitation_accept: { blockMs: number; maxAttempts: number; windowMs: number };
     invitation_preview: { blockMs: number; maxAttempts: number; windowMs: number };
+    password_reset_complete: { blockMs: number; maxAttempts: number; windowMs: number };
+    password_reset_request: { blockMs: number; maxAttempts: number; windowMs: number };
     register: { blockMs: number; maxAttempts: number; windowMs: number };
   };
   allowedHosts: Set<string>;
@@ -25,6 +27,7 @@ export interface ProductRetentionMaintenanceConfig {
   intervalMs: number;
   invitationRetentionMs: number;
   maxBatches: number;
+  passwordResetRetentionMs: number;
   sessionRetentionMs: number;
 }
 
@@ -254,6 +257,52 @@ export function productApiConfigFromEnv(
           86_400,
         ) * 1_000,
       },
+      password_reset_request: {
+        maxAttempts: boundedInteger(
+          env.AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_ATTEMPTS,
+          'AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_WINDOW_SECONDS',
+          3_600,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_PASSWORD_RESET_REQUEST_RATE_LIMIT_BLOCK_SECONDS',
+          3_600,
+          30,
+          86_400,
+        ) * 1_000,
+      },
+      password_reset_complete: {
+        maxAttempts: boundedInteger(
+          env.AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_ATTEMPTS,
+          'AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_WINDOW_SECONDS',
+          900,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_PASSWORD_RESET_COMPLETE_RATE_LIMIT_BLOCK_SECONDS',
+          900,
+          30,
+          86_400,
+        ) * 1_000,
+      },
     },
     loginRateLimitMaxAttempts: boundedInteger(
       env.AUTH_LOGIN_RATE_LIMIT_ATTEMPTS,
@@ -339,6 +388,13 @@ export function productRetentionMaintenanceConfigFromEnv(
     invitationRetentionMs: boundedInteger(
       env.PRODUCT_RETENTION_INVITATION_DAYS,
       'PRODUCT_RETENTION_INVITATION_DAYS',
+      30,
+      1,
+      3_650,
+    ) * 24 * 60 * 60 * 1_000,
+    passwordResetRetentionMs: boundedInteger(
+      env.PRODUCT_RETENTION_PASSWORD_RESET_DAYS,
+      'PRODUCT_RETENTION_PASSWORD_RESET_DAYS',
       30,
       1,
       3_650,

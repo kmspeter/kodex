@@ -16,7 +16,13 @@ const baseTime = new Date('2026-09-03T12:00:00.000Z');
 
 function policies(maxAttempts = 3): AbuseRateLimitPolicies {
   const policy = { maxAttempts, windowMs: 60_000, blockMs: 30_000 };
-  return { register: policy, invitation_preview: policy, invitation_accept: policy };
+  return {
+    register: policy,
+    invitation_preview: policy,
+    invitation_accept: policy,
+    password_reset_request: policy,
+    password_reset_complete: policy,
+  };
 }
 
 function registerSubjects(address: string, email: string) {
@@ -56,12 +62,12 @@ describe(`real PostgreSQL product abuse limiter (${mode})`, () => {
     await database?.close();
   });
 
-  it('applies migration 0010 on fresh and immutable 0001-0009 ledgers with enforced checks', async () => {
+  it('applies migrations 0010-0011 on fresh and immutable 0001-0009 ledgers with enforced checks', async () => {
     expect(migratedVersions).toEqual(mode === 'legacy-upgrade'
-      ? [10]
-      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      ? [10, 11]
+      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     const columns = await database.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = 'product_abuse_rate_limits'

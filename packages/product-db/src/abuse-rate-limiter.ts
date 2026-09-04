@@ -2,7 +2,12 @@ import { createHmac } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { ProductDatabase } from './database.js';
 
-export type AbuseRateLimitAction = 'register' | 'invitation_preview' | 'invitation_accept';
+export type AbuseRateLimitAction =
+  | 'register'
+  | 'invitation_preview'
+  | 'invitation_accept'
+  | 'password_reset_request'
+  | 'password_reset_complete';
 export type AbuseRateLimitSubjectKind = 'account' | 'address' | 'email' | 'token';
 
 export interface AbuseRateLimitPolicy {
@@ -59,6 +64,8 @@ const ACTION_SUBJECTS: Readonly<Record<AbuseRateLimitAction, readonly AbuseRateL
   register: ['address', 'email'],
   invitation_preview: ['address', 'token'],
   invitation_accept: ['account', 'address', 'token'],
+  password_reset_request: ['address', 'email'],
+  password_reset_complete: ['address', 'token'],
 };
 
 function validatePolicy(action: AbuseRateLimitAction, policy: AbuseRateLimitPolicy): void {

@@ -28,8 +28,10 @@ const fakeSmoke = process.argv.includes('--smoke');
 const fullStackAcceptance = process.argv.includes('--full-stack-acceptance');
 const workspaceLifecycleAcceptance = process.argv.includes('--workspace-lifecycle-acceptance');
 const workspaceInvitationAcceptance = process.argv.includes('--workspace-invitation-acceptance');
+const passwordResetAcceptance = process.argv.includes('--password-reset-acceptance');
 const repositoryRagAcceptance = process.argv.includes('--repository-rag-acceptance');
-const desktopAcceptance = fullStackAcceptance || workspaceLifecycleAcceptance || workspaceInvitationAcceptance || repositoryRagAcceptance;
+const desktopAcceptance = fullStackAcceptance || workspaceLifecycleAcceptance || workspaceInvitationAcceptance
+  || passwordResetAcceptance || repositoryRagAcceptance;
 const smoke = fakeSmoke || process.argv.includes('--smoke-real') || desktopAcceptance;
 const children = [];
 let mainWindow = null;
@@ -41,7 +43,8 @@ let acceptanceArtifactDirectory = null;
 
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
   void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
-}, repositoryRagAcceptance ? 270_000 : workspaceLifecycleAcceptance || workspaceInvitationAcceptance ? 210_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
+}, repositoryRagAcceptance ? 270_000 : workspaceLifecycleAcceptance || workspaceInvitationAcceptance || passwordResetAcceptance
+  ? 210_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
 
 if (desktopAcceptance) {
   const isolatedUserData = path.resolve(process.env.KODEX_DESKTOP_ACCEPTANCE_USER_DATA?.trim() ?? '');
@@ -185,6 +188,7 @@ async function startServices() {
     PRODUCT_API_ALLOWED_HOSTS: `127.0.0.1:${productPort}`,
     AUTH_ALLOWED_ORIGINS: localOrigin,
     AUTH_COOKIE_SECURE: 'false',
+    AUTH_PASSWORD_RESET_PUBLIC_ORIGIN: passwordResetAcceptance ? localOrigin : undefined,
     KODEX_UI_ORIGINS: localOrigin,
   }), `${productOrigin}/api/health/ready`, root);
 
@@ -345,6 +349,32 @@ async function launch() {
       productOrigin,
     });
     process.stdout.write('Kodex desktop workspace invitation acceptance passed through renderer DOM interactions.\n');
+    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+    quitting = true;
+    launchComplete = false;
+    mainWindow.destroy();
+    mainWindow = null;
+    await stopServices();
+    app.quit();
+    return;
+  }
+
+  if (passwordResetAcceptance) {
+    smokeStage = 'running the password reset renderer DOM acceptance scenario';
+    const { runDesktopPasswordResetAcceptance } = await import('./password-reset-acceptance-driver.mjs');
+    await runDesktopPasswordResetAcceptance(mainWindow, {
+      artifactDirectory: acceptanceArtifactDirectory,
+      databaseUrl: process.env.DATABASE_URL,
+      deliveryProbeBearer: process.env.KODEX_DESKTOP_ACCEPTANCE_DELIVERY_PROBE_BEARER,
+      deliveryProbeUrl: process.env.KODEX_DESKTOP_ACCEPTANCE_DELIVERY_PROBE_URL,
+      displayName: process.env.KODEX_DESKTOP_ACCEPTANCE_DISPLAY_NAME,
+      email: process.env.KODEX_DESKTOP_ACCEPTANCE_EMAIL,
+      localOrigin,
+      newPassword: process.env.KODEX_DESKTOP_ACCEPTANCE_NEW_PASSWORD,
+      oldPassword: process.env.KODEX_DESKTOP_ACCEPTANCE_OLD_PASSWORD,
+      productOrigin,
+    });
+    process.stdout.write('Kodex desktop password reset acceptance passed through renderer DOM interactions.\n');
     if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
     quitting = true;
     launchComplete = false;

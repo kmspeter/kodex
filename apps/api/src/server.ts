@@ -44,6 +44,7 @@ import {
   KnowledgeCursorError,
   KnowledgeNotFoundError,
   KnowledgeOperationError,
+  PasswordResetServiceError,
   WorkspaceInvitationError,
   WorkspaceCursorError,
   WorkspaceOperationError,
@@ -83,6 +84,11 @@ export interface KnowledgeApplication {
 
 export interface ProductApiReadiness {
   check(): Promise<void>;
+}
+
+export interface PasswordResetApplication {
+  complete(value: unknown, request: { directAddress: string }): Promise<number>;
+  request(value: unknown, request: { directAddress: string }): Promise<{ deliveryFailed: boolean }>;
 }
 
 class HttpError extends Error {
@@ -245,6 +251,20 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     json(response, status, { ok: false, error: { code, message } });
     return;
   }
+  if (error instanceof PasswordResetServiceError) {
+    if (error.code === 'reset_unavailable') {
+      json(response, 410, {
+        ok: false,
+        error: { code: 'reset_unavailable', message: 'The password reset is invalid or no longer available.' },
+      });
+    } else {
+      json(response, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: 'The password reset request is invalid.' },
+      });
+    }
+    return;
+  }
   if (error instanceof HistoryCursorError) {
     json(response, 400, {
       ok: false,
@@ -321,6 +341,7 @@ export class ProductApiServer {
     private readonly workspaces?: WorkspaceApplication,
     private readonly abuseRateLimiter?: AbuseRateLimiter,
     private readonly release?: ProductReleaseIdentity,
+    private readonly passwordReset?: PasswordResetApplication,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -468,6 +489,41 @@ export class ProductApiServer {
           context,
           createCsrfToken(sessionToken, this.config.cookieSecret),
         ));
+        return;
+      }
+      if (url.pathname === '/api/auth/password-reset/request' && request.method === 'POST') {
+        verifyOrigin(request, this.config.allowedOrigins);
+        requireJson(request);
+        if (!this.passwordReset) {
+          throw new HttpError(503, 'auth_unavailable', 'Account recovery is temporarily unavailable.');
+        }
+        const result = await this.passwordReset.request(
+          await readJsonBody(request, this.config.maxBodyBytes),
+          { directAddress: request.socket.remoteAddress ?? 'unavailable' },
+        );
+        if (result.deliveryFailed) {
+          process.stderr.write(`${JSON.stringify({
+            category: 'password_reset_delivery',
+            outcome: 'failed',
+            errorClass: 'DeliveryError',
+          })}\n`);
+        }
+        json(response, 202, { ok: true });
+        return;
+      }
+      if (url.pathname === '/api/auth/password-reset/complete' && request.method === 'POST') {
+        verifyOrigin(request, this.config.allowedOrigins);
+        requireJson(request);
+        if (!this.passwordReset) {
+          throw new HttpError(503, 'auth_unavailable', 'Account recovery is temporarily unavailable.');
+        }
+        await this.passwordReset.complete(
+          await readJsonBody(request, this.config.maxBodyBytes),
+          { directAddress: request.socket.remoteAddress ?? 'unavailable' },
+        );
+        response.statusCode = 204;
+        response.setHeader('Set-Cookie', clearSessionCookies(this.config.secureCookies));
+        response.end();
         return;
       }
       if (url.pathname === '/api/auth/sessions' && request.method === 'GET') {

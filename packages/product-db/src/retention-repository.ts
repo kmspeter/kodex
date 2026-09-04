@@ -12,6 +12,7 @@ export interface RateLimitRetentionBatchInput extends RetentionBatchInput {
 export interface RetentionRepository {
   deleteStaleAbuseRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
   deleteStaleLoginRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
+  deleteTerminalPasswordResetsBatch(input: RetentionBatchInput): Promise<number>;
   deleteTerminalInvitationsBatch(input: RetentionBatchInput): Promise<number>;
   deleteTerminalSessionsBatch(input: RetentionBatchInput): Promise<number>;
 }
@@ -70,6 +71,25 @@ export class PostgresRetentionRepository implements RetentionRepository {
        DELETE FROM workspace_invitations AS invitation
        USING candidates
        WHERE invitation.id = candidates.id`,
+      [input.cutoff, input.batchSize],
+    );
+    return deletedRows(result.rowCount);
+  }
+
+  async deleteTerminalPasswordResetsBatch(input: RetentionBatchInput): Promise<number> {
+    validateBatch(input);
+    const result = await this.database.query(
+      `WITH candidates AS (
+         SELECT id
+         FROM password_reset_requests
+         WHERE COALESCE(consumed_at, revoked_at, expires_at) < $1
+         ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM password_reset_requests AS reset
+       USING candidates
+       WHERE reset.id = candidates.id`,
       [input.cutoff, input.batchSize],
     );
     return deletedRows(result.rowCount);

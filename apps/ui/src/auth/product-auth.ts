@@ -360,6 +360,39 @@ export class ProductAuthClient {
     return this.#establish('/api/auth/register', 201, input);
   }
 
+  async requestPasswordReset(email: string): Promise<void> {
+    const response = await this.#request('/api/auth/password-reset/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (response.status !== 202) {
+      throw new ProductAuthError('invalid-response', 'The password reset request status was invalid.', response.status);
+    }
+    const body = await this.#json(response);
+    if (
+      !body
+      || typeof body !== 'object'
+      || Array.isArray(body)
+      || Object.keys(body).length !== 1
+      || (body as { ok?: unknown }).ok !== true
+    ) {
+      throw new ProductAuthError('invalid-response', 'The password reset request response was invalid.');
+    }
+  }
+
+  async completePasswordReset(token: string, newPassword: string): Promise<void> {
+    const response = await this.#request('/api/auth/password-reset/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, newPassword }),
+    });
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The password reset completion status was invalid.', response.status);
+    }
+    this.#invalidateSession();
+  }
+
   async logout(): Promise<void> {
     const csrfToken = this.#csrfToken;
     if (!csrfToken) {

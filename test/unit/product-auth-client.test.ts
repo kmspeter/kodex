@@ -424,6 +424,44 @@ describe('product auth browser contract', () => {
     });
   });
 
+  it('uses the public recovery boundary and invalidates in-memory session state after completion', async () => {
+    const resetToken = 'R'.repeat(43);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }, 202))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const invalidated = vi.fn();
+    client.onUnauthenticated(invalidated);
+    await client.me();
+    const generation = client.sessionGeneration;
+    await client.requestPasswordReset('person@example.com');
+    await client.completePasswordReset(resetToken, 'new password long enough');
+
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:47832/api/auth/password-reset/request',
+      'http://127.0.0.1:47832/api/auth/password-reset/complete',
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ email: 'person@example.com' });
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      token: resetToken,
+      newPassword: 'new password long enough',
+    });
+    expect(client.sessionGeneration).toBe(generation + 1);
+    expect(invalidated).toHaveBeenCalledOnce();
+
+    const revealing = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ ok: true, accountExists: true }, 202)),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await expect(revealing.requestPasswordReset('person@example.com'))
+      .rejects.toMatchObject({ kind: 'invalid-response' });
+  });
+
   it('uses CSRF-protected workspace APIs and strictly parses allowlisted responses', async () => {
     const workspaceId = '20000000-0000-4000-8000-000000000001';
     const userId = '10000000-0000-4000-8000-000000000001';

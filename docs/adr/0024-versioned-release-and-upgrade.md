@@ -37,7 +37,7 @@ Down migration과 운영 DB ledger 수동 삭제는 제공하지 않는다.
 ## Acceptance와 비목표
 
 `npm run test:release-deployment`는 새 build/runtime를 봉인하고 실제 PostgreSQL 17 pgvector DB에 packaged
-Electron Node runtime의 Product API를 production profile로 실행한다. Fresh DB migration 0001~0010이 listen
+Electron Node runtime의 Product API를 production profile로 실행한다. Fresh DB migration 0001~0011이 listen
 전에 끝났는지, readiness와 exact version/commit을 확인한다. Disposable DB에 future ledger entry를 넣으면
 artifact가 listen 전에 종료되는지 확인하고 fixture를 원상복구한 뒤 같은 verified release 재기동까지
 연습한다. Unit test는 manifest extra/tamper와 tenant 혼입, identity mismatch를 거부한다.

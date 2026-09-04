@@ -20,6 +20,7 @@ function runtimeConfig(overrides: Partial<RetentionMaintenanceRuntimeConfig> = {
     intervalMs: 60_000,
     invitationRetentionMs: 20_000,
     maxBatches: 2,
+    passwordResetRetentionMs: 25_000,
     rateLimitStaleMs: 30_000,
     sessionRetentionMs: 10_000,
     ...overrides,
@@ -31,6 +32,7 @@ function fakeRepository(overrides: Partial<RetentionRepository> = {}): Retention
     deleteStaleAbuseRateLimitsBatch: vi.fn(async () => 0),
     deleteStaleLoginRateLimitsBatch: vi.fn(async () => 0),
     deleteTerminalInvitationsBatch: vi.fn(async () => 0),
+    deleteTerminalPasswordResetsBatch: vi.fn(async () => 0),
     deleteTerminalSessionsBatch: vi.fn(async () => 0),
     ...overrides,
   };
@@ -44,6 +46,7 @@ describe('retention maintenance configuration', () => {
       intervalMs: 3_600_000,
       invitationRetentionMs: 2_592_000_000,
       maxBatches: 10,
+      passwordResetRetentionMs: 2_592_000_000,
       sessionRetentionMs: 2_592_000_000,
     });
     expect(productRetentionMaintenanceConfigFromEnv({
@@ -53,12 +56,14 @@ describe('retention maintenance configuration', () => {
       PRODUCT_RETENTION_MAX_BATCHES: '100',
       PRODUCT_RETENTION_SESSION_DAYS: '3650',
       PRODUCT_RETENTION_INVITATION_DAYS: '2',
+      PRODUCT_RETENTION_PASSWORD_RESET_DAYS: '3',
     })).toEqual({
       batchSize: 1,
       enabled: false,
       intervalMs: 60_000,
       invitationRetentionMs: 172_800_000,
       maxBatches: 100,
+      passwordResetRetentionMs: 259_200_000,
       sessionRetentionMs: 315_360_000_000,
     });
   });
@@ -72,6 +77,7 @@ describe('retention maintenance configuration', () => {
     ['PRODUCT_RETENTION_MAX_BATCHES', '101'],
     ['PRODUCT_RETENTION_SESSION_DAYS', '0'],
     ['PRODUCT_RETENTION_INVITATION_DAYS', '3651'],
+    ['PRODUCT_RETENTION_PASSWORD_RESET_DAYS', '0'],
   ])('rejects invalid %s before startup', (name, value) => {
     expect(() => productRetentionMaintenanceConfigFromEnv({ [name]: value }))
       .toThrow(ProductApiConfigurationError);
@@ -85,6 +91,7 @@ describe('product retention coordinator', () => {
       deleteTerminalSessionsBatch: vi.fn(async () => 2),
       deleteTerminalInvitationsBatch: vi.fn(async () => 3),
       deleteStaleLoginRateLimitsBatch: vi.fn(async () => 4),
+      deleteTerminalPasswordResetsBatch: vi.fn(async () => 0),
     });
     const events: RetentionMaintenanceLogEvent[] = [];
     const maintenance = new ProductRetentionMaintenance(repository, runtimeConfig(), {
@@ -106,6 +113,10 @@ describe('product retention coordinator', () => {
       cutoff: new Date('2026-09-03T11:59:30.000Z'),
       referenceTime,
     });
+    expect(repository.deleteTerminalPasswordResetsBatch).toHaveBeenCalledWith({
+      batchSize: 5,
+      cutoff: new Date('2026-09-03T11:59:35.000Z'),
+    });
     expect(repository.deleteStaleAbuseRateLimitsBatch).toHaveBeenCalledWith({
       batchSize: 5,
       cutoff: new Date('2026-09-03T11:59:20.000Z'),
@@ -117,6 +128,7 @@ describe('product retention coordinator', () => {
       category: 'product_retention_maintenance',
       invitationsDeleted: 3,
       outcome: 'complete',
+      passwordResetsDeleted: 0,
       rateLimitsDeleted: 4,
       sessionsDeleted: 2,
       trigger: 'startup',
@@ -134,6 +146,7 @@ describe('product retention coordinator', () => {
       deleteTerminalSessionsBatch: sessions,
       deleteTerminalInvitationsBatch: vi.fn(async () => 5),
       deleteStaleLoginRateLimitsBatch: vi.fn(async () => 5),
+      deleteTerminalPasswordResetsBatch: vi.fn(async () => 5),
     });
     const maintenance = new ProductRetentionMaintenance(repository, runtimeConfig({ maxBatches: 2 }));
 
@@ -163,6 +176,7 @@ describe('product retention coordinator', () => {
       errorClass: 'Error',
       invitationsDeleted: 0,
       outcome: 'failed',
+      passwordResetsDeleted: 0,
       rateLimitsDeleted: 0,
       sessionsDeleted: 0,
       trigger: 'periodic',

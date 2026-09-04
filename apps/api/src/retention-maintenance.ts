@@ -10,6 +10,7 @@ export interface RetentionMaintenanceCounts {
   abuseRateLimitsDeleted: number;
   batches: number;
   invitationsDeleted: number;
+  passwordResetsDeleted: number;
   rateLimitsDeleted: number;
   sessionsDeleted: number;
 }
@@ -43,6 +44,7 @@ function assertRuntimeConfig(config: RetentionMaintenanceRuntimeConfig): void {
   for (const [name, value] of [
     ['session retention', config.sessionRetentionMs],
     ['invitation retention', config.invitationRetentionMs],
+    ['password reset retention', config.passwordResetRetentionMs],
     ['rate-limit stale age', config.rateLimitStaleMs],
     ['abuse rate-limit stale age', config.abuseRateLimitStaleMs],
   ] as const) {
@@ -62,6 +64,7 @@ function emptyCounts(): RetentionMaintenanceCounts {
     abuseRateLimitsDeleted: 0,
     batches: 0,
     invitationsDeleted: 0,
+    passwordResetsDeleted: 0,
     rateLimitsDeleted: 0,
     sessionsDeleted: 0,
   };
@@ -128,6 +131,7 @@ export class ProductRetentionMaintenance {
       if (!Number.isFinite(referenceTime.getTime())) throw new Error('Retention clock returned an invalid date');
       const sessionCutoff = new Date(referenceTime.getTime() - this.config.sessionRetentionMs);
       const invitationCutoff = new Date(referenceTime.getTime() - this.config.invitationRetentionMs);
+      const passwordResetCutoff = new Date(referenceTime.getTime() - this.config.passwordResetRetentionMs);
       const rateLimitCutoff = new Date(referenceTime.getTime() - this.config.rateLimitStaleMs);
       const abuseRateLimitCutoff = new Date(referenceTime.getTime() - this.config.abuseRateLimitStaleMs);
 
@@ -145,6 +149,13 @@ export class ProductRetentionMaintenance {
           cutoff: invitationCutoff,
         });
         counts.invitationsDeleted += invitations;
+        if (this.#stopped) break;
+
+        const passwordResets = await this.repository.deleteTerminalPasswordResetsBatch({
+          batchSize: this.config.batchSize,
+          cutoff: passwordResetCutoff,
+        });
+        counts.passwordResetsDeleted += passwordResets;
         if (this.#stopped) break;
 
         const rateLimits = await this.repository.deleteStaleLoginRateLimitsBatch({
@@ -165,6 +176,7 @@ export class ProductRetentionMaintenance {
         if (
           sessions < this.config.batchSize
           && invitations < this.config.batchSize
+          && passwordResets < this.config.batchSize
           && rateLimits < this.config.batchSize
           && abuseRateLimits < this.config.batchSize
         ) break;

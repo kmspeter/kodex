@@ -66,6 +66,7 @@ interface ProductAuthGateProps {
   ) => ReactNode;
   client?: ProductAuthClient;
   initialInvitationToken?: string | null;
+  initialPasswordResetToken?: string | null;
 }
 
 type InvitationPreviewState =
@@ -91,7 +92,12 @@ function AuthUnavailable(props: { message: string; onRetry: () => void }) {
   </section></main>;
 }
 
-export function ProductAuthGate({ children, client: providedClient, initialInvitationToken = null }: ProductAuthGateProps) {
+export function ProductAuthGate({
+  children,
+  client: providedClient,
+  initialInvitationToken = null,
+  initialPasswordResetToken = null,
+}: ProductAuthGateProps) {
   const [clientResult] = useState(() => {
     try {
       return { client: providedClient ?? new ProductAuthClient(), error: null };
@@ -111,6 +117,7 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
   const [invitationAttempt, setInvitationAttempt] = useState(0);
   const [invitationPreview, setInvitationPreview] = useState<InvitationPreviewState>({ status: 'checking' });
   const [invitationOutcome, setInvitationOutcome] = useState('');
+  const [passwordResetToken, setPasswordResetToken] = useState(initialPasswordResetToken);
   const authenticatedContext = state.status === 'authenticated' ? state.context : null;
 
   useEffect(() => {
@@ -299,6 +306,19 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
     />;
   }
 
+  if (passwordResetToken) {
+    return <PasswordResetCompletion
+      client={client}
+      token={passwordResetToken}
+      onComplete={() => {
+        client.clearMemory();
+        setPasswordResetToken(null);
+        setState({ status: 'unauthenticated' });
+      }}
+      onCancel={() => setPasswordResetToken(null)}
+    />;
+  }
+
   if (invitationOutcome) {
     return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="invitation-outcome-title">
       <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
@@ -359,7 +379,7 @@ export function ProductAuthGate({ children, client: providedClient, initialInvit
   );
 }
 
-type AuthMode = 'login' | 'register';
+type AuthMode = 'login' | 'register' | 'recover';
 
 export function passwordByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -373,7 +393,7 @@ export function validateRegistrationPassword(value: string): string | null {
 }
 
 export function AuthForm(props: {
-  client: Pick<ProductAuthClient, 'login' | 'register'>;
+  client: Pick<ProductAuthClient, 'login' | 'register'> & Partial<Pick<ProductAuthClient, 'requestPasswordReset'>>;
   invitation?: ProductWorkspaceInvitationPreview;
   onAuthenticated: (context: ProductAuthContext) => void;
 }) {
@@ -383,12 +403,14 @@ export function AuthForm(props: {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   const emailRef = useRef<HTMLInputElement>(null);
 
   function changeMode(next: AuthMode): void {
     if (busy || next === mode) return;
     setMode(next);
     setError('');
+    setNotice('');
     setPassword('');
     window.setTimeout(() => emailRef.current?.focus(), 0);
   }
@@ -397,6 +419,7 @@ export function AuthForm(props: {
     event.preventDefault();
     if (busy) return;
     const normalizedEmail = email.trim();
+    const requestPasswordReset = props.client.requestPasswordReset;
     if (!normalizedEmail) {
       setError('이메일을 입력하세요.');
       emailRef.current?.focus();
@@ -417,8 +440,12 @@ export function AuthForm(props: {
         setError('표시 이름은 100자 이하여야 합니다.');
         return;
       }
-    } else if (!password || passwordByteLength(password) > 1_024) {
+    } else if (mode === 'login' && (!password || passwordByteLength(password) > 1_024)) {
       setError('이메일 또는 비밀번호를 확인하세요.');
+      return;
+    }
+    if (mode === 'recover' && !requestPasswordReset) {
+      setError('재설정 요청을 처리할 수 없습니다. 잠시 후 다시 시도하세요.');
       return;
     }
 
@@ -426,16 +453,23 @@ export function AuthForm(props: {
     setError('');
     const request = mode === 'login'
       ? props.client.login({ email: normalizedEmail, password })
-      : props.client.register({
-        email: normalizedEmail,
-        password,
-        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-      });
+      : mode === 'register'
+        ? props.client.register({
+          email: normalizedEmail,
+          password,
+          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+        })
+        : requestPasswordReset!(normalizedEmail);
     // The request body has already been constructed. Remove the password from
     // the controlled field while the request is in flight.
     setPassword('');
     try {
-      props.onAuthenticated(await request);
+      const result = await request;
+      if (mode === 'recover') {
+        setNotice('계정이 존재하면 비밀번호 재설정 안내를 보냈습니다. 이메일을 확인하세요.');
+      } else {
+        props.onAuthenticated(result as ProductAuthContext);
+      }
     } catch (requestError) {
       if (requestError instanceof ProductAuthError && requestError.kind === 'unavailable') {
         setError('인증 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');
@@ -444,7 +478,9 @@ export function AuthForm(props: {
       } else {
         setError(mode === 'login'
           ? '이메일 또는 비밀번호가 올바르지 않습니다.'
-          : '계정을 만들 수 없습니다. 입력을 확인하거나 잠시 후 다시 시도하세요.');
+          : mode === 'register'
+            ? '계정을 만들 수 없습니다. 입력을 확인하거나 잠시 후 다시 시도하세요.'
+            : '재설정 요청을 처리할 수 없습니다. 잠시 후 다시 시도하세요.');
       }
     } finally {
       setBusy(false);
@@ -455,7 +491,7 @@ export function AuthForm(props: {
     <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
     {props.invitation && <div className="invitation-auth-note"><Mail size={17} /><div><strong>{props.invitation.workspaceName} 초대</strong><span>{props.invitation.targetEmailHint} · {props.invitation.role}</span><small>로그인하거나 가입한 뒤 이 화면에서 초대를 수락합니다.</small></div></div>}
     <div className="auth-heading"><div className="auth-status-icon"><LockKeyhole size={19} /></div><div>
-      <h1 id="auth-title">{mode === 'login' ? 'Kodex에 로그인' : 'Kodex 계정 만들기'}</h1>
+      <h1 id="auth-title">{mode === 'login' ? 'Kodex에 로그인' : mode === 'register' ? 'Kodex 계정 만들기' : '비밀번호 재설정'}</h1>
       <p>계정 확인 후 로컬 에이전트 작업공간을 시작합니다.</p>
     </div></div>
     <div className="auth-tabs" role="tablist" aria-label="인증 방법">
@@ -465,12 +501,68 @@ export function AuthForm(props: {
     <form className="auth-form" onSubmit={(event) => void submit(event)} noValidate>
       {mode === 'register' && <label>표시 이름 <span>선택</span><input name="displayName" type="text" autoComplete="name" maxLength={100} value={displayName} disabled={busy} onChange={(event) => setDisplayName(event.target.value)} /></label>}
       <label>이메일<input ref={emailRef} name="email" type="email" autoComplete="email" inputMode="email" required value={email} disabled={busy} onChange={(event) => setEmail(event.target.value)} /></label>
-      <label>비밀번호<input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} aria-describedby={mode === 'register' ? 'password-help' : undefined} /></label>
+      {mode !== 'recover' && <label>비밀번호<input name="password" type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} aria-describedby={mode === 'register' ? 'password-help' : undefined} /></label>}
       {mode === 'register' && <p className="auth-help" id="password-help">UTF-8 기준 12~1,024바이트. 한글과 이모지는 문자 수보다 더 많은 바이트를 사용할 수 있습니다.</p>}
       {error && <p className="auth-error" role="alert">{error}</p>}
-      <button className="auth-submit" type="submit" disabled={busy}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '확인 중…' : mode === 'login' ? '로그인' : '계정 만들기'}</button>
+      {notice && <p className="auth-help" role="status">{notice}</p>}
+      <button className="auth-submit" type="submit" disabled={busy || (mode === 'recover' && !props.client.requestPasswordReset)}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '확인 중…' : mode === 'login' ? '로그인' : mode === 'register' ? '계정 만들기' : '재설정 안내 보내기'}</button>
+      {mode === 'login' && <button className="auth-link-button" type="button" disabled={busy} onClick={() => changeMode('recover')}>비밀번호를 잊으셨나요?</button>}
+      {mode === 'recover' && <button className="auth-link-button" type="button" disabled={busy} onClick={() => changeMode('login')}>로그인으로 돌아가기</button>}
     </form>
     <p className="auth-security-note">세션은 브라우저의 HttpOnly 쿠키로만 관리되며 비밀번호를 기기에 저장하지 않습니다.</p>
+  </section></main>;
+}
+
+function PasswordResetCompletion(props: {
+  client: Pick<ProductAuthClient, 'completePasswordReset'>;
+  onCancel: () => void;
+  onComplete: () => void;
+  token: string;
+}) {
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (busy) return;
+    const passwordError = validateRegistrationPassword(password);
+    if (passwordError) { setError(passwordError); return; }
+    if (password !== confirmation) { setError('새 비밀번호 확인이 일치하지 않습니다.'); return; }
+    setBusy(true);
+    setError('');
+    const request = props.client.completePasswordReset(props.token, password);
+    setPassword('');
+    setConfirmation('');
+    try {
+      await request;
+      props.onComplete();
+    } catch (requestError) {
+      if (requestError instanceof ProductAuthError && requestError.kind === 'unavailable') {
+        setError('인증 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요.');
+      } else {
+        setError('재설정 링크가 유효하지 않거나 만료·사용되었습니다. 새 안내를 요청하세요.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="auth-screen"><section className="auth-card" aria-labelledby="password-reset-title">
+    <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+    <div className="auth-heading"><div className="auth-status-icon"><LockKeyhole size={19} /></div><div>
+      <h1 id="password-reset-title">새 비밀번호 설정</h1>
+      <p>완료하면 기존의 모든 로그인 세션이 종료됩니다.</p>
+    </div></div>
+    <form className="auth-form" onSubmit={(event) => void submit(event)} noValidate>
+      <label>새 비밀번호<input name="newPassword" type="password" autoComplete="new-password" required value={password} disabled={busy} onChange={(event) => setPassword(event.target.value)} /></label>
+      <label>새 비밀번호 확인<input name="confirmPassword" type="password" autoComplete="new-password" required value={confirmation} disabled={busy} onChange={(event) => setConfirmation(event.target.value)} /></label>
+      <p className="auth-help">UTF-8 기준 12~1,024바이트입니다.</p>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <button className="auth-submit" type="submit" disabled={busy}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '변경 중…' : '비밀번호 변경'}</button>
+      <button className="auth-link-button" type="button" disabled={busy} onClick={props.onCancel}>취소</button>
+    </form>
   </section></main>;
 }
 

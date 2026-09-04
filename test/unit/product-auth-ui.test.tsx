@@ -178,6 +178,67 @@ describe('product authentication UI', () => {
     expect(container.textContent).not.toContain('Account could not be created');
   });
 
+  it('requests recovery with a generic account-existence-safe confirmation', async () => {
+    const requestPasswordReset = vi.fn(async () => undefined);
+    await act(async () => root.render(<AuthForm
+      client={{ login: vi.fn(), register: vi.fn(), requestPasswordReset }}
+      onAuthenticated={() => undefined}
+    />));
+    const forgot = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === '비밀번호를 잊으셨나요?')!;
+    await act(async () => forgot.click());
+    const email = container.querySelector<HTMLInputElement>('input[name="email"]')!;
+    expect(container.querySelector('input[name="password"]')).toBeNull();
+    await act(async () => setInput(email, 'person@example.com'));
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await flush();
+    });
+    expect(requestPasswordReset).toHaveBeenCalledWith('person@example.com');
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe('계정이 존재하면 비밀번호 재설정 안내를 보냈습니다. 이메일을 확인하세요.');
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain('person@example.com');
+  });
+
+  it('completes a fragment recovery before rendering an existing session and clears both password fields', async () => {
+    const resetToken = 'R'.repeat(43);
+    const fetchMock = vi.fn(async (rawUrl: string | URL | Request, _init?: RequestInit) => (
+      String(rawUrl).endsWith('/api/auth/me')
+        ? jsonResponse({ ok: false, error: { code: 'unauthenticated', message: 'Authentication is required.' } }, 401)
+        : new Response(null, { status: 204 })
+    ));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await act(async () => {
+      root.render(<ProductAuthGate client={client} initialPasswordResetToken={resetToken}>
+        {() => <div>runtime must stay hidden</div>}
+      </ProductAuthGate>);
+      await flush();
+    });
+    expect(container.textContent).toContain('새 비밀번호 설정');
+    expect(container.textContent).not.toContain('runtime must stay hidden');
+    const password = container.querySelector<HTMLInputElement>('input[name="newPassword"]')!;
+    const confirmation = container.querySelector<HTMLInputElement>('input[name="confirmPassword"]')!;
+    await act(async () => {
+      setInput(password, 'new password long enough');
+      setInput(confirmation, 'new password long enough');
+    });
+    await act(async () => {
+      container.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await flush();
+    });
+    const completion = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/auth/password-reset/complete'));
+    expect(JSON.parse(String(completion?.[1]?.body))).toEqual({
+      token: resetToken,
+      newPassword: 'new password long enough',
+    });
+    expect(password.value).toBe('');
+    expect(confirmation.value).toBe('');
+    expect(container.textContent).toContain('Kodex에 로그인');
+  });
+
   it('keeps 401 on the login path and gives 5xx a distinct retry screen', async () => {
     const unauthorizedClient = new ProductAuthClient({
       apiBase: 'http://localhost:47832',
