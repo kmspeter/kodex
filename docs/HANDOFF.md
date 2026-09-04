@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only d01c10e18beb8e446e617a60e02935d96586152b..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only d694c7a97eb7f2a9cf08d8b4cbad538b785f5fe8..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,19 +28,19 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-04 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `d01c10e18beb8e446e617a60e02935d96586152b` |
-| 제품 기준 commit | `feat: backfill Codex thread history` |
-| 완료 범위 | Phase 1~23 |
-| 다음 핵심 기능 | 배포/upgrade와 backup/restore 재해 복구 |
+| 제품 기준 HEAD | `d694c7a97eb7f2a9cf08d8b4cbad538b785f5fe8` |
+| 제품 기준 commit | `feat: add verified offline backup and restore` |
+| 완료 범위 | Phase 1~24 |
+| 다음 핵심 기능 | 배포/upgrade와 계정 복구 |
 
-Phase 1~23에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~24에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
-backfill/reconciliation까지 구현했다. 상세 계약은
+backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0022](adr/0022-app-server-history-backfill-reconciliation.md)까지가 기준이다.
+[ADR 0023](adr/0023-offline-backup-restore.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -129,23 +129,44 @@ typecheck, build, UI bundle/server-secret 검사, vendored Codex 6,687-file inte
 workspace lifecycle/invitation/repository RAG acceptance도 통과했다. `test:history-postgres`는 이제 고유한
 `--rm` pgvector container를 만들고 `finally`에서 정리한다.
 
+## Phase 24 계약과 최종 검증
+
+Phase 24의 원본 결정은 [ADR 0023](adr/0023-offline-backup-restore.md), 운영 절차는
+[offline backup/restore runbook](operations/backup-restore.md)이다.
+
+- Backup은 모든 Local Server/Electron을 정지한 offline 상태에서 PostgreSQL custom-format dump와
+  `KODEX_DATA_ROOT`를 함께 새 directory에 만든다. Runtime start-intent와 maintenance lock의 양방향 검사로
+  backup 도중 새 tenant runtime이 시작되는 경쟁을 fail-closed 처리한다.
+- Manifest v1은 application version/optional commit, ordered migration ledger, DB dump와 모든 tenant regular
+  file의 relative path/size/SHA-256만 기록한다. DB URL, password, absolute path와 process secret은 기록하지
+  않으며 symlink/special file/unlisted file/tamper를 거부한다.
+- Restore는 manifest를 먼저 검증하고 빈 PostgreSQL DB와 존재하지 않는 새 data root에만 수행한다. 복사된
+  대상 tenant file도 manifest와 다시 대조한다. 실패한 `pg_restore` target은 부분 상태일 수 있어 폐기하고
+  새 빈 DB에서 재시작한다.
+- Source CLI와 portable runtime의 `Kodex-Backup.cmd`가 같은 구현을 사용한다. `verify-full`은 system trust
+  또는 bounded `PRODUCT_DB_CA_CERT`를 사용하며 DB password는 child argument에 넣지 않는다.
+
+2026-09-04에 commit `d694c7a97eb7f2a9cf08d8b4cbad538b785f5fe8` 대상으로 전체 212 unit test, lint,
+typecheck, build, UI bundle/server-secret 검사, vendored Codex 6,687-file integrity, API full-stack, Electron
+full-stack, production smoke, rebuilt portable runtime smoke가 통과했다. `test:backup-restore`는 source/target
+두 실제 PostgreSQL 17 pgvector container에서 Argon2 login, workspace, History, RAG와 pending outbox의
+backup→restore를 검증하며 active/runtime-start lock, existing target, unlisted file과 checksum tamper를
+거부한다. Packaged `Kodex-Backup.cmd`도 Electron Node 모드에서 실제 verification code까지 로드했다.
+
 ## 다음 작업 우선순위와 exit criterion
 
 1. **P0 — 배포와 upgrade runbook을 만든다.** Versioned Windows artifact, Product API/PostgreSQL 배치,
    migration-before-listen, health/readiness, secret 주입, 실패/rollback 책임을 정한다. Exit: production-like
    clean host에서 설치 → migrate → smoke → version 확인을 재현하고 실패 시 이전 artifact로 서비스 복구가
    문서화·연습되어야 한다.
-2. **P0 — 백업/복원과 재해 복구를 검증한다.** PostgreSQL과 tenant data/outbox의 일관된 범위, 암호화,
-   접근권한, RPO/RTO, WAL/snapshot retention을 정한다. Exit: 격리 환경 restore drill에서 인증, workspace,
-   History/RAG와 pending outbox를 검증하고 측정한 RPO/RTO와 키 관리 절차를 기록해야 한다.
-3. **P1 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
+2. **P1 — 계정 복구를 설계한다.** Email verification/password reset 전달 경계, hash-only one-time token,
    expiry/revoke/rate limit/session 폐기와 generic error를 정한다. Exit: token 원문 비저장, enumeration 방지,
    경합·재사용·만료·세션 폐기와 실제 전달 실패 경로가 PostgreSQL/acceptance에서 검증되어야 한다.
-4. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
+3. **P1 — 관측성과 데이터 수명주기를 운영 수준으로 확장한다.** Process/DB/outbox/backfill/reauthorization의
    payload-free health/metric/alert를 만들고 history/RAG/audit/local file/export/delete/legal-hold 정책을
    별도 결정한다. Exit: failure injection으로 actionable alert와 secret-free diagnostic을 확인하고,
    retention/export/delete가 backup/WAL/replica 한계까지 문서화·검증되어야 한다.
-5. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
+4. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
 
@@ -174,6 +195,7 @@ npm test -- test/unit/history-projection.test.ts
 npm run test:history-postgres
 npm run test:tenant-auth
 npm run test:full-stack
+npm run test:backup-restore
 ```
 
 `test:history-postgres`를 포함한 독립 harness는 실행 중인 Docker daemon과
@@ -227,7 +249,8 @@ git status --short
 ## 알려진 비목표와 운영 위험
 
 - 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 완성된 배포 시스템을
-  제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade·backup을 관리하지 않는다.
+  제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
+  backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
 - Password reset/email verification, SMTP invitation delivery, self-service workspace restore, hard delete,
   secure erasure, 사용자 export, workspace별 content retention은 아직 없다.
 - Retention은 일부 terminal auth/invitation/abuse row의 bounded cleanup이다. PostgreSQL MVCC, autovacuum,
@@ -242,6 +265,6 @@ git status --short
 - Abuse limiter는 같은 PostgreSQL을 공유하는 application process 범위다. Edge WAF/CAPTCHA, trusted proxy,
   forwarded client identity, multi-database global limiting을 제공하지 않으며 NAT/proxy 사용자가 bucket을
   공유할 수 있다.
-- Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email, backup restore,
+- Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email,
   installer/signing과 장시간 authorization cadence를 증명하지 않는다. 각 운영 기능에는 별도 acceptance와
   runbook이 필요하다.
