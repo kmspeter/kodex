@@ -14,7 +14,6 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   rm,
   stat,
   unlink,
