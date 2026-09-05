@@ -16,7 +16,7 @@ const argumentsList = process.argv.slice(2);
 function parseArguments(args) {
   if (!['start', 'resume'].includes(args[0])) throw new LongRunAcceptanceError('invalid_arguments');
   const output = { mode: args[0] };
-  const accepted = new Set(['--config', '--state', '--receipt', '--run-id']);
+  const accepted = new Set(['--config', '--state', '--receipt', '--result-dir', '--run-id']);
   for (let index = 1; index < args.length; index += 2) {
     if (!accepted.has(args[index]) || typeof args[index + 1] !== 'string' || args[index + 1].length < 1) {
       throw new LongRunAcceptanceError('invalid_arguments');
@@ -28,7 +28,9 @@ function parseArguments(args) {
   if (!output.config || !output.state || !output.receipt || (output.mode === 'resume' && output.runId)) {
     throw new LongRunAcceptanceError('invalid_arguments');
   }
-  if (![output.config, output.state, output.receipt].every((entry) => path.isAbsolute(entry))) {
+  if (![output.config, output.state, output.receipt, output.resultDir]
+    .filter((entry) => entry !== undefined)
+    .every((entry) => path.isAbsolute(entry))) {
     throw new LongRunAcceptanceError('absolute_path_required');
   }
   return output;
@@ -50,7 +52,7 @@ try {
     receiptPath: options.receipt,
     runId: options.runId,
     signal: abortController.signal,
-    adapter: createProcessLongRunAdapter(repositoryRoot, catalog),
+    adapter: createProcessLongRunAdapter(repositoryRoot, catalog, { resultDirectory: options.resultDir }),
   });
   await writeLongRunReceipt(options.receipt, result);
   const ok = result.receipt.resultCode === 'completed';

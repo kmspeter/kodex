@@ -5,67 +5,80 @@
     {
       "id": "acceptance.backup-recovery",
       "kind": "workload",
-      "npmScript": "test:backup-encryption"
+      "npmScript": "test:backup-encryption",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.browserless-product-local",
       "kind": "workload",
-      "npmScript": "test:full-stack"
+      "npmScript": "test:full-stack",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.electron-lifecycle",
       "kind": "workload",
-      "npmScript": "test:desktop-workspace-lifecycle"
+      "npmScript": "test:desktop-workspace-lifecycle",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.email-auth-recovery",
       "kind": "workload",
-      "npmScript": "test:email-verification-postgres"
+      "npmScript": "test:email-verification-postgres",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.history-reconciliation-rag",
       "kind": "workload",
-      "npmScript": "test:history-postgres"
+      "npmScript": "test:history-postgres",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.invitation-password-reset",
       "kind": "workload",
-      "npmScript": "test:password-reset-postgres"
+      "npmScript": "test:password-reset-postgres",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.lifecycle-runtime-isolation",
       "kind": "workload",
-      "npmScript": "test:data-lifecycle-postgres"
+      "npmScript": "test:data-lifecycle-postgres",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.release-installer-update",
       "kind": "workload",
-      "npmScript": "test:release-deployment"
+      "npmScript": "test:release-deployment",
+      "recoveryEvidence": "none"
     },
     {
       "id": "acceptance.security-recovery-contracts",
       "kind": "workload",
-      "npmScript": "security:validate"
+      "npmScript": "security:validate",
+      "recoveryEvidence": "none"
     },
     {
       "id": "chaos.postgres-session-recovery",
       "kind": "chaos",
-      "npmScript": "test:history-postgres"
+      "npmScript": "test:history-postgres",
+      "recoveryEvidence": "restart"
     },
     {
       "id": "chaos.runtime-restart-recovery",
       "kind": "chaos",
-      "npmScript": "test:desktop-full-stack"
+      "npmScript": "test:desktop-full-stack",
+      "recoveryEvidence": "restart"
     },
     {
       "id": "chaos.update-restart-recovery",
       "kind": "chaos",
-      "npmScript": "test:installer"
+      "npmScript": "test:installer",
+      "recoveryEvidence": "restart"
     },
     {
       "id": "chaos.websocket-reconnect",
       "kind": "chaos",
-      "npmScript": "test:full-stack"
+      "npmScript": "test:full-stack",
+      "recoveryEvidence": "reconnect"
     }
   ],
   "scenarios": [

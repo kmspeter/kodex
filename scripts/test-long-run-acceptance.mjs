@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -7,20 +7,23 @@ import {
   createProcessLongRunAdapter,
   LongRunAcceptanceError,
   LongRunSimulatedCrash,
+  parseLongRunAdapterResult,
   parseLongRunReceipt,
   parseLongRunScenarioCatalog,
+  readExternalLongRunAdapterResult,
   readLongRunState,
+  resolveNpmCliInvocation,
   runLongRunAcceptance,
 } from './lib/long-run-acceptance.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-long-run-fixture-'));
 const runId = '11111111-1111-4111-8111-111111111111';
 const ownerId = '22222222-2222-4222-8222-222222222222';
-const actionId = 'acceptance.browserless-product-local';
+const actionId = 'chaos.websocket-reconnect';
 const catalog = parseLongRunScenarioCatalog({
   format: 'kodex-long-run-acceptance-scenarios',
   formatVersion: 1,
-  commands: [{ id: actionId, kind: 'workload', npmScript: 'test:full-stack' }],
+  commands: [{ id: actionId, kind: 'chaos', npmScript: 'test:full-stack', recoveryEvidence: 'reconnect' }],
   scenarios: [{
     id: 'fixture-soak',
     minimumDurationSeconds: 1,
@@ -56,14 +59,14 @@ function clock(start = '2026-09-05T00:00:00.000Z') {
 
 function sample(overrides = {}) {
   return {
-    heapBytes: 100,
-    handleCount: 2,
-    socketCount: 1,
-    databasePoolCount: 1,
-    outboxItemCount: 0,
-    leaseCount: 1,
-    temporaryBytes: 0,
-    diskBytes: 100,
+    heapBytes: { observed: true, value: 100 },
+    handleCount: { observed: true, value: 2 },
+    socketCount: { observed: true, value: 1 },
+    databasePoolCount: { observed: true, value: 1 },
+    outboxItemCount: { observed: true, value: 0 },
+    leaseCount: { observed: true, value: 1 },
+    temporaryBytes: { observed: true, value: 0 },
+    diskBytes: { observed: true, value: 100 },
     ...overrides,
   };
 }
@@ -76,11 +79,14 @@ function passed(invocation, overrides = {}) {
     actionId: invocation.actionId,
     iteration: invocation.iteration,
     stepIndex: invocation.stepIndex,
+    attempt: invocation.attempt,
+    completedAt: invocation.startedAt,
+    observationSource: 'fixture',
     outcome: 'passed',
     resultCode: 'fixture_passed',
     duplicate: false,
     metrics: sample(),
-    recovery: { reconnects: 0, restarts: 0 },
+    recovery: { kind: 'reconnect', observed: true, count: 1 },
     ...overrides,
   };
 }
@@ -100,8 +106,84 @@ async function expectCode(promise, code) {
 }
 
 try {
-  if (process.platform === 'win32' && process.env.npm_execpath) {
-    assert.doesNotThrow(() => createProcessLongRunAdapter(process.cwd(), catalog));
+  const fakeBin = path.join(root, 'fake-bin');
+  await mkdir(fakeBin);
+  const fakeNpmCli = path.join(fakeBin, 'npm-cli.js');
+  await writeFile(fakeNpmCli, 'process.exitCode = 0;\n', 'utf8');
+  const fakePathNpm = path.join(fakeBin, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+  await writeFile(fakePathNpm, process.platform === 'win32' ? '@exit /b 91\r\n' : '#!/bin/sh\nexit 91\n', 'utf8');
+  if (process.platform !== 'win32') await chmod(fakePathNpm, 0o700);
+  const originalPath = process.env.PATH;
+  process.env.PATH = fakeBin;
+  try {
+    const npm = resolveNpmCliInvocation(fakeNpmCli);
+    assert.equal(npm.executable, process.execPath);
+    assert.deepEqual(npm.argumentPrefix, [fakeNpmCli]);
+    const processAdapter = createProcessLongRunAdapter(process.cwd(), catalog, { npmExecPath: fakeNpmCli });
+    const startedAt = new Date().toISOString();
+    const fallback = await processAdapter.execute({
+      invocationId: '9'.repeat(64),
+      actionId,
+      iteration: 0,
+      stepIndex: 0,
+      attempt: 1,
+      startedAt,
+      deadlineAt: new Date(Date.parse(startedAt) + 30_000).toISOString(),
+    }, new AbortController().signal);
+    assert.equal(fallback.outcome, 'passed');
+    assert.deepEqual(fallback.recovery, { kind: 'reconnect', observed: false, count: null });
+    assert.deepEqual(fallback.metrics.databasePoolCount, { observed: false, value: null });
+    assert.equal(fallback.observationSource, 'process');
+    await processAdapter.cleanup();
+
+    const probeBin = path.join(root, 'probe-bin');
+    const probeResults = path.join(root, 'probe-results');
+    await mkdir(probeBin);
+    await mkdir(probeResults);
+    const probeNpmCli = path.join(probeBin, 'npm-cli.js');
+    await writeFile(probeNpmCli, [
+      "const fs = require('node:fs');",
+      'const observed = (value) => ({ observed: true, value });',
+      'const value = {',
+      "  format: 'kodex-long-run-adapter-result', formatVersion: 1,",
+      '  invocationId: process.env.KODEX_ACCEPTANCE_INVOCATION_ID,',
+      '  actionId: process.env.KODEX_ACCEPTANCE_ACTION_ID,',
+      '  iteration: Number(process.env.KODEX_ACCEPTANCE_ITERATION),',
+      '  stepIndex: Number(process.env.KODEX_ACCEPTANCE_STEP_INDEX),',
+      '  attempt: Number(process.env.KODEX_ACCEPTANCE_ATTEMPT),',
+      "  completedAt: new Date().toISOString(), observationSource: 'operational-probe',",
+      "  outcome: 'passed', resultCode: 'probe_passed', duplicate: false,",
+      '  metrics: { heapBytes: observed(100), handleCount: observed(2), socketCount: observed(1),',
+      '    databasePoolCount: observed(1), outboxItemCount: observed(0), leaseCount: observed(1),',
+      '    temporaryBytes: observed(0), diskBytes: observed(100) },',
+      "  recovery: { kind: 'reconnect', observed: true, count: 1 },",
+      '};',
+      'const stable = (entry) => Array.isArray(entry) ? entry.map(stable)',
+      "  : entry && typeof entry === 'object' ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, stable(entry[key])])) : entry;",
+      "fs.writeFileSync(process.env.KODEX_ACCEPTANCE_RESULT_FILE, `${JSON.stringify(stable(value), null, 2)}\\n`, 'utf8');",
+    ].join('\n'), 'utf8');
+    const probeAdapter = createProcessLongRunAdapter(process.cwd(), catalog, {
+      npmExecPath: probeNpmCli,
+      resultDirectory: probeResults,
+    });
+    const probeStartedAt = new Date().toISOString();
+    const probeResult = await probeAdapter.execute({
+      operationId: '6'.repeat(64),
+      invocationId: '7'.repeat(64),
+      actionId,
+      iteration: 0,
+      stepIndex: 0,
+      attempt: 1,
+      startedAt: probeStartedAt,
+      deadlineAt: new Date(Date.parse(probeStartedAt) + 30_000).toISOString(),
+    }, new AbortController().signal);
+    assert.equal(probeResult.observationSource, 'operational-probe');
+    assert.equal(probeResult.metrics.databasePoolCount.observed, true);
+    assert.deepEqual(probeResult.recovery, { kind: 'reconnect', observed: true, count: 1 });
+    await probeAdapter.cleanup();
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
   }
   const deterministicReceipts = [];
   for (const suffix of ['a', 'b']) {
@@ -191,7 +273,7 @@ try {
     sleep: async () => undefined,
     adapter: fixtureAdapter(async (invocation) => {
       crashTime.advance(20_000);
-      return passed(invocation, { duplicate: true, recovery: { reconnects: 1, restarts: 1 } });
+      return passed(invocation, { duplicate: true });
     }),
   });
   assert.equal(resumed.receipt.resultCode, 'completed');
@@ -258,7 +340,9 @@ try {
   const leak = await runLongRunAcceptance({
     mode: 'start', catalog, config: config({ thresholds: lowThresholds }), statePath: path.join(root, 'leak.json'),
     runId, ownerId, now: leakTime.now,
-    adapter: fixtureAdapter(async (invocation) => passed(invocation, { metrics: sample({ heapBytes: 101 }) })),
+    adapter: fixtureAdapter(async (invocation) => passed(invocation, {
+      metrics: sample({ heapBytes: { observed: true, value: 101 } }),
+    })),
   });
   assert.equal(leak.receipt.resultCode, 'resource_threshold_exceeded');
 
@@ -269,10 +353,116 @@ try {
   });
   assert.equal(unordered.receipt.resultCode, 'unordered_result');
 
+  const adapterShapeInvocation = {
+    invocationId: '8'.repeat(64),
+    actionId,
+    iteration: 0,
+    stepIndex: 0,
+    attempt: 1,
+    startedAt: '2026-09-05T00:00:00.000Z',
+    deadlineAt: '2026-09-05T00:01:00.000Z',
+  };
+  assert.throws(() => parseLongRunAdapterResult(passed(adapterShapeInvocation, {
+    metrics: sample({ databasePoolCount: { observed: false, value: 0 } }),
+  })), (error) => error instanceof LongRunAcceptanceError && error.code === 'adapter_result_invalid');
+
+  const fabricatedRecovery = await runLongRunAcceptance({
+    mode: 'start', catalog, config: config(), statePath: path.join(root, 'fabricated-recovery.json'), runId, ownerId,
+    now: clock().now,
+    adapter: fixtureAdapter(async (invocation) => passed(invocation, {
+      recovery: { kind: 'restart', observed: true, count: 1 },
+    })),
+  });
+  assert.equal(fabricatedRecovery.receipt.resultCode, 'terminal_step_failure');
+  assert.equal(fabricatedRecovery.receipt.recoveryEvidence.reconnect.requiredActions, 0);
+
+  const coverageTime = clock();
+  const missingCoverage = await runLongRunAcceptance({
+    mode: 'start', catalog, config: config(), statePath: path.join(root, 'missing-coverage.json'), runId, ownerId,
+    now: coverageTime.now,
+    adapter: fixtureAdapter(async (invocation) => {
+      coverageTime.advance(2_000);
+      return passed(invocation, {
+        observationSource: 'operational-probe',
+        metrics: sample({ databasePoolCount: { observed: false, value: null } }),
+      });
+    }),
+  });
+  assert.equal(missingCoverage.receipt.resultCode, 'completed');
+  assert.equal(missingCoverage.receipt.metrics.databasePoolCount.observedSampleCount, 0);
+  assert.equal(missingCoverage.receipt.metrics.databasePoolCount.baseline, null);
+  assert.equal(missingCoverage.receipt.metrics.operationalSampleCount, 1);
+
+  const externalResults = path.join(root, 'external-results');
+  await mkdir(externalResults);
+  const externalNow = Date.now();
+  const externalInvocation = (character) => ({
+    invocationId: character.repeat(64),
+    actionId,
+    iteration: 3,
+    stepIndex: 0,
+    attempt: 2,
+    startedAt: new Date(externalNow - 1_000).toISOString(),
+    deadlineAt: new Date(externalNow + 60_000).toISOString(),
+  });
+  const validInvocation = externalInvocation('a');
+  await writeFile(path.join(externalResults, `${validInvocation.invocationId}.json`), canonicalLongRunJson(passed(
+    validInvocation,
+    { completedAt: new Date(externalNow).toISOString(), observationSource: 'operational-probe' },
+  )), 'utf8');
+  const consumedInvocationIds = new Set();
+  assert.equal((await readExternalLongRunAdapterResult(
+    externalResults,
+    process.cwd(),
+    validInvocation,
+    { consumedInvocationIds },
+  )).observationSource, 'operational-probe');
+  await expectCode(readExternalLongRunAdapterResult(
+    externalResults,
+    process.cwd(),
+    validInvocation,
+    { consumedInvocationIds },
+  ), 'adapter_result_replayed');
+
+  const mismatchedInvocation = externalInvocation('b');
+  await writeFile(path.join(externalResults, `${mismatchedInvocation.invocationId}.json`), canonicalLongRunJson(passed(
+    mismatchedInvocation,
+    { actionId: 'chaos.runtime-restart-recovery', observationSource: 'operational-probe' },
+  )), 'utf8');
+  await expectCode(readExternalLongRunAdapterResult(
+    externalResults,
+    process.cwd(),
+    mismatchedInvocation,
+  ), 'adapter_result_mismatch');
+
+  const staleInvocation = externalInvocation('c');
+  await writeFile(path.join(externalResults, `${staleInvocation.invocationId}.json`), canonicalLongRunJson(passed(
+    staleInvocation,
+    { completedAt: new Date(externalNow - 2_000).toISOString(), observationSource: 'operational-probe' },
+  )), 'utf8');
+  await expectCode(readExternalLongRunAdapterResult(
+    externalResults,
+    process.cwd(),
+    staleInvocation,
+  ), 'adapter_result_stale');
+
+  const linkedResults = path.join(root, 'external-results-link');
+  await symlink(externalResults, linkedResults, process.platform === 'win32' ? 'junction' : 'dir');
+  await expectCode(readExternalLongRunAdapterResult(
+    linkedResults,
+    process.cwd(),
+    externalInvocation('d'),
+  ), 'adapter_result_directory_invalid');
+
   const forbiddenCatalog = {
     format: 'kodex-long-run-acceptance-scenarios',
     formatVersion: 1,
-    commands: [{ id: 'chaos.delete-database', kind: 'chaos', npmScript: 'test:full-stack' }],
+    commands: [{
+      id: 'chaos.delete-database',
+      kind: 'chaos',
+      npmScript: 'test:full-stack',
+      recoveryEvidence: 'restart',
+    }],
     scenarios: [{ id: 'unsafe', minimumDurationSeconds: 1, maximumDurationSeconds: 1, steps: ['chaos.delete-database'] }],
   };
   assert.throws(() => parseLongRunScenarioCatalog(forbiddenCatalog), (error) => (
@@ -282,7 +472,7 @@ try {
   await mkdir(path.join(root, 'kept'), { recursive: true });
   process.stdout.write(`${JSON.stringify({
     code: 'long_run_acceptance_fixture_passed',
-    fixtureCount: 13,
+    fixtureCount: 21,
     formatVersion: 1,
     kind: 'kodex_long_run_acceptance_fixture',
     ok: true,

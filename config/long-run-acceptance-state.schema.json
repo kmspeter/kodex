@@ -3,7 +3,7 @@
   "$id": "https://kodex.invalid/schemas/long-run-acceptance-state-v1.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "formatVersion", "runId", "planDigest", "scenarioId", "createdAt", "deadlineAt", "updatedAt", "status", "position", "lease", "counters", "metrics", "resultCode", "completedAt"],
+  "required": ["format", "formatVersion", "runId", "planDigest", "scenarioId", "createdAt", "deadlineAt", "updatedAt", "status", "position", "lease", "counters", "metrics", "recoveryEvidence", "resultCode", "completedAt"],
   "properties": {
     "format": { "const": "kodex-long-run-acceptance-state" },
     "formatVersion": { "const": 1 },
@@ -17,11 +17,12 @@
     "position": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["iteration", "stepIndex", "attempt", "completedSteps"],
+      "required": ["iteration", "stepIndex", "attempt", "phase", "completedSteps"],
       "properties": {
         "iteration": { "type": "integer", "minimum": 0 },
         "stepIndex": { "type": "integer", "minimum": 0 },
         "attempt": { "type": "integer", "minimum": 0 },
+        "phase": { "enum": ["ready", "invoking"] },
         "completedSteps": { "type": "integer", "minimum": 0 }
       }
     },
@@ -44,17 +45,16 @@
     "counters": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["passedSteps", "failedAttempts", "retries", "reconnectRecoveries", "restartRecoveries", "duplicateResults"],
+      "required": ["passedSteps", "failedAttempts", "retries", "duplicateResults"],
       "properties": {
         "passedSteps": { "type": "integer", "minimum": 0 },
         "failedAttempts": { "type": "integer", "minimum": 0 },
         "retries": { "type": "integer", "minimum": 0 },
-        "reconnectRecoveries": { "type": "integer", "minimum": 0 },
-        "restartRecoveries": { "type": "integer", "minimum": 0 },
         "duplicateResults": { "type": "integer", "minimum": 0 }
       }
     },
     "metrics": { "$ref": "#/$defs/metrics" },
+    "recoveryEvidence": { "$ref": "#/$defs/recoveryEvidence" },
     "resultCode": {
       "oneOf": [
         { "type": "null" },
@@ -67,19 +67,28 @@
     "metric": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseline", "peak", "last"],
+      "required": ["observedSampleCount", "baseline", "peak", "last"],
       "properties": {
-        "baseline": { "type": "integer", "minimum": 0 },
-        "peak": { "type": "integer", "minimum": 0 },
-        "last": { "type": "integer", "minimum": 0 }
-      }
+        "observedSampleCount": { "type": "integer", "minimum": 0 },
+        "baseline": { "type": ["integer", "null"], "minimum": 0 },
+        "peak": { "type": ["integer", "null"], "minimum": 0 },
+        "last": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "allOf": [{
+        "if": { "properties": { "observedSampleCount": { "const": 0 } }, "required": ["observedSampleCount"] },
+        "then": { "properties": { "baseline": { "type": "null" }, "peak": { "type": "null" }, "last": { "type": "null" } } },
+        "else": { "properties": { "baseline": { "type": "integer" }, "peak": { "type": "integer" }, "last": { "type": "integer" } } }
+      }]
     },
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sampleCount", "heapBytes", "handleCount", "socketCount", "databasePoolCount", "outboxItemCount", "leaseCount", "temporaryBytes", "diskBytes"],
+      "required": ["sampleCount", "processSampleCount", "operationalSampleCount", "fixtureSampleCount", "heapBytes", "handleCount", "socketCount", "databasePoolCount", "outboxItemCount", "leaseCount", "temporaryBytes", "diskBytes"],
       "properties": {
         "sampleCount": { "type": "integer", "minimum": 0 },
+        "processSampleCount": { "type": "integer", "minimum": 0 },
+        "operationalSampleCount": { "type": "integer", "minimum": 0 },
+        "fixtureSampleCount": { "type": "integer", "minimum": 0 },
         "heapBytes": { "$ref": "#/$defs/metric" },
         "handleCount": { "$ref": "#/$defs/metric" },
         "socketCount": { "$ref": "#/$defs/metric" },
@@ -88,6 +97,29 @@
         "leaseCount": { "$ref": "#/$defs/metric" },
         "temporaryBytes": { "$ref": "#/$defs/metric" },
         "diskBytes": { "$ref": "#/$defs/metric" }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredActions", "observedActions", "recoveryCount"],
+      "properties": {
+        "requiredActions": { "type": "integer", "minimum": 0 },
+        "observedActions": { "type": "integer", "minimum": 0 },
+        "recoveryCount": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [{
+        "if": { "properties": { "observedActions": { "const": 0 } }, "required": ["observedActions"] },
+        "then": { "properties": { "recoveryCount": { "const": 0 } } }
+      }]
+    },
+    "recoveryEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reconnect", "restart"],
+      "properties": {
+        "reconnect": { "$ref": "#/$defs/recovery" },
+        "restart": { "$ref": "#/$defs/recovery" }
       }
     }
   }

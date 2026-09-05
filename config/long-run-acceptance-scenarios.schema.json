@@ -14,12 +14,23 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "kind", "npmScript"],
+        "required": ["id", "kind", "npmScript", "recoveryEvidence"],
         "properties": {
           "id": { "type": "string", "pattern": "^(acceptance|chaos)\\.[a-z0-9-]+$" },
           "kind": { "enum": ["workload", "chaos"] },
-          "npmScript": { "type": "string", "pattern": "^[a-z][a-z0-9:-]+$" }
-        }
+          "npmScript": { "type": "string", "pattern": "^[a-z][a-z0-9:-]+$" },
+          "recoveryEvidence": { "enum": ["none", "reconnect", "restart"] }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "workload" } }, "required": ["kind"] },
+            "then": { "properties": { "recoveryEvidence": { "const": "none" } } }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "chaos" } }, "required": ["kind"] },
+            "then": { "properties": { "recoveryEvidence": { "enum": ["reconnect", "restart"] } } }
+          }
+        ]
       }
     },
     "scenarios": {

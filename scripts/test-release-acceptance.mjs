@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseLongRunReceipt } from './lib/long-run-acceptance.mjs';
 import {
   canonicalReleaseAcceptanceJson,
   evaluateReleaseReadiness,
@@ -43,6 +44,35 @@ const repositoryIdentity = {
   version: '0.2.0',
 };
 
+const soakReceipt = {
+  format: 'kodex-long-run-acceptance-receipt',
+  formatVersion: 1,
+  runId: '77777777-7777-4777-8777-777777777777',
+  planDigest: '6'.repeat(64),
+  scenarioId: 'full-system-soak',
+  startedAt: '2026-09-01T00:00:00.000Z',
+  completedAt: '2026-09-01T12:00:00.000Z',
+  resultCode: 'completed',
+  iterationsCompleted: 10,
+  stepsCompleted: 130,
+  counters: { passedSteps: 130, failedAttempts: 0, retries: 0, duplicateResults: 0 },
+  metrics: {
+    sampleCount: 130,
+    processSampleCount: 0,
+    operationalSampleCount: 130,
+    fixtureSampleCount: 0,
+    ...Object.fromEntries([
+      'heapBytes', 'handleCount', 'socketCount', 'databasePoolCount', 'outboxItemCount',
+      'leaseCount', 'temporaryBytes', 'diskBytes',
+    ].map((name) => [name, { observedSampleCount: 130, baseline: 1, peak: 2, last: 1 }])),
+  },
+  recoveryEvidence: {
+    reconnect: { requiredActions: 10, observedActions: 10, recoveryCount: 10 },
+    restart: { requiredActions: 30, observedActions: 30, recoveryCount: 30 },
+  },
+};
+const soakReceiptDigest = parseLongRunReceipt(soakReceipt).receiptDigest;
+
 function artifactFor(requirement) {
   const common = {
     manifestDigest: '1'.repeat(64),
@@ -57,7 +87,7 @@ function artifactFor(requirement) {
   if (requirement.category === 'long-run-soak') {
     return {
       kind: 'long-run-receipt',
-      manifestDigest: '3'.repeat(64),
+      manifestDigest: soakReceiptDigest,
       signatureDigest: null,
       signatureKeyId: null,
       trustStoreVersion: null,
@@ -142,13 +172,8 @@ try {
       keyId: 'fixture-key', receiptDigest: '1'.repeat(64), signatureDigest: '2'.repeat(64), trustStoreVersion: 7,
     },
     soak: {
-      receiptDigest: '3'.repeat(64),
-      receipt: {
-        scenarioId: 'full-system-soak',
-        resultCode: 'completed',
-        startedAt: '2026-09-01T00:00:00.000Z',
-        completedAt: '2026-09-01T12:00:00.000Z',
-      },
+      receiptDigest: soakReceiptDigest,
+      receipt: soakReceipt,
     },
   };
   const common = {
@@ -226,6 +251,51 @@ try {
   const noSource = await evaluateReleaseReadiness({ ...common, evidenceReceipts: receipts, sourceEvidence: {} });
   assert.equal(noSource.code, 'evidence_source_unverified');
 
+  const longRunRequirement = catalog.requirements.get('REL-018');
+  const expectSoakSourceRejected = async (receipt) => {
+    const parsed = parseLongRunReceipt(receipt);
+    const replacement = parseReleaseAcceptanceEvidence(signReleaseAcceptanceEvidence(unsignedEvidence(
+      longRunRequirement,
+      { artifactEvidence: { ...artifactFor(longRunRequirement), manifestDigest: parsed.receiptDigest } },
+    ), privateKey));
+    const evidenceReceipts = receipts.map((entry) => (
+      entry.evidence.requirementId === longRunRequirement.id ? replacement : entry
+    ));
+    const result = await evaluateReleaseReadiness({
+      ...common,
+      evidenceReceipts,
+      sourceEvidence: { ...sourceEvidence, soak: parsed },
+    });
+    assert.equal(result.code, 'evidence_source_unverified');
+  };
+  const incompleteMetrics = structuredClone(soakReceipt);
+  incompleteMetrics.metrics.databasePoolCount = {
+    observedSampleCount: 129,
+    baseline: 1,
+    peak: 2,
+    last: 1,
+  };
+  await expectSoakSourceRejected(incompleteMetrics);
+  const incompleteRecovery = structuredClone(soakReceipt);
+  incompleteRecovery.recoveryEvidence.reconnect = {
+    requiredActions: 10,
+    observedActions: 9,
+    recoveryCount: 9,
+  };
+  await expectSoakSourceRejected(incompleteRecovery);
+  const processOnly = structuredClone(soakReceipt);
+  processOnly.metrics.processSampleCount = 130;
+  processOnly.metrics.operationalSampleCount = 0;
+  processOnly.metrics.databasePoolCount = {
+    observedSampleCount: 0,
+    baseline: null,
+    peak: null,
+    last: null,
+  };
+  processOnly.recoveryEvidence.reconnect = { requiredActions: 10, observedActions: 0, recoveryCount: 0 };
+  processOnly.recoveryEvidence.restart = { requiredActions: 30, observedActions: 0, recoveryCount: 0 };
+  await expectSoakSourceRejected(processOnly);
+
   const unknownRequirement = structuredClone(receipts[0]);
   unknownRequirement.evidence.requirementId = 'REL-999';
   await assert.rejects(
@@ -235,7 +305,7 @@ try {
 
   process.stdout.write(`${JSON.stringify({
     code: 'release_acceptance_fixture_passed',
-    fixtureCount: 12,
+    fixtureCount: 15,
     formatVersion: 1,
     kind: 'kodex_release_acceptance_fixture',
     ok: true,

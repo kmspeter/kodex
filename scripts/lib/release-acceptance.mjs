@@ -10,7 +10,9 @@ import {
   validateDatabaseRecoveryReceipt,
 } from './database-recovery.mjs';
 import {
+  LONG_RUN_RESOURCE_NAMES,
   parseLongRunScenarioCatalog,
+  parseLongRunReceipt,
   readLongRunReceipt,
 } from './long-run-acceptance.mjs';
 import { RELEASE_SIGNATURE_FILENAME, verifyReleaseArtifactIntegrity } from './release-artifact.mjs';
@@ -501,13 +503,36 @@ function sourceMatches(requirement, evidence, sourceEvidence) {
       && evidence.artifactEvidence.trustStoreVersion === source.trustStoreVersion;
   }
   if (requiredSource === 'soak') {
-    const elapsed = Date.parse(source.receipt.completedAt) - Date.parse(source.receipt.startedAt);
+    let parsed;
+    try { parsed = parseLongRunReceipt(source.receipt); } catch { return false; }
+    if (parsed.receiptDigest !== source.receiptDigest) return false;
+    const receipt = parsed.receipt;
+    const elapsed = Date.parse(receipt.completedAt) - Date.parse(receipt.startedAt);
+    const completeOperationalCoverage = receipt.metrics.sampleCount > 0
+      && receipt.metrics.operationalSampleCount === receipt.metrics.sampleCount
+      && receipt.metrics.processSampleCount === 0
+      && receipt.metrics.fixtureSampleCount === 0
+      && LONG_RUN_RESOURCE_NAMES.every((name) => (
+        receipt.metrics[name].observedSampleCount === receipt.metrics.sampleCount
+        && receipt.metrics[name].baseline !== null
+        && receipt.metrics[name].peak !== null
+        && receipt.metrics[name].last !== null
+      ));
+    const completeRecoveryEvidence = ['reconnect', 'restart'].every((kind) => {
+      const recovery = receipt.recoveryEvidence[kind];
+      return recovery.requiredActions > 0
+        && recovery.observedActions === recovery.requiredActions
+        && recovery.recoveryCount >= recovery.requiredActions;
+    });
     return evidence.artifactEvidence.kind === 'long-run-receipt'
       && evidence.artifactEvidence.manifestDigest === source.receiptDigest
-      && source.receipt.resultCode === 'completed'
+      && receipt.resultCode === 'completed'
+      && receipt.iterationsCompleted > 0
       && elapsed >= 43_200_000
       && elapsed <= 259_200_000
-      && ['full-system-soak', 'product-local-postgresql-soak'].includes(source.receipt.scenarioId);
+      && ['full-system-soak', 'product-local-postgresql-soak'].includes(receipt.scenarioId)
+      && completeOperationalCoverage
+      && completeRecoveryEvidence;
   }
   return false;
 }
@@ -745,10 +770,11 @@ export async function releaseReadinessFromRepository(options) {
 }
 
 export const ACCEPTANCE_SCHEMA_SHA256 = Object.freeze({
+  'long-run-acceptance-adapter-result.schema.json': '05cf8839e0193b98d7d260cc2fe51256f867faa7191dc98cf5168d31a5fb1d82',
   'long-run-acceptance-config.schema.json': '361471e77891861a70d0050714acd8f4999bea9f06cd1043ca544013edb35d45',
-  'long-run-acceptance-receipt.schema.json': 'ae78ac730b3c86f3b27f41ef9cd4ca8dff3de28c8720714ae1ac9d369e29c4d8',
-  'long-run-acceptance-scenarios.schema.json': '5b99243c9d31ff8859410e73d1ca24660a908f45283682e05ee4695e011df7ba',
-  'long-run-acceptance-state.schema.json': '4c155f81593dd433725c601c54f5bc5260f6551f57f50154d0b48efbc7e94329',
+  'long-run-acceptance-receipt.schema.json': 'b15cf32008d203b7865fa26c6482b2609a0897d8b0bd8830acc598857f64a129',
+  'long-run-acceptance-scenarios.schema.json': '021f5925a4004d44cada39f717257fe4a9950a3d7afb9db459a1a1223b76142a',
+  'long-run-acceptance-state.schema.json': '05abdf849c1053d9c0e4ddc16a015178d893182be698b94a7c69cf668b9230a8',
   'release-acceptance-catalog.schema.json': '25e9ef8e1fdc814db4d9a0dc7e55e13d5d81a836679220be25a1134d6b907519',
   'release-acceptance-evidence.schema.json': '808b29ddc5f3808ad3f1ef454d4cd65411c43dc4fdd024fad416cef80d868bf0',
 });

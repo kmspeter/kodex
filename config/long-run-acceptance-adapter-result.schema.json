@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/long-run-acceptance-adapter-result-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "invocationId", "actionId", "iteration", "stepIndex", "attempt", "completedAt", "observationSource", "outcome", "resultCode", "duplicate", "metrics", "recovery"],
+  "properties": {
+    "format": { "const": "kodex-long-run-adapter-result" },
+    "formatVersion": { "const": 1 },
+    "invocationId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "actionId": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,95}$" },
+    "iteration": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "stepIndex": { "type": "integer", "minimum": 0, "maximum": 64 },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 10 },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "observationSource": { "enum": ["process", "operational-probe", "fixture"] },
+    "outcome": { "enum": ["passed", "retryable-failure", "terminal-failure"] },
+    "resultCode": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,95}$" },
+    "duplicate": { "type": "boolean" },
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "recovery": { "$ref": "#/$defs/recovery" }
+  },
+  "$defs": {
+    "observedValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observed", "value"],
+          "properties": {
+            "observed": { "const": true },
+            "value": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observed", "value"],
+          "properties": {
+            "observed": { "const": false },
+            "value": { "type": "null" }
+          }
+        }
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["heapBytes", "handleCount", "socketCount", "databasePoolCount", "outboxItemCount", "leaseCount", "temporaryBytes", "diskBytes"],
+      "properties": {
+        "heapBytes": { "$ref": "#/$defs/observedValue" },
+        "handleCount": { "$ref": "#/$defs/observedValue" },
+        "socketCount": { "$ref": "#/$defs/observedValue" },
+        "databasePoolCount": { "$ref": "#/$defs/observedValue" },
+        "outboxItemCount": { "$ref": "#/$defs/observedValue" },
+        "leaseCount": { "$ref": "#/$defs/observedValue" },
+        "temporaryBytes": { "$ref": "#/$defs/observedValue" },
+        "diskBytes": { "$ref": "#/$defs/observedValue" }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "observed", "count"],
+      "properties": {
+        "kind": { "enum": ["none", "reconnect", "restart"] },
+        "observed": { "type": "boolean" },
+        "count": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000000 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "none" } }, "required": ["kind"] },
+          "then": { "properties": { "observed": { "const": false }, "count": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "observed": { "const": true } }, "required": ["observed"] },
+          "then": { "properties": { "count": { "type": "integer" } } },
+          "else": { "properties": { "count": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

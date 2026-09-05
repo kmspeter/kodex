@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import {
   lstat,
   mkdir,
@@ -18,12 +19,13 @@ export const LONG_RUN_RECEIPT_FORMAT = 'kodex-long-run-acceptance-receipt';
 export const LONG_RUN_ADAPTER_RESULT_FORMAT = 'kodex-long-run-adapter-result';
 
 const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_ADAPTER_RESULT_BYTES = 64 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[a-z][a-z0-9.-]{0,95}$/u;
 const STABLE_CODE = /^[a-z][a-z0-9_]{0,95}$/u;
 const SCENARIO_ID = /^[a-z][a-z0-9-]{0,63}$/u;
-const RESOURCE_NAMES = [
+export const LONG_RUN_RESOURCE_NAMES = Object.freeze([
   'heapBytes',
   'handleCount',
   'socketCount',
@@ -32,22 +34,25 @@ const RESOURCE_NAMES = [
   'leaseCount',
   'temporaryBytes',
   'diskBytes',
-];
+]);
+const RESOURCE_NAMES = LONG_RUN_RESOURCE_NAMES;
+
+const RECOVERY_KINDS = Object.freeze(['none', 'reconnect', 'restart']);
 
 export const LONG_RUN_COMMAND_ALLOWLIST = Object.freeze({
-  'acceptance.backup-recovery': { kind: 'workload', npmScript: 'test:backup-encryption' },
-  'acceptance.browserless-product-local': { kind: 'workload', npmScript: 'test:full-stack' },
-  'acceptance.electron-lifecycle': { kind: 'workload', npmScript: 'test:desktop-workspace-lifecycle' },
-  'acceptance.email-auth-recovery': { kind: 'workload', npmScript: 'test:email-verification-postgres' },
-  'acceptance.history-reconciliation-rag': { kind: 'workload', npmScript: 'test:history-postgres' },
-  'acceptance.invitation-password-reset': { kind: 'workload', npmScript: 'test:password-reset-postgres' },
-  'acceptance.lifecycle-runtime-isolation': { kind: 'workload', npmScript: 'test:data-lifecycle-postgres' },
-  'acceptance.release-installer-update': { kind: 'workload', npmScript: 'test:release-deployment' },
-  'acceptance.security-recovery-contracts': { kind: 'workload', npmScript: 'security:validate' },
-  'chaos.postgres-session-recovery': { kind: 'chaos', npmScript: 'test:history-postgres' },
-  'chaos.runtime-restart-recovery': { kind: 'chaos', npmScript: 'test:desktop-full-stack' },
-  'chaos.update-restart-recovery': { kind: 'chaos', npmScript: 'test:installer' },
-  'chaos.websocket-reconnect': { kind: 'chaos', npmScript: 'test:full-stack' },
+  'acceptance.backup-recovery': { kind: 'workload', npmScript: 'test:backup-encryption', recoveryEvidence: 'none' },
+  'acceptance.browserless-product-local': { kind: 'workload', npmScript: 'test:full-stack', recoveryEvidence: 'none' },
+  'acceptance.electron-lifecycle': { kind: 'workload', npmScript: 'test:desktop-workspace-lifecycle', recoveryEvidence: 'none' },
+  'acceptance.email-auth-recovery': { kind: 'workload', npmScript: 'test:email-verification-postgres', recoveryEvidence: 'none' },
+  'acceptance.history-reconciliation-rag': { kind: 'workload', npmScript: 'test:history-postgres', recoveryEvidence: 'none' },
+  'acceptance.invitation-password-reset': { kind: 'workload', npmScript: 'test:password-reset-postgres', recoveryEvidence: 'none' },
+  'acceptance.lifecycle-runtime-isolation': { kind: 'workload', npmScript: 'test:data-lifecycle-postgres', recoveryEvidence: 'none' },
+  'acceptance.release-installer-update': { kind: 'workload', npmScript: 'test:release-deployment', recoveryEvidence: 'none' },
+  'acceptance.security-recovery-contracts': { kind: 'workload', npmScript: 'security:validate', recoveryEvidence: 'none' },
+  'chaos.postgres-session-recovery': { kind: 'chaos', npmScript: 'test:history-postgres', recoveryEvidence: 'restart' },
+  'chaos.runtime-restart-recovery': { kind: 'chaos', npmScript: 'test:desktop-full-stack', recoveryEvidence: 'restart' },
+  'chaos.update-restart-recovery': { kind: 'chaos', npmScript: 'test:installer', recoveryEvidence: 'restart' },
+  'chaos.websocket-reconnect': { kind: 'chaos', npmScript: 'test:full-stack', recoveryEvidence: 'reconnect' },
 });
 
 const RESULT_CODES = new Set([
@@ -190,15 +195,23 @@ export function parseLongRunScenarioCatalog(value, options = {}) {
   let previousCommand = '';
   for (const command of value.commands) {
     if (
-      !exactKeys(command, ['id', 'kind', 'npmScript'])
+      !exactKeys(command, ['id', 'kind', 'npmScript', 'recoveryEvidence'])
       || !IDENTIFIER.test(command.id)
       || command.id <= previousCommand
       || !['workload', 'chaos'].includes(command.kind)
+      || !RECOVERY_KINDS.includes(command.recoveryEvidence)
+      || (command.kind === 'workload' && command.recoveryEvidence !== 'none')
+      || (command.kind === 'chaos' && command.recoveryEvidence === 'none')
       || typeof command.npmScript !== 'string'
       || !/^[a-z][a-z0-9:-]{0,95}$/u.test(command.npmScript)
     ) fail('scenario_contract_invalid');
     const allowed = allowlist[command.id];
-    if (!allowed || allowed.kind !== command.kind || allowed.npmScript !== command.npmScript) {
+    if (
+      !allowed
+      || allowed.kind !== command.kind
+      || allowed.npmScript !== command.npmScript
+      || allowed.recoveryEvidence !== command.recoveryEvidence
+    ) {
       fail(command.kind === 'chaos' ? 'chaos_action_forbidden' : 'command_not_allowlisted');
     }
     if (
@@ -289,30 +302,56 @@ export async function readLongRunConfig(filename, parsedCatalog) {
 }
 
 function parseMetricAggregate(value) {
-  return exactKeys(value, ['baseline', 'last', 'peak'])
-    && boundedInteger(value.baseline, 0, Number.MAX_SAFE_INTEGER)
+  if (
+    !exactKeys(value, ['baseline', 'last', 'observedSampleCount', 'peak'])
+    || !boundedInteger(value.observedSampleCount, 0, Number.MAX_SAFE_INTEGER)
+  ) return false;
+  if (value.observedSampleCount === 0) {
+    return value.baseline === null && value.last === null && value.peak === null;
+  }
+  return boundedInteger(value.baseline, 0, Number.MAX_SAFE_INTEGER)
     && boundedInteger(value.last, 0, Number.MAX_SAFE_INTEGER)
     && boundedInteger(value.peak, value.baseline, Number.MAX_SAFE_INTEGER)
     && value.peak >= value.last;
 }
 
 function parseAggregateMetrics(value) {
-  return exactKeys(value, ['sampleCount', ...RESOURCE_NAMES])
+  return exactKeys(value, [
+    'fixtureSampleCount', 'operationalSampleCount', 'processSampleCount', 'sampleCount', ...RESOURCE_NAMES,
+  ])
     && boundedInteger(value.sampleCount, 0, Number.MAX_SAFE_INTEGER)
-    && RESOURCE_NAMES.every((name) => parseMetricAggregate(value[name]));
+    && boundedInteger(value.fixtureSampleCount, 0, value.sampleCount)
+    && boundedInteger(value.operationalSampleCount, 0, value.sampleCount)
+    && boundedInteger(value.processSampleCount, 0, value.sampleCount)
+    && value.fixtureSampleCount + value.operationalSampleCount + value.processSampleCount === value.sampleCount
+    && RESOURCE_NAMES.every((name) => (
+      parseMetricAggregate(value[name]) && value[name].observedSampleCount <= value.sampleCount
+    ));
 }
 
 function parseCounters(value) {
   return exactKeys(value, [
-    'duplicateResults', 'failedAttempts', 'passedSteps', 'reconnectRecoveries', 'restartRecoveries', 'retries',
+    'duplicateResults', 'failedAttempts', 'passedSteps', 'retries',
   ]) && Object.values(value).every((entry) => boundedInteger(entry, 0, Number.MAX_SAFE_INTEGER));
+}
+
+function parseRecoveryEvidenceAggregate(value) {
+  if (!exactKeys(value, ['reconnect', 'restart'])) return false;
+  return ['reconnect', 'restart'].every((kind) => {
+    const entry = value[kind];
+    return exactKeys(entry, ['observedActions', 'recoveryCount', 'requiredActions'])
+      && boundedInteger(entry.requiredActions, 0, Number.MAX_SAFE_INTEGER)
+      && boundedInteger(entry.observedActions, 0, entry.requiredActions)
+      && boundedInteger(entry.recoveryCount, 0, Number.MAX_SAFE_INTEGER)
+      && (entry.observedActions > 0 || entry.recoveryCount === 0);
+  });
 }
 
 export function parseLongRunState(value, parsedPlan) {
   if (
     !exactKeys(value, [
       'completedAt', 'counters', 'createdAt', 'deadlineAt', 'format', 'formatVersion', 'lease',
-      'metrics', 'planDigest', 'position', 'resultCode', 'runId', 'scenarioId', 'status', 'updatedAt',
+      'metrics', 'planDigest', 'position', 'recoveryEvidence', 'resultCode', 'runId', 'scenarioId', 'status', 'updatedAt',
     ])
     || value.format !== LONG_RUN_STATE_FORMAT
     || value.formatVersion !== LONG_RUN_FORMAT_VERSION
@@ -333,6 +372,7 @@ export function parseLongRunState(value, parsedPlan) {
     || !['ready', 'invoking'].includes(value.position.phase)
     || !parseCounters(value.counters)
     || !parseAggregateMetrics(value.metrics)
+    || !parseRecoveryEvidenceAggregate(value.recoveryEvidence)
   ) fail('checkpoint_corrupt');
   if (value.lease !== null && (
     !exactKeys(value.lease, ['acquiredAt', 'expiresAt', 'heartbeatAt', 'ownerId'])
@@ -375,8 +415,24 @@ export async function readLongRunState(filename, parsedPlan) {
 function emptyMetrics() {
   return {
     sampleCount: 0,
-    ...Object.fromEntries(RESOURCE_NAMES.map((name) => [name, { baseline: 0, peak: 0, last: 0 }])),
+    processSampleCount: 0,
+    operationalSampleCount: 0,
+    fixtureSampleCount: 0,
+    ...Object.fromEntries(RESOURCE_NAMES.map((name) => [name, {
+      observedSampleCount: 0,
+      baseline: null,
+      peak: null,
+      last: null,
+    }])),
   };
+}
+
+function emptyRecoveryEvidence() {
+  return Object.fromEntries(['reconnect', 'restart'].map((kind) => [kind, {
+    requiredActions: 0,
+    observedActions: 0,
+    recoveryCount: 0,
+  }]));
 }
 
 function newState(parsedPlan, runId, now) {
@@ -397,11 +453,10 @@ function newState(parsedPlan, runId, now) {
       passedSteps: 0,
       failedAttempts: 0,
       retries: 0,
-      reconnectRecoveries: 0,
-      restartRecoveries: 0,
       duplicateResults: 0,
     },
     metrics: emptyMetrics(),
+    recoveryEvidence: emptyRecoveryEvidence(),
     resultCode: null,
     completedAt: null,
   };
@@ -479,14 +534,20 @@ async function releaseLease(lease, ownerId) {
 
 function parseResourceSample(value) {
   return exactKeys(value, RESOURCE_NAMES)
-    && RESOURCE_NAMES.every((name) => boundedInteger(value[name], 0, Number.MAX_SAFE_INTEGER));
+    && RESOURCE_NAMES.every((name) => (
+      exactKeys(value[name], ['observed', 'value'])
+      && typeof value[name].observed === 'boolean'
+      && (value[name].observed
+        ? boundedInteger(value[name].value, 0, Number.MAX_SAFE_INTEGER)
+        : value[name].value === null)
+    ));
 }
 
 export function parseLongRunAdapterResult(value) {
   if (
     !exactKeys(value, [
-      'actionId', 'duplicate', 'format', 'formatVersion', 'invocationId', 'iteration', 'metrics',
-      'outcome', 'recovery', 'resultCode', 'stepIndex',
+      'actionId', 'attempt', 'completedAt', 'duplicate', 'format', 'formatVersion', 'invocationId', 'iteration',
+      'metrics', 'observationSource', 'outcome', 'recovery', 'resultCode', 'stepIndex',
     ])
     || value.format !== LONG_RUN_ADAPTER_RESULT_FORMAT
     || value.formatVersion !== LONG_RUN_FORMAT_VERSION
@@ -494,27 +555,38 @@ export function parseLongRunAdapterResult(value) {
     || !SHA256.test(value.invocationId)
     || !boundedInteger(value.iteration, 0, 1_000_000)
     || !boundedInteger(value.stepIndex, 0, 64)
+    || !boundedInteger(value.attempt, 1, 10)
+    || !canonicalTimestamp(value.completedAt)
+    || !['process', 'operational-probe', 'fixture'].includes(value.observationSource)
     || !['passed', 'retryable-failure', 'terminal-failure'].includes(value.outcome)
     || !STABLE_CODE.test(value.resultCode)
     || typeof value.duplicate !== 'boolean'
     || !parseResourceSample(value.metrics)
-    || !exactKeys(value.recovery, ['reconnects', 'restarts'])
-    || !boundedInteger(value.recovery.reconnects, 0, 1_000_000)
-    || !boundedInteger(value.recovery.restarts, 0, 1_000_000)
+    || !exactKeys(value.recovery, ['count', 'kind', 'observed'])
+    || !RECOVERY_KINDS.includes(value.recovery.kind)
+    || typeof value.recovery.observed !== 'boolean'
+    || (value.recovery.observed
+      ? !boundedInteger(value.recovery.count, 0, 1_000_000)
+      : value.recovery.count !== null)
+    || (value.recovery.kind === 'none' && (value.recovery.observed || value.recovery.count !== null))
   ) fail('adapter_result_invalid');
   return value;
 }
 
-function updateMetrics(state, sample, thresholds) {
+function updateMetrics(state, sample, thresholds, observationSource) {
   state.metrics.sampleCount += 1;
+  state.metrics[`${observationSource === 'operational-probe' ? 'operational' : observationSource}SampleCount`] += 1;
   let exceeded = false;
   for (const name of RESOURCE_NAMES) {
+    if (!sample[name].observed) continue;
     const aggregate = state.metrics[name];
-    if (state.metrics.sampleCount === 1) aggregate.baseline = sample[name];
-    aggregate.last = sample[name];
-    aggregate.peak = Math.max(aggregate.peak, sample[name]);
+    const measured = sample[name].value;
+    if (aggregate.observedSampleCount === 0) aggregate.baseline = measured;
+    aggregate.observedSampleCount += 1;
+    aggregate.last = measured;
+    aggregate.peak = aggregate.peak === null ? measured : Math.max(aggregate.peak, measured);
     if (
-      sample[name] > thresholds[name].maximum
+      measured > thresholds[name].maximum
       || aggregate.peak - aggregate.baseline > thresholds[name].maximumGrowth
     ) exceeded = true;
   }
@@ -536,6 +608,7 @@ function receiptFromState(state) {
     stepsCompleted: state.position.completedSteps,
     counters: state.counters,
     metrics: state.metrics,
+    recoveryEvidence: state.recoveryEvidence,
   };
   return { receipt, receiptDigest: digest(receipt) };
 }
@@ -544,7 +617,7 @@ export function parseLongRunReceipt(value) {
   if (
     !exactKeys(value, [
       'completedAt', 'counters', 'format', 'formatVersion', 'iterationsCompleted', 'metrics', 'planDigest',
-      'resultCode', 'runId', 'scenarioId', 'startedAt', 'stepsCompleted',
+      'recoveryEvidence', 'resultCode', 'runId', 'scenarioId', 'startedAt', 'stepsCompleted',
     ])
     || value.format !== LONG_RUN_RECEIPT_FORMAT
     || value.formatVersion !== LONG_RUN_FORMAT_VERSION
@@ -559,6 +632,7 @@ export function parseLongRunReceipt(value) {
     || !boundedInteger(value.stepsCompleted, 0, Number.MAX_SAFE_INTEGER)
     || !parseCounters(value.counters)
     || !parseAggregateMetrics(value.metrics)
+    || !parseRecoveryEvidenceAggregate(value.recoveryEvidence)
   ) fail('receipt_contract_invalid');
   return { receipt: value, receiptDigest: digest(value) };
 }
@@ -570,13 +644,20 @@ export async function readLongRunReceipt(filename) {
   ));
 }
 
-function invocationId(state, actionId) {
+function operationId(state, actionId) {
   return createHash('sha256').update([
     state.runId,
     state.planDigest,
     String(state.position.iteration),
     String(state.position.stepIndex),
     actionId,
+  ].join('\n')).digest('hex');
+}
+
+function invocationId(state, actionId) {
+  return createHash('sha256').update([
+    operationId(state, actionId),
+    String(state.position.attempt),
   ].join('\n')).digest('hex');
 }
 
@@ -745,25 +826,30 @@ export async function runLongRunAcceptance(options) {
       state.position.phase = 'invoking';
       await refreshLease();
       await checkpoint('before-invocation');
+      const expectedOperationId = operationId(state, actionId);
       const expectedInvocationId = invocationId(state, actionId);
+      const invocationStartedAt = now().toISOString();
       const timeoutMilliseconds = Math.max(1, Math.min(
         parsedPlan.config.stepTimeoutSeconds * 1_000,
         Date.parse(state.deadlineAt) - now().getTime(),
       ));
-      const invoked = await invokeBounded(options.adapter, {
+      const invocation = {
         format: 'kodex-long-run-invocation',
         formatVersion: LONG_RUN_FORMAT_VERSION,
+        operationId: expectedOperationId,
         invocationId: expectedInvocationId,
         actionId,
         actionKind: command.kind,
         iteration: state.position.iteration,
         stepIndex: state.position.stepIndex,
         attempt: state.position.attempt,
+        startedAt: invocationStartedAt,
         deadlineAt: new Date(Math.min(
           Date.parse(state.deadlineAt),
           now().getTime() + timeoutMilliseconds,
         )).toISOString(),
-      }, timeoutMilliseconds, options.signal);
+      };
+      const invoked = await invokeBounded(options.adapter, invocation, timeoutMilliseconds, options.signal);
       if (options.signal?.aborted) return finish('aborted', 'aborted');
 
       let outcome = 'retryable-failure';
@@ -779,16 +865,33 @@ export async function runLongRunAcceptance(options) {
           || result.actionId !== actionId
           || result.iteration !== state.position.iteration
           || result.stepIndex !== state.position.stepIndex
+          || result.attempt !== state.position.attempt
         ) return finish('unordered_result', 'failed');
+        if (
+          Date.parse(result.completedAt) < Date.parse(invocation.startedAt)
+          || Date.parse(result.completedAt) > Date.parse(invocation.deadlineAt)
+          || result.recovery.kind !== command.recoveryEvidence
+        ) return finish('terminal_step_failure', 'failed');
         outcome = result.outcome;
       }
-      if (result && updateMetrics(state, result.metrics, parsedPlan.config.thresholds)) {
+      if (result && updateMetrics(
+        state,
+        result.metrics,
+        parsedPlan.config.thresholds,
+        result.observationSource,
+      )) {
         return finish('resource_threshold_exceeded', 'failed');
       }
       if (outcome === 'passed') {
         if (result.duplicate) state.counters.duplicateResults += 1;
-        state.counters.reconnectRecoveries += result.recovery.reconnects;
-        state.counters.restartRecoveries += result.recovery.restarts;
+        if (command.recoveryEvidence !== 'none') {
+          const recovery = state.recoveryEvidence[command.recoveryEvidence];
+          recovery.requiredActions += 1;
+          if (result.recovery.observed) {
+            recovery.observedActions += 1;
+            recovery.recoveryCount += result.recovery.count;
+          }
+        }
         state.counters.passedSteps += 1;
         state.position.completedSteps += 1;
         state.position.stepIndex += 1;
@@ -828,36 +931,151 @@ export async function runLongRunAcceptance(options) {
   }
 }
 
+function observed(value) {
+  return { observed: true, value };
+}
+
+function unobserved() {
+  return { observed: false, value: null };
+}
+
 function processResourceSample() {
   const handles = typeof process._getActiveHandles === 'function' ? process._getActiveHandles() : [];
   return {
-    heapBytes: process.memoryUsage().heapUsed,
-    handleCount: handles.length,
-    socketCount: handles.filter((entry) => entry?.constructor?.name === 'Socket').length,
-    databasePoolCount: 0,
-    outboxItemCount: 0,
-    leaseCount: 0,
-    temporaryBytes: 0,
-    diskBytes: 0,
+    heapBytes: observed(process.memoryUsage().heapUsed),
+    handleCount: observed(handles.length),
+    socketCount: observed(handles.filter((entry) => entry?.constructor?.name === 'Socket').length),
+    databasePoolCount: unobserved(),
+    outboxItemCount: unobserved(),
+    leaseCount: unobserved(),
+    temporaryBytes: unobserved(),
+    diskBytes: unobserved(),
   };
 }
 
-export function createProcessLongRunAdapter(repositoryRoot, parsedCatalog) {
+export function resolveNpmCliInvocation(npmExecPath = process.env.npm_execpath) {
+  if (
+    typeof npmExecPath !== 'string'
+    || !path.isAbsolute(npmExecPath)
+    || path.basename(npmExecPath).toLowerCase() !== 'npm-cli.js'
+  ) fail('adapter_invalid');
+  const resolved = path.resolve(npmExecPath);
+  let metadata;
+  try { metadata = lstatSync(resolved); } catch { fail('adapter_invalid'); }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) fail('adapter_invalid');
+  return { executable: process.execPath, argumentPrefix: [resolved] };
+}
+
+function externalResultDirectory(resultDirectory, repositoryRoot) {
+  if (resultDirectory === undefined) return null;
+  if (typeof resultDirectory !== 'string' || !path.isAbsolute(resultDirectory)) {
+    fail('adapter_result_directory_invalid');
+  }
+  const resolved = path.resolve(resultDirectory);
+  let metadata;
+  let realDirectory;
+  let realRepository;
+  try {
+    metadata = lstatSync(resolved);
+    realDirectory = realpathSync(resolved);
+    realRepository = realpathSync(repositoryRoot);
+  } catch {
+    fail('adapter_result_directory_invalid');
+  }
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || path.resolve(realDirectory) !== resolved) {
+    fail('adapter_result_directory_invalid');
+  }
+  const relative = path.relative(realRepository, realDirectory);
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    fail('adapter_result_directory_must_be_external');
+  }
+  return realDirectory;
+}
+
+async function resultFileExists(filename) {
+  try {
+    await lstat(filename);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    fail('adapter_result_invalid');
+  }
+}
+
+export async function readExternalLongRunAdapterResult(resultDirectory, repositoryRoot, invocation, options = {}) {
+  const directory = externalResultDirectory(resultDirectory, repositoryRoot);
+  if (!isRecord(invocation) || !SHA256.test(invocation.invocationId)) fail('adapter_result_invalid');
+  const consumed = options.consumedInvocationIds ?? new Set();
+  if (!(consumed instanceof Set)) fail('adapter_result_invalid');
+  if (consumed.has(invocation.invocationId)) fail('adapter_result_replayed');
+  const filename = path.join(directory, `${invocation.invocationId}.json`);
+  let metadata;
+  try { metadata = await lstat(filename); } catch { fail('adapter_result_missing'); }
+  if (
+    !metadata.isFile()
+    || metadata.isSymbolicLink()
+    || metadata.size < 2
+    || metadata.size > MAX_ADAPTER_RESULT_BYTES
+  ) fail('adapter_result_invalid');
+  let bytes;
+  let value;
+  try {
+    bytes = await readFile(filename);
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    fail('adapter_result_invalid');
+  }
+  if (!bytes.equals(Buffer.from(canonicalLongRunJson(value), 'utf8'))) fail('adapter_result_invalid');
+  const parsed = parseLongRunAdapterResult(value);
+  if (
+    parsed.observationSource !== 'operational-probe'
+    || parsed.invocationId !== invocation.invocationId
+    || parsed.actionId !== invocation.actionId
+    || parsed.iteration !== invocation.iteration
+    || parsed.stepIndex !== invocation.stepIndex
+    || parsed.attempt !== invocation.attempt
+  ) fail('adapter_result_mismatch');
+  if (
+    Date.parse(parsed.completedAt) < Date.parse(invocation.startedAt)
+    || Date.parse(parsed.completedAt) > Date.parse(invocation.deadlineAt)
+    || metadata.mtimeMs < Date.parse(invocation.startedAt) - 2_000
+    || metadata.mtimeMs > Date.parse(invocation.deadlineAt) + 2_000
+  ) fail('adapter_result_stale');
+  consumed.add(invocation.invocationId);
+  return parsed;
+}
+
+function processAdapterResult(invocation, command, outcome, resultCode) {
+  const completedMilliseconds = Math.max(
+    Date.parse(invocation.startedAt),
+    Math.min(Date.now(), Date.parse(invocation.deadlineAt)),
+  );
+  return {
+    format: LONG_RUN_ADAPTER_RESULT_FORMAT,
+    formatVersion: LONG_RUN_FORMAT_VERSION,
+    invocationId: invocation.invocationId,
+    actionId: invocation.actionId,
+    iteration: invocation.iteration,
+    stepIndex: invocation.stepIndex,
+    attempt: invocation.attempt,
+    completedAt: new Date(completedMilliseconds).toISOString(),
+    observationSource: 'process',
+    outcome,
+    resultCode,
+    duplicate: false,
+    metrics: processResourceSample(),
+    recovery: { kind: command.recoveryEvidence, observed: false, count: null },
+  };
+}
+
+export function createProcessLongRunAdapter(repositoryRoot, parsedCatalog, options = {}) {
   if (typeof repositoryRoot !== 'string' || !path.isAbsolute(repositoryRoot)) fail('adapter_invalid');
   const root = path.resolve(repositoryRoot);
+  if (!isRecord(parsedCatalog) || !(parsedCatalog.commands instanceof Map) || !isRecord(options)) fail('adapter_invalid');
+  const npm = resolveNpmCliInvocation(options.npmExecPath ?? process.env.npm_execpath);
+  const resultDirectory = externalResultDirectory(options.resultDirectory, root);
+  const consumedInvocationIds = new Set();
   const activeChildren = new Set();
-  let executable = 'npm';
-  let argumentPrefix = [];
-  if (process.platform === 'win32') {
-    const npmCli = process.env.npm_execpath;
-    if (
-      typeof npmCli !== 'string'
-      || !path.isAbsolute(npmCli)
-      || path.basename(npmCli).toLowerCase() !== 'npm-cli.js'
-    ) fail('adapter_invalid');
-    executable = process.execPath;
-    argumentPrefix = [path.resolve(npmCli)];
-  }
   const stopChild = async (child) => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     if (process.platform === 'win32' && child.pid) {
@@ -884,10 +1102,28 @@ export function createProcessLongRunAdapter(repositoryRoot, parsedCatalog) {
     async execute(invocation, signal) {
       const command = parsedCatalog.commands.get(invocation.actionId);
       if (!command) fail('command_not_allowlisted');
+      if (resultDirectory !== null && !SHA256.test(invocation.operationId)) fail('adapter_result_invalid');
+      const resultFilename = resultDirectory === null
+        ? null
+        : path.join(resultDirectory, `${invocation.invocationId}.json`);
+      if (resultFilename !== null && await resultFileExists(resultFilename)) {
+        return processAdapterResult(invocation, command, 'terminal-failure', 'adapter_result_replayed');
+      }
       const exitCode = await new Promise((resolve) => {
-        const child = spawn(executable, [...argumentPrefix, 'run', command.npmScript], {
+        const child = spawn(npm.executable, [...npm.argumentPrefix, 'run', command.npmScript], {
           cwd: root,
-          env: process.env,
+          env: {
+            ...process.env,
+            ...(resultFilename === null ? {} : {
+              KODEX_ACCEPTANCE_RESULT_FILE: resultFilename,
+              KODEX_ACCEPTANCE_OPERATION_ID: invocation.operationId,
+              KODEX_ACCEPTANCE_INVOCATION_ID: invocation.invocationId,
+              KODEX_ACCEPTANCE_ACTION_ID: invocation.actionId,
+              KODEX_ACCEPTANCE_ITERATION: String(invocation.iteration),
+              KODEX_ACCEPTANCE_STEP_INDEX: String(invocation.stepIndex),
+              KODEX_ACCEPTANCE_ATTEMPT: String(invocation.attempt),
+            }),
+          },
           shell: false,
           windowsHide: true,
           stdio: 'ignore',
@@ -907,23 +1143,25 @@ export function createProcessLongRunAdapter(repositoryRoot, parsedCatalog) {
         });
       });
       const passed = exitCode === 0 && !signal.aborted;
-      const chaosPassed = passed && command.kind === 'chaos';
-      return {
-        format: LONG_RUN_ADAPTER_RESULT_FORMAT,
-        formatVersion: LONG_RUN_FORMAT_VERSION,
-        invocationId: invocation.invocationId,
-        actionId: invocation.actionId,
-        iteration: invocation.iteration,
-        stepIndex: invocation.stepIndex,
-        outcome: passed ? 'passed' : 'retryable-failure',
-        resultCode: passed ? 'command_passed' : signal.aborted ? 'command_aborted' : 'command_failed',
-        duplicate: false,
-        metrics: processResourceSample(),
-        recovery: {
-          reconnects: chaosPassed && invocation.actionId === 'chaos.websocket-reconnect' ? 1 : 0,
-          restarts: chaosPassed && invocation.actionId !== 'chaos.websocket-reconnect' ? 1 : 0,
-        },
-      };
+      if (passed && resultDirectory !== null) {
+        try {
+          return await readExternalLongRunAdapterResult(
+            resultDirectory,
+            root,
+            invocation,
+            { consumedInvocationIds },
+          );
+        } catch (error) {
+          const resultCode = error instanceof LongRunAcceptanceError ? error.code : 'adapter_result_invalid';
+          return processAdapterResult(invocation, command, 'terminal-failure', resultCode);
+        }
+      }
+      return processAdapterResult(
+        invocation,
+        command,
+        passed ? 'passed' : 'retryable-failure',
+        passed ? 'command_passed_without_observation' : signal.aborted ? 'command_aborted' : 'command_failed',
+      );
     },
     async cleanup() {
       await Promise.all([...activeChildren].map(stopChild));
