@@ -24,7 +24,7 @@ review용 projection이며 command ID는 catalog의 allowlist다. Phase 1~36은 
 | `REL-015` | Phase 25, 29~31, 34, 36 | signing | `acceptance.release-deployment`, `acceptance.release-signing` | artifact receipt + verified release artifact |
 | `REL-016` | Phase 30~31, 36 | installer/updater | `acceptance.installer-fixture`, `operations.installer-artifact` | artifact receipt + confirmed installer state |
 | `REL-017` | Phase 24, 34~36 | managed PostgreSQL/provider | `operations.provider-recovery-drill` | Phase 35 provider-drill receipt |
-| `REL-018` | Phase 1~36 | Product/Local/Electron/PostgreSQL/filesystem/release | `operations.soak` | signed wrapper + 12~72h completed soak receipt |
+| `REL-018` | Phase 1~36 | Product/Local/Electron/PostgreSQL/filesystem/release | `operations.soak` | signed wrapper + 12~72h completed soak receipt + full operational metric/reconnect/restart coverage |
 
 ## Evidence 해석
 
@@ -35,7 +35,10 @@ requirement별 `maximumAgeHours`를 사용한다.
 
 Build/signing/installer/provider/soak는 signed acceptance wrapper만으로 통과하지 않는다. Final gate가 external source
 artifact/receipt를 Phase 30 release verifier, Phase 31 installer state, Phase 35 recovery validator와 Phase 36 long-run
-receipt parser로 다시 확인해야 한다. Electron/PostgreSQL처럼 이 실행에서 수행하지 않은 category는 pending으로 남는다.
+receipt parser로 다시 확인해야 한다. Soak receipt의 모든 sample은 heap/handle/socket/DB pool/outbox/lease/temp/disk를
+실제 관측해야 하고 `processSampleCount=fixtureSampleCount=0`이어야 한다. 두 production scenario가 요구하는 reconnect와
+restart action은 required=observed이고 recovery count가 required 이상이어야 한다. Electron/PostgreSQL처럼 이 실행에서
+수행하지 않은 category는 pending으로 남는다.
 
 `npm run acceptance:validate`가 이 문서의 first/last requirement와 Phase 범위, machine catalog/schema digest를 함께
 검사한다. Requirement를 추가/변경하면 catalog, schema/parser, 이 matrix, checklist, ADR/threat model과 fixture를 같은

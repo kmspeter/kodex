@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | detached Phase 36 전용 worktree; 기준 main에서 feature/docs 독립 commit |
-| 제품 기준 HEAD | `83fbdcd829af9eb8dbf817c5105b6da08f2a26c9` |
-| 제품 기준 commit | `feat: add final acceptance gates` |
+| 제품 기준 HEAD | `970c125b8e137a074cdaf8dad828e2f48a06438c` |
+| 제품 기준 commit | `fix: require observed soak evidence` |
 | Phase 36 시작 main HEAD | `0482cca87a3ca7b7b7ba5ad62a405d0e0b478e36` |
 | 완료 범위 | Phase 1~36 코드와 문서 계약 |
 | 다음 핵심 기능 | 승인된 실제 build/Electron/PostgreSQL/installer/provider drill/12~72h evidence 실행만 보류; 다음 Phase로 확장하지 않음 |
@@ -706,7 +706,7 @@ Phase 36의 원본 결정은 [ADR 0035](adr/0035-long-run-and-release-acceptance
 [final checklist](operations/final-release-checklist.md)와
 [acceptance matrix](operations/release-acceptance-matrix.md)다.
 
-- Version 1 long-run scenario/config/state/receipt와 여섯 JSON schema를 추가했다. Production catalog는 12시간
+- Version 1 long-run scenario/config/adapter-result/state/receipt와 일곱 JSON schema를 추가했다. Production catalog는 12시간
   minimum/72시간 maximum이고 `full-system-soak`, `product-local-postgresql-soak` 두 scenario가 기존 Product/Local/
   Electron/PostgreSQL/history/RAG/auth/invitation/password-reset/email/lifecycle/backup/recovery/release/security harness를
   allowlisted command ID로 조합한다. CLI는 arbitrary shell/argv/path payload를 state나 log에 저장하지 않는다.
@@ -714,10 +714,11 @@ Phase 36의 원본 결정은 [ADR 0035](adr/0035-long-run-and-release-acceptance
   directory/heartbeat/expiry, monotonic iteration-step-completed relation, pre-invocation attempt checkpoint와 deterministic
   idempotency key를 쓴다. Crash resume는 in-flight attempt를 소비하고 bounded retry하며 live lease의 duplicate runner를
   `duplicate_runner`로 막는다. SIGINT/SIGTERM, step/global deadline, exponential backoff, iteration cap과 cleanup도 bounded다.
-- Adapter result는 heap/handle/socket/DB pool/outbox/lease/temp/disk 정수 sample과 reconnect/restart count뿐이다. Absolute
-  또는 baseline growth threshold 위반은 `resource_threshold_exceeded`, invocation/iteration/step 불일치는
-  `unordered_result`다. Tenant/user/workspace/email, prompt/tool payload, DB URL, path, token/secret와 raw error/output는
-  state/receipt/summary에 없다.
+- Adapter result는 heap/handle/socket/DB pool/outbox/lease/temp/disk의 explicit observed/value와 recovery
+  kind/observed/count만 허용한다. Observed zero와 unobserved null은 구분되며 후자는 threshold 성공이 아니다. 기본
+  process adapter는 heap/handle/socket 외 metric과 recovery를 미관측으로 둔다. Production source에는 모든 sample의
+  operational coverage와 required reconnect/restart observation/count가 필요하다. Tenant/user/workspace/email,
+  prompt/tool payload, DB URL, path, token/secret와 raw error/output는 state/receipt/summary에 없다.
 - Chaos allowlist는 reconnect/runtime restart/PostgreSQL session recovery/update restart의 reversible isolated acceptance
   action 네 개다. DB/data/user file 삭제, Docker daemon/volume mutation, approval auto-approve, policy bypass와 catalog 밖
   command는 코드에서 거부한다.
@@ -730,20 +731,24 @@ Phase 36의 원본 결정은 [ADR 0035](adr/0035-long-run-and-release-acceptance
   Domain-separated canonical payload를 Phase 30 Ed25519 primitive로 검증하고 external trust store의 loaded version/ref와
   exact-match한다. `verified` boolean과 private key/repository trust store는 허용하지 않는다.
 - Build/signing은 Phase 30 release artifact verifier, installer는 Phase 31 confirmed state와 같은 artifact, provider
-  drill은 Phase 35 receipt validator, soak는 12~72시간 completed Phase 36 receipt를 source로 다시 확인한다. Wrapper만
+  drill은 Phase 35 receipt validator, soak는 12~72시간 completed Phase 36 receipt와 full operational resource/recovery
+  coverage를 source로 다시 확인한다. Wrapper만
   있고 원본이 없으면 `evidence_source_unverified`다. Dirty/missing/stale/future/failed/mismatched/unsigned/unknown/revoked/
   tampered evidence는 모두 fail-closed다.
-- `acceptance:validate`는 machine catalog와 여섯 schema digest, package scripts, 13개 immutable migration count,
+- `acceptance:validate`는 machine catalog와 일곱 schema digest, package scripts, 13개 immutable migration count,
   README/ADR/runbook/checklist/matrix/threat/deployment/security/observability drift를 검사한다. `security:validate`도 같은
   gate를 호출한다.
 
-Feature commit은 `83fbdcd829af9eb8dbf817c5105b6da08f2a26c9`
-(`feat: add final acceptance gates`)다. 요청 기준 main HEAD
+최초 feature commit은 `83fbdcd829af9eb8dbf817c5105b6da08f2a26c9`
+(`feat: add final acceptance gates`), fail-open review 보완 feature commit은 `970c125b8e137a074cdaf8dad828e2f48a06438c`
+(`fix: require observed soak evidence`)다. 요청 기준 main HEAD
 `0482cca87a3ca7b7b7ba5ad62a405d0e0b478e36`의 clean detached worktree에서 시작했다. Migration `0001`~`0013`,
 vendor/generated protocol, upstream pin/manifest를 변경하지 않았다.
 
-이 feature commit에는 최종 review hardening도 함께 squash했다. Windows process adapter는 `npm.cmd`를 shell로 실행하지
-않고 현재 `npm run`의 absolute `npm-cli.js`를 basename/absolute-path 검증 뒤 `node` argv로 실행한다. Timeout/abort는
+최종 review 보완은 모든 OS에서 PATH의 npm을 사용하지 않고 현재 `npm run`의 absolute, regular non-symlink
+`npm-cli.js`를 현재 Node argv로 실행한다. 운영 observer는 repository 밖 external result directory의 fixed bounded
+canonical JSON만 사용하고 invocation/action/iteration/step/attempt/freshness/replay/symlink를 검증한다. Exit-only
+결과는 process-only로 남고 recovery를 만들지 않는다. Timeout/abort는
 runner가 만든 exact child tree만 bounded terminate하고 guard timer/heartbeat write를 terminal checkpoint 전에 drain한다.
 Step timeout은 남은 global deadline 이하이며 cleanup 중 crash에도 원래 terminal result를 보존한다. Catalog는 exact
 18 command/18 sequential requirement, repository identity는 exact 13-entry ledger와 재계산 digest를 요구한다.
@@ -751,15 +756,15 @@ Artifact kind/trust version을 requirement에 묶고 installer는 external candi
 full-tree/Ed25519 signature도 Phase 31 confirmed state와 exact-match해야 한다.
 
 이 worktree의 Node는 `v20.19.4`이고 `node_modules`가 없었다. 설치나 다른 경로 탐색을 하지 않았다. Dependency-free
-`test:long-run-acceptance` 13개 경로와 `test:release-acceptance` 12개 경로가 통과했다. 두 번째 fixture는 명시적으로
+`test:long-run-acceptance` 21개 경로와 `test:release-acceptance` 15개 경로가 통과했다. 두 번째 fixture는 명시적으로
 `productionEvidenceCreated=false`를 출력했다. Changed executable의 `node --check`, `recovery:validate`도 통과했다.
 `acceptance:validate` 결과는 catalog digest `43a67b2ae2c11e43014a94483a19ffffe82772f218fb6e4eeb7e94d92a3addda`,
-command/requirement 18, schema 6, document 10, long-run scenario 2다. Sandbox 내부 `security:validate`의 tracked-file
-Git spawn은 `EPERM`이어서 허용된 read-only 경계에서 다시 실행했고 final docs 기준 tracked 8,073, vendor 6,687, dependency 392,
-workspace 9, deployment 3, acceptance command/requirement 18/schema 6, recovery document 8/schema 2,
-bootstrap trust-store version 2/key 0, `binaryPresent=false`로 통과했다. `npx eslint`는 local dependency가 없어
-cache-only `ENOTCACHED`로 시작되지 않았으며 lint/typecheck/targeted Vitest는 메인 Node 22.13+ dependency 환경으로
-넘긴다.
+command/requirement 18, schema 7, document 10, long-run scenario 2다. Sandbox 내부 `security:validate`의 tracked-file
+Git spawn은 `EPERM`이어서 허용된 read-only 경계에서 다시 실행했고 final docs 기준 tracked 8,074, vendor 6,687, dependency 392,
+workspace 9, deployment 3, acceptance command/requirement 18/schema 7, recovery document 8/schema 2,
+bootstrap trust-store version 2/key 0, `binaryPresent=false`로 통과했다. 요청대로 `npm run typecheck`와 `npm run lint`를
+호출했지만 local dependency가 없어 각각 `tsc`와 `eslint` command-not-found로 시작되지 않았다. 설치나 다른 경로 탐색은
+하지 않았으며 dependency가 준비된 메인 Node 22.13+ 환경으로 넘긴다.
 
 실제 long soak, Product/Local/Electron/full-stack, Docker/PostgreSQL, backup/restore, provider drill, installer/release
 artifact generation, cloud/network, Rust/MSVC/Codex build는 실행하지 않았다. 따라서 현재 clean final HEAD에서

@@ -70,7 +70,9 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 - [final release checklist](final-release-checklist.md)와 [acceptance matrix](release-acceptance-matrix.md)의 실제
   Electron/PostgreSQL/filesystem/email/backup/installer/provider evidence 및 12~72시간 long-run soak를 완료한다.
   External evidence directory/trust store와 release artifact, confirmed install root, Phase 35 recovery receipt,
-  Phase 36 soak receipt를 `release:readiness`에 함께 전달해 `release_ready`인지 확인한다.
+  Phase 36 soak receipt를 `release:readiness`에 함께 전달해 `release_ready`인지 확인한다. Soak source는 기본 process
+  exit adapter가 아니라 external operational probe의 모든 자원 sample과 required reconnect/restart evidence coverage가
+  완전해야 한다.
 
 ## Deploy/upgrade
 

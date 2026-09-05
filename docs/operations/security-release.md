@@ -5,7 +5,7 @@
 1. 실제 credential 없이 clean checkout에서 `npm ci --ignore-scripts` 후 `npm run security:validate`와
    `npm run test:security`를 실행한다.
    Phase 35부터 `security:validate`는 default production database recovery policy와 schema/package/docs drift도
-   함께 검사한다. Phase 36부터 `config/release-acceptance-catalog.json`, long-run scenario와 여섯 schema digest,
+   함께 검사한다. Phase 36부터 `config/release-acceptance-catalog.json`, long-run scenario와 일곱 schema digest,
    package/docs matrix drift도 `npm run acceptance:validate`를 통해 같은 gate에 포함한다. Recovery-only 확인은
    `npm run recovery:validate`, temp fixture는 `npm run test:recovery`다.
    Recovery `status`는 artifact 밖 absolute external trust-store의 active key로 canonical receipt signature를 실제
@@ -19,7 +19,8 @@
    dependency update로 재생성하지 않는다.
 5. `npm run test:long-run-acceptance`와 `npm run test:release-acceptance`는 dependency-free code fixture일 뿐
    production evidence가 아니다. 전자는 long soak를 실행하지 않고 후자는 ephemeral key/temp receipt만 사용하며
-   `productionEvidenceCreated=false`를 출력한다.
+   `productionEvidenceCreated=false`를 출력한다. Long-run fixture의 canonical operational-shaped result는 parser 경계만
+   검사하며 signed production evidence가 아니다.
 
 ## Production PostgreSQL 역할
 
@@ -54,6 +55,7 @@ Sealed artifact 뒤에는 [final release checklist](final-release-checklist.md)�
 `config/release-acceptance-catalog.json`의 `REL-001`~`REL-018` 전부가 current clean HEAD/version, policy/migration/vendor
 digest와 exact-match하고 external trust store Ed25519 signature가 유효해야 한다. Build/signing/installer/provider/soak
 category는 signed wrapper 외 원본 artifact/receipt를 각각 Phase 30 release verifier, Phase 31 installer state,
-Phase 35 recovery validator와 Phase 36 long-run parser로 다시 확인한다. `release_evidence_pending`, dirty/stale/failed/
+Phase 35 recovery validator와 Phase 36 long-run parser 및 full operational metric/reconnect/restart coverage로 다시 확인한다.
+Process-only/fixture/missing-observation soak는 source로 인정하지 않는다. `release_evidence_pending`, dirty/stale/failed/
 mismatched/unsigned/unknown/revoked/source-unverified 결과는 publish 차단이다. Evidence/private key/trust store를
 repository/runtime/UI에 복사하거나 raw error/path/payload를 release record에 넣지 않는다.

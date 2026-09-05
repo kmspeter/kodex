@@ -79,8 +79,8 @@ clean HEAD + catalog/policy/migration/vendor provenance + signed evidence + veri
 | Installer state → active code | in-place overwrite, path escape/reparse, unsafe ACL, concurrent/crashed pointer 전환 | signed-first verification, Phase 29 secret scan, external ACL adapter, side-by-side roots, same-directory atomic pointer+journal, exclusive lock, exact-root cleanup; installer fixture/unit |
 | DB schema → binary rollback | forward-only migration 뒤 incompatible binary 자동 downgrade | signed readable-schema metadata, conservative candidate latest-schema journal, incompatible rollback의 `operator_recovery_required`; installer fixture/ADR 0030 |
 | Uninstall → persistent data | tenant/CODEX_HOME/DB/backup 동반 삭제 | per-user code root와 외부 데이터 분리, plan-only uninstall adapter boundary, exact direct-child deletion; layout schema/runbook |
-| Long-run runner → acceptance target | duplicate runner, stale/crash replay, unbounded retry, destructive chaos, resource leak, payload/state 유출 | atomic pre-invocation checkpoint, run/plan digest, expiring heartbeat lease, idempotency key, bounded deadline/retry/backoff, fixed reversible action IDs, aggregate threshold; Phase 36 fake fixture/runbook |
-| Acceptance evidence → release decision | 과거/다른 commit receipt, forged boolean, unsigned/tampered/unknown/revoked evidence, missing source artifact, dirty tree, fake fixture 승격 | exact current HEAD/version/catalog/policy/migration/vendor match, external Ed25519 trust store, Phase 30/31/35/36 source verifier, all-requirement fail-closed matrix; `acceptance:validate`, `release:readiness` |
+| Long-run runner → acceptance target | duplicate runner, stale/crash replay, PATH npm substitution, unbounded retry, destructive chaos, resource leak, zero-filled 미관측값/recovery 위조, payload/state 유출 | atomic pre-invocation checkpoint, stable operation/fresh attempt invocation digest, expiring heartbeat lease, bounded deadline/retry/backoff, fixed reversible action IDs, absolute npm-cli.js+current Node, external canonical result identity/freshness/symlink checks, observed/null coverage와 aggregate threshold; Phase 36 fake fixture/runbook |
+| Acceptance evidence → release decision | 과거/다른 commit receipt, forged boolean, unsigned/tampered/unknown/revoked evidence, missing source artifact, dirty tree, process/fake soak 승격 | exact current HEAD/version/catalog/policy/migration/vendor match, external Ed25519 trust store, Phase 30/31/35 source verifier, Phase 36 full operational metric/reconnect/restart coverage, all-requirement fail-closed matrix; `acceptance:validate`, `release:readiness` |
 
 ## Threat 처리
 
@@ -99,7 +99,9 @@ clean HEAD + catalog/policy/migration/vendor provenance + signed evidence + veri
   version exact match 뒤에만 stale/future/failed/RPO/RTO/protection mismatch를 production promotion 전에 평가한다.
   Phase 36 evidence도 signature field를 제외한 requirement/command/result/timestamps/current provenance/count/artifact
   metadata 전체를 별도 domain으로 봉인한다. Release readiness는 wrapper signature뿐 아니라 release artifact,
-  confirmed installer state, Phase 35 recovery receipt와 12~72시간 completed soak source를 다시 검증한다.
+  confirmed installer state, Phase 35 recovery receipt와 12~72시간 completed soak source를 다시 검증한다. Soak는
+  exit status가 아니라 모든 resource sample의 operational observation과 required reconnect/restart recovery evidence가
+  완전해야 한다.
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
   response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Recovery validate/status도
   stable code, policy digest, coarse age bucket/count만 출력하고 resource ID, WAL LSN/timeline, snapshot ID와

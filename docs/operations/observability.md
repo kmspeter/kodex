@@ -70,11 +70,14 @@ workspace/thread ID와 outbox record body는 ticket에 첨부하지 않는다. P
 offline backup runbook을 따른다. Status endpoint 자체는 삭제나 repair action을 제공하지 않는다.
 
 Phase 36 long-run acceptance는 HTTP status payload를 state에 복사하지 않고 adapter가 반환한 payload-free aggregate metrics만
-checkpoint한다. Heap/handle/socket/DB pool/outbox/lease/temp/disk 각각 baseline/last/peak와 sample count,
-reconnect/restart recovery count가 전부다. Tenant/user/workspace/email, prompt/tool payload, DB URL, path, token/secret와
+checkpoint한다. Heap/handle/socket/DB pool/outbox/lease/temp/disk 각각 observed sample count와 nullable
+baseline/last/peak, process/operational/fixture sample count, reconnect/restart required/observed/recovery count가 전부다.
+Observed zero는 `true/0`, not observed는 `false/null`이며 후자를 threshold 성공으로 취급하지 않는다. Exit code나 chaos
+action ID로 recovery를 추론하지 않는다. Tenant/user/workspace/email, prompt/tool payload, DB URL, path, token/secret와
 raw error는 long-run state/receipt나 release readiness output에 넣지 않는다. Absolute maximum 또는 baseline 대비
 growth threshold를 한 번이라도 넘으면 `resource_threshold_exceeded`이며 수치를 낮춰 재서명하지 않고 원인을 고친
-새 run을 수행한다. Final release evidence는 aggregate test count/timestamp/digest만 허용하고 operations endpoint나
+새 run을 수행한다. Production soak source는 모든 sample이 operational이고 여덟 metric과 required reconnect/restart
+coverage가 완전해야 한다. Final release evidence는 aggregate test count/timestamp/digest만 허용하고 operations endpoint나
 incident ticket을 evidence receipt로 대체하지 않는다.
 
 Phase 35의 `recovery:cli status`는 이 HTTP endpoint에 연결되지 않는 배포 전 파일 검증 명령이다. 따라서 기존

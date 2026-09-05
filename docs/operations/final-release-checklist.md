@@ -60,7 +60,8 @@ Readiness는 signed wrapper 외에 다음 원본을 다시 검증한다.
 - `--release-artifact`: Phase 30 full-tree/manifest/Ed25519 verifier와 current release/migration/vendor exact match
 - `--install-root`: Phase 31 active=confirmed release, no pending transaction/operator recovery/staging, same trust version
 - `--recovery-receipt`: Phase 35 production policy, external trust, freshness/RPO/RTO/protection exact validation
-- `--soak-receipt`: Phase 36 `completed`, allowlisted scenario, 실제 elapsed 12~72시간
+- `--soak-receipt`: Phase 36 `completed`, allowlisted scenario, 실제 elapsed 12~72시간, 모든 sample의 여덟 자원
+  `operational-probe` coverage와 required reconnect/restart action의 명시적 observed/count
 
 ```powershell
 npm run release:readiness -- `
@@ -87,6 +88,8 @@ stable code, catalog digest, evidence/pending count와 category만 가진다. Pa
 - source 검증이 없는 build/signing/installer/provider drill/soak wrapper
 - unconfirmed installer, pending transaction/staging/operator recovery, current release와 다른 signed artifact
 - 12시간 미만/72시간 초과, 실패/중단된 soak 또는 leak/retry/deadline/cleanup failure
+- process/fixture sample, 미관측 자원, observed zero로 위장한 null, exit code에서 만든 recovery count 또는
+  reconnect/restart required/observed/count 불일치
 
 Stable code를 보존하고 해당 requirement를 새로 실행한다. Receipt를 수정하거나 trust/age/source check를 우회하지
 않는다. 모든 항목이 성공해도 별도의 승인·publish 권한과 rollback/change-management 절차는 그대로 필요하다.

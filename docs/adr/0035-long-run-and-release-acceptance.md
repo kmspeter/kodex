@@ -30,8 +30,9 @@ workspace ID, email, prompt/tool payload, credential, token, DB URL, filesystem 
 출력에 없다.
 
 Checkpoint는 target과 같은 directory의 owner-only 임시 regular file을 flush한 뒤 rename하고 가능한 filesystem에서
-directory도 flush한다. 매 invocation 전에 `invoking` phase와 attempt를 먼저 checkpoint하므로 crash 뒤 같은
-idempotency key로 at-least-once 재시도한다. Adapter가 이미 완료한 호출을 dedupe하면 `duplicate=true` aggregate만
+directory도 flush한다. 매 invocation 전에 `invoking` phase와 attempt를 먼저 checkpoint한다. Logical operation ID는
+attempt 사이에 안정적이고 invocation ID는 attempt를 포함하므로 adapter는 전자로 부작용을 dedupe하고 후자로 stale
+result replay를 거부한다. Adapter가 이미 완료한 호출을 dedupe하면 `duplicate=true` aggregate만
 반영한다. Result의 invocation/iteration/step이 현재 position과 다르면 `unordered_result`로 종료한다.
 
 State file 옆 exclusive lease directory는 canonical owner/run/acquired/heartbeat/expiry record를 가진다. 살아 있는
@@ -43,7 +44,9 @@ run/plan만 가진 고정 contract이며 adapter는 같은 요청을 idempotent�
 ## Adapter와 chaos 안전 경계
 
 Runner는 임의 shell string, argv fragment, path, payload를 받지 않는다. Repository catalog의 action ID만 사용하며
-built-in process adapter는 source에 고정된 `npm run <known-script>` argv를 `shell=false`로 시작한다. Workload는 기존
+built-in process adapter는 source에 고정된 `npm run <known-script>` argv를 `shell=false`로 시작한다. PATH의 npm은
+어느 OS에서도 사용하지 않고 absolute `npm_execpath`의 regular non-symlink `npm-cli.js`를 현재 Node executable로
+실행한다. Workload는 기존
 Product/Local/browserless, Electron, PostgreSQL history/RAG/auth/email/lifecycle, backup/recovery, release/security
 acceptance를 조합한다.
 
@@ -53,11 +56,17 @@ Chaos ID는 `chaos.websocket-reconnect`, `chaos.runtime-restart-recovery`, `chao
 policy bypass를 나타내는 action이나 catalog 밖 command는 parser가 거부한다. 운영 DB/data/user 파일 삭제나
 Docker daemon/volume 조작은 이 state machine의 기능이 아니다.
 
-각 결과는 heap, handle, socket, DB pool, outbox, lease, temporary bytes와 disk bytes의 payload-free 정수 sample,
-reconnect/restart recovery count만 반환한다. Runner는 baseline/last/peak와 absolute/growth threshold를 모두 검사한다.
-Built-in command adapter의 child acceptance는 종료 시 자체 fixture resource를 exact cleanup하는 계약이고, 실제 장기
-service adapter를 추가할 때는 대상별 observer가 모든 sample을 제공해야 한다. Missing metric이나 extra field는
-adapter result 자체가 invalid다.
+각 결과는 heap, handle, socket, DB pool, outbox, lease, temporary bytes와 disk bytes에 explicit observed/value를,
+recovery에는 expected kind와 explicit observed/count를 반환한다. Observed zero와 unobserved null은 다른 상태다.
+Runner는 실제 관측값만 baseline/last/peak와 absolute/growth threshold에 반영하고 source별 sample coverage와
+reconnect/restart required/observed/count를 receipt에 보존한다. Action ID나 exit 0은 recovery count를 만들지 않는다.
+
+운영 observer 주입은 repository 밖 restricted `--result-dir`의 fixed `<invocation-id>.json`만 사용한다. 최대 64 KiB
+canonical exact-key result는 operation/invocation metadata를 환경으로 받은 allowlisted command가 atomic write하며,
+reader는 absolute external real directory, regular non-symlink file, invocation/action/iteration/step/attempt와 time window,
+single consumption을 검증한다. Pre-existing/replayed/stale/mismatched file은 거부한다. Result에는 payload/path/credential
+field가 없다. 기본 process fallback은 heap/handle/socket 외 자원과 recovery를 unobserved로 기록하므로 command exit
+확인일 뿐 production evidence가 아니다.
 
 ## Final catalog와 cryptographic evidence 결정
 
@@ -83,7 +92,8 @@ Readiness는 clean Git HEAD, package version, current `0001`~`0013` migration ch
 Codex upstream pin과 vendor manifest SHA-256를 다시 계산해 모든 receipt와 exact-match한다. Production build/signing은
 Phase 30 signed release artifact verifier, installer는 Phase 31 confirmed active state와 같은 signed artifact,
 provider drill은 Phase 35 signed recovery receipt validator, soak는 12~72시간 completed Phase 36 receipt가 별도 source
-input으로 실제 검증되어야 한다. Signed wrapper만 있고 source artifact/receipt가 없으면
+input으로 실제 검증되어야 한다. Soak source는 모든 sample이 operational-probe이고 여덟 자원의 observed coverage가
+완전하며 scenario의 reconnect와 restart action 전부에 explicit recovery observation/count가 있어야 한다. Signed wrapper만 있고 source artifact/receipt가 없으면
 `evidence_source_unverified`다.
 
 Missing/stale/future/failed/mismatched/unsigned/unknown/revoked/invalid evidence, dirty tree, unverified build/installer/
@@ -93,12 +103,13 @@ crypto/fail-closed logic을 검증할 뿐 production evidence file을 만들지 
 
 ## 검증과 결과
 
-`npm run acceptance:validate`는 두 catalog, 여섯 schema digest, npm script, migration count와 README/ADR/runbook/
+`npm run acceptance:validate`는 두 catalog, 일곱 schema digest, npm script, migration count와 README/ADR/runbook/
 matrix/threat/deployment/security/observability 문서 drift를 검사한다. `npm run security:validate`도 이 gate를 포함한다.
 `npm run test:long-run-acceptance`는 lease 경쟁/duplicate runner, crash/restart resume, corrupt/stale checkpoint,
-timeout/retry, leak threshold, unordered result, abort, deterministic receipt와 exact cleanup을 빠른 fake adapter로
-검증한다. `npm run test:release-acceptance`는 deterministic signing, ready/pending/dirty/stale/failed/mismatch/unsigned/
-tamper/unknown/revoked/source-missing을 ephemeral Ed25519 trust로 검증하고 `productionEvidenceCreated=false`를 출력한다.
+timeout/retry, leak threshold, unordered result, abort, deterministic receipt/exact cleanup, observation coverage와
+external result replay/stale/mismatch/symlink 및 PATH npm 대체를 빠른 fake adapter로 검증한다.
+`npm run test:release-acceptance`는 deterministic signing, ready/pending/dirty/stale/failed/mismatch/unsigned/tamper/
+unknown/revoked/source-missing/soak-coverage를 ephemeral Ed25519 trust로 검증하고 `productionEvidenceCreated=false`를 출력한다.
 
 운영 순서와 failure triage는 [long-run runbook](../operations/long-run-acceptance.md),
 [final release checklist](../operations/final-release-checklist.md),

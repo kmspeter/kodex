@@ -286,7 +286,7 @@ tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline, snapshot ID, payl
 
 ## Long-run acceptance와 final release readiness (Phase 36)
 
-`config/long-run-acceptance-scenarios.json`과 네 scenario/config/state/receipt schema는 실제 12~72시간 Product/Local/
+`config/long-run-acceptance-scenarios.json`과 scenario/config/adapter-result/state/receipt schema는 실제 12~72시간 Product/Local/
 Electron/PostgreSQL acceptance를 durable state machine으로 실행한다. Atomic checkpoint, run ID/plan digest, exclusive
 lease/heartbeat, monotonic iteration/step, crash-safe idempotent resume, SIGINT/SIGTERM abort, bounded timeout/retry/backoff/
 deadline과 heap/handle/socket/DB pool/outbox/lease/temp/disk threshold를 강제한다. CLI는 catalog에 고정된 workload/
@@ -294,18 +294,25 @@ reversible chaos ID만 받고 arbitrary shell string은 받지 않는다. DB/dat
 approval auto-approve와 policy bypass는 chaos allowlist에 없다. 자세한 운영 절차는
 [long-run acceptance runbook](docs/operations/long-run-acceptance.md)을 따른다.
 
+운영 observer는 repository 밖 restricted `--result-dir`에 fixed invocation filename의 bounded canonical JSON을 쓴다.
+각 자원은 observed zero와 unobserved null을 구분하고 recovery도 명시적 observed/count만 집계한다. PATH의 npm은 쓰지
+않으며 absolute `npm_execpath`의 `npm-cli.js`를 현재 Node로 실행한다. Result replay/stale/mismatch/symlink는 거부한다.
+기본 exit-code adapter는 DB pool/outbox/lease/temp/disk와 recovery가 unobserved인 process-only 결과이므로 production
+soak evidence가 될 수 없다.
+
 ```powershell
 # dependency-free short fixture; 긴 soak를 실행하지 않음
 npm run test:long-run-acceptance
-# 승인된 host에서만, repository 밖 absolute state/receipt 사용
-npm run acceptance:long-run -- start --config C:\acceptance-control\phase36-config.json --state C:\acceptance-control\phase36-state.json --receipt C:\acceptance-control\phase36-receipt.json
+# 승인된 host에서만, repository 밖 absolute state/receipt/result directory 사용
+npm run acceptance:long-run -- start --config C:\acceptance-control\phase36-config.json --state C:\acceptance-control\phase36-state.json --receipt C:\acceptance-control\phase36-receipt.json --result-dir C:\acceptance-results\phase36
 ```
 
 `config/release-acceptance-catalog.json`은 Phase 1~36을 `REL-001`~`REL-018`의 allowlisted command/evidence type에
 매핑한다. Evidence는 current clean Git HEAD, version, catalog/policy/migration ledger/vendor digest와 upstream commit,
 aggregate test count/timestamp/artifact trust metadata만 허용하고 외부 trust store의 Ed25519 signature를 실제 검증한다.
 Production build/signing은 Phase 30 release artifact, installer/update는 Phase 31 confirmed state, provider drill은
-Phase 35 signed recovery receipt, soak는 12~72시간 completed receipt를 source로 다시 확인한다. Missing/stale/failed/
+Phase 35 signed recovery receipt, soak는 12~72시간 completed receipt와 전체 operational metric/recovery coverage를
+source로 다시 확인한다. Missing/stale/failed/
 mismatched/unsigned/unknown/revoked evidence나 unverified Electron/PostgreSQL/build/installer/provider/soak가 하나라도
 있으면 fail-closed다. [final checklist](docs/operations/final-release-checklist.md)와
 [acceptance matrix](docs/operations/release-acceptance-matrix.md)가 운영 원본이다.
