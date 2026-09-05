@@ -11,6 +11,7 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
    ```powershell
    npm ci
+   npm run security:validate
    npm run codex:verify-source
    npm run release:build -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
    npm run release:verify -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
@@ -26,6 +27,7 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 ## 배치 전 준비
 
 - Phase 24 offline backup을 만들고 `backup:verify`를 통과시킨다. 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
+- application과 migration DB 역할/secret을 분리하고 [security runbook](security-release.md)의 금지 권한을 확인한다.
 - 새 release의 migration ledger와 현재 DB ledger를 비교한다. Migration lock/write blocking, HNSW build 공간과
   유지보수 창을 계획한다.
 - Production은 HTTPS reverse proxy에서 UI와 Product API를 exact same-origin으로 제공한다. API container는
@@ -38,7 +40,9 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 1. 새 agent mutation을 막고 API/Local Server/Electron을 정상 종료한다. Backup 이후 쓰기가 없음을 확인한다.
 2. Candidate artifact에서 `Kodex-Release-Verify.cmd`를 다시 실행한다. 실패하면 활성 release를 바꾸지 않는다.
-3. Product API candidate를 먼저 시작한다. 이 process가 migration을 수행하며 실패 시 port를 열지 않는다.
+3. 별도 migration job에만 migration credential을 주입해 `npm run db:migrate`를 실행한다. 그 credential을 제거한
+   뒤 application credential만 가진 Product API candidate를 시작한다. API/Local은 권한과 exact ledger가 다르면
+   port를 열지 않는다.
 4. `/api/health/live`, `/api/health/ready`, `/api/version`을 순서대로 확인한다. Version과 commit이 manifest/image
    digest record와 정확히 일치하지 않으면 중단한다.
 5. Login, workspace 목록, Saved DB History, Knowledge 조회의 read smoke 후 Local Server/Electron을 시작한다.

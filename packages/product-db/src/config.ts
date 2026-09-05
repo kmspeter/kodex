@@ -83,19 +83,17 @@ function validateDatabaseUrl(value: string): string {
   return value;
 }
 
-/** Returns undefined when the product database is intentionally not configured. */
-export function productDatabaseConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
+function databaseConfigForUrl(
+  databaseUrl: string | undefined,
+  applicationName: string,
+  env: NodeJS.ProcessEnv,
 ): ProductDatabaseConfig | undefined {
-  const databaseUrl = env.DATABASE_URL?.trim();
-  if (!databaseUrl) {
-    return undefined;
-  }
-  const connectionString = validateDatabaseUrl(databaseUrl);
-
+  const trimmed = databaseUrl?.trim();
+  if (!trimmed) return undefined;
+  const connectionString = validateDatabaseUrl(trimmed);
   const config: ProductDatabaseConfig = {
     connectionString,
-    application_name: env.PRODUCT_DB_APPLICATION_NAME?.trim() || 'kodex-product',
+    application_name: applicationName,
     max: parsePositiveInteger(env.PRODUCT_DB_POOL_MAX, 'PRODUCT_DB_POOL_MAX', 10),
     idleTimeoutMillis: parsePositiveInteger(
       env.PRODUCT_DB_IDLE_TIMEOUT_MS,
@@ -108,12 +106,26 @@ export function productDatabaseConfigFromEnv(
       5_000,
     ),
   };
-
   const ssl = parseSslMode(env.PRODUCT_DB_SSL, env.PRODUCT_DB_CA_CERT);
-  if (ssl !== undefined) {
-    config.ssl = ssl;
-  }
+  if (ssl !== undefined) config.ssl = ssl;
   return config;
+}
+
+/** Returns undefined when the product database is intentionally not configured. */
+export function productDatabaseConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductDatabaseConfig | undefined {
+  return databaseConfigForUrl(
+    env.DATABASE_URL,
+    env.PRODUCT_DB_APPLICATION_NAME?.trim() || 'kodex-product',
+    env,
+  );
+}
+
+export function productMigrationDatabaseConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductDatabaseConfig | undefined {
+  return databaseConfigForUrl(env.PRODUCT_DB_MIGRATION_URL, 'kodex-product-migration', env);
 }
 
 export function requireProductDatabaseConfig(
@@ -123,5 +135,13 @@ export function requireProductDatabaseConfig(
   if (!config) {
     return configurationError('DATABASE_URL is required for product database operations');
   }
+  return config;
+}
+
+export function requireProductMigrationDatabaseConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductDatabaseConfig {
+  const config = productMigrationDatabaseConfigFromEnv(env);
+  if (!config) return configurationError('PRODUCT_DB_MIGRATION_URL is required for production migrations');
   return config;
 }

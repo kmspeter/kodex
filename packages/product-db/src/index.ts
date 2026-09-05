@@ -1,7 +1,9 @@
 export {
   productDatabaseConfigFromEnv,
+  productMigrationDatabaseConfigFromEnv,
   ProductDatabaseConfigurationError,
   requireProductDatabaseConfig,
+  requireProductMigrationDatabaseConfig,
   type ProductDatabaseConfig,
   type ProductDatabaseSslMode,
 } from './config.js';
@@ -16,9 +18,17 @@ export {
   defaultMigrationsDirectory,
   loadMigrations,
   migrateProductDatabase,
+  verifyProductDatabaseMigrations,
   type AppliedMigration,
   type Migration,
 } from './migrations.js';
+export {
+  assertProductDatabaseRoleContract,
+  bootstrapProductDatabase,
+  migrateProductDatabaseForDeployment,
+  productDatabaseDeploymentProfileFromEnv,
+  type ProductDatabaseDeploymentProfile,
+} from './privileges.js';
 export {
   PostgresAuthRepository,
   LoginCredentialChangedError,

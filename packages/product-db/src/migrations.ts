@@ -148,3 +148,24 @@ export async function migrateProductDatabase(
     client.release();
   }
 }
+
+export async function verifyProductDatabaseMigrations(
+  pool: Pick<Pool, 'query'>,
+  directory = defaultMigrationsDirectory,
+): Promise<AppliedMigration[]> {
+  const migrations = await loadMigrations(directory);
+  let rows: AppliedMigrationRow[];
+  try {
+    rows = (await pool.query<AppliedMigrationRow>(
+      'SELECT version, name, checksum FROM public.schema_migrations ORDER BY version',
+    )).rows;
+  } catch {
+    throw new Error('Product database migration ledger is missing or unavailable');
+  }
+  if (rows.length !== migrations.length || rows.some((row, index) => (
+    row.version !== String(migrations[index].version)
+    || row.name !== migrations[index].name
+    || row.checksum !== migrations[index].checksum
+  ))) throw new Error('Product database migration ledger does not match this application version');
+  return rows.map((row) => ({ version: Number(row.version), name: row.name, checksum: row.checksum }));
+}

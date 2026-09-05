@@ -5,6 +5,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 import { createReleaseArtifact, verifyReleaseArtifact } from './lib/release-artifact.mjs';
+import {
+  scanReleaseInputSecrets,
+  scanTrackedSecrets,
+  verifyPackagedRuntimeProvenance,
+  verifyRepositoryProvenance,
+} from './lib/security-validation.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (process.versions.electron) process.noAsar = true;
@@ -70,6 +76,10 @@ if (parsed.command === 'verify') {
   }
   const runtimeRoot = path.join(repositoryRoot, 'runtime', 'Kodex-win32-x64');
   const appRoot = path.join(runtimeRoot, 'resources', 'app');
+  const provenance = await verifyRepositoryProvenance(repositoryRoot, { requireBinary: true });
+  await scanTrackedSecrets(repositoryRoot);
+  await scanReleaseInputSecrets(runtimeRoot);
+  await verifyPackagedRuntimeProvenance(appRoot, provenance);
   const application = JSON.parse(await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'));
   const packaged = JSON.parse(await readFile(path.join(appRoot, 'package.json'), 'utf8'));
   if (application.version !== packaged.version) throw new Error('Runtime version does not match the source release.');

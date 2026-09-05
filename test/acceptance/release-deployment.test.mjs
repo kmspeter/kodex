@@ -97,6 +97,8 @@ async function startReleasedApi(port) {
         TMP: process.env.TMP,
         KODEX_RUNTIME_ROOT: appRoot,
         KODEX_DISABLE_ENV_FILE: '1',
+        KODEX_DEPLOYMENT_PROFILE: 'acceptance',
+        KODEX_ACCEPTANCE_ALLOW_SINGLE_DB: '1',
         DATABASE_URL: databaseUrl,
         PRODUCT_DB_SSL: 'disable',
         PRODUCT_API_NODE_ENV: 'production',
@@ -159,7 +161,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   await stopRuntimeChildren([first]);
 
   await database.query(
-    'INSERT INTO schema_migrations (version, name, checksum) VALUES (12, $1, $2)',
+    'INSERT INTO schema_migrations (version, name, checksum) VALUES (13, $1, $2)',
     ['future_release_only', '0'.repeat(64)],
   );
   const rejectedPort = await unusedLoopbackPort();
@@ -167,7 +169,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   expect(await waitForExit(rejected)).toBe(true);
   await expect(fetch(`http://127.0.0.1:${rejectedPort}/api/health/live`)).rejects.toThrow();
 
-  await database.query('DELETE FROM schema_migrations WHERE version = 12');
+  await database.query('DELETE FROM schema_migrations WHERE version = 13');
   const recoveredPort = await unusedLoopbackPort();
   const recovered = await startReleasedApi(recoveredPort);
   await waitForReady(recovered, `http://127.0.0.1:${recoveredPort}/api/health/ready`, 'Recovered Product API', 30_000);

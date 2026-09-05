@@ -13,7 +13,7 @@ import {
   PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
-  requireProductDatabaseFromEnv,
+  bootstrapProductDatabase,
   PasswordResetService,
   DataLifecycleService,
 } from '@kodex/product-db';
@@ -49,7 +49,7 @@ if (process.env.KODEX_DISABLE_ENV_FILE !== '1') {
   dotenv.config({ path: path.join(repositoryRoot, '.env.local'), quiet: true });
 }
 
-let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
+let database: Awaited<ReturnType<typeof bootstrapProductDatabase>> | undefined;
 let server: ProductApiServer | undefined;
 let retentionMaintenance: ProductRetentionMaintenance | undefined;
 let dataLifecycleWorker: ProductDataLifecycleWorker | undefined;
@@ -95,8 +95,7 @@ try {
     process.env.PRODUCT_OPERATIONS_BEARER_TOKEN,
     'PRODUCT_OPERATIONS_BEARER_TOKEN',
   );
-  database = requireProductDatabaseFromEnv();
-  await database.migrate();
+  database = await bootstrapProductDatabase();
   const repository = new PostgresAuthRepository(database);
   const passwordHasher = new Argon2idPasswordHasher();
   const lifecycleRepository = new PostgresDataLifecycleRepository(database);

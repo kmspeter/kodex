@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyRepositoryProvenance } from './lib/security-validation.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'runtime', 'Kodex-win32-x64');
@@ -53,6 +54,7 @@ async function walk(relative = '') {
 }
 
 if (process.platform !== 'win32') throw new Error('The Kodex runtime bundle script currently targets Windows only.');
+await verifyRepositoryProvenance(root, { requireBinary: true });
 await Promise.all([
   required('apps/api/dist/main.js'), required('apps/local-server/dist/main.js'),
   required('apps/ui/dist/index.html'), required('bin/codex.exe'),
@@ -76,6 +78,8 @@ await Promise.all([
   copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
   copy('scripts/kodex-release.mjs', 'operations/kodex-release.mjs'),
   copy('scripts/lib/release-artifact.mjs', 'operations/lib/release-artifact.mjs'),
+  copy('scripts/lib/security-validation.mjs', 'operations/lib/security-validation.mjs'),
+  copy('scripts/vendor-manifest.mjs', 'operations/vendor-manifest.mjs'),
   copy('apps/api/dist', 'product-api'),
   copy('apps/local-server/dist', 'server'),
   copy('apps/ui/dist', 'ui'),
@@ -90,6 +94,8 @@ await Promise.all([
   copy('packages/codex-protocol/codex-version.json', 'metadata/codex-version.json'),
   copy('CODEX_UPSTREAM_COMMIT', 'metadata/CODEX_UPSTREAM_COMMIT'),
   copy('VENDOR_SOURCE_SHA256.json', 'metadata/VENDOR_SOURCE_SHA256.json'),
+  copy('package-lock.json', 'metadata/package-lock.json'),
+  copy('vendor/openai-codex/codex-rs/Cargo.lock', 'metadata/codex-Cargo.lock'),
   copy('THIRD_PARTY.md', 'licenses/THIRD_PARTY.md'),
   copy('vendor/openai-codex/LICENSE', 'licenses/openai-codex-LICENSE'),
   copy('vendor/openai-codex/NOTICE', 'licenses/openai-codex-NOTICE'),

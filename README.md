@@ -33,7 +33,7 @@ bin/codex.exe           위 소스에서 빌드한 공식 App Server 바이너�
 - build metadata: `bin/codex-build.json`
 - protocol metadata: `packages/codex-protocol/codex-version.json`
 
-`npm run codex:verify-source`는 manifest의 commit이 `CODEX_UPSTREAM_COMMIT`과 일치하는지 확인한 뒤 vendored source의 모든 파일을 SHA-256으로 검증합니다. 파일이 추가·삭제·변경되면 명확한 목록과 함께 실패합니다. `.git`이 없어도 검사가 생략되지 않으며 `codex:build`도 Cargo를 실행하기 전에 이 검증을 반드시 거칩니다.
+`npm run codex:verify-source`는 manifest의 commit이 `CODEX_UPSTREAM_COMMIT`과 일치하는지 확인한 뒤 vendored source의 모든 파일을 SHA-256으로 검증합니다. 파일이 추가·삭제·변경되면 명확한 목록과 함께 실패합니다. `.git`이 없어도 검사가 생략되지 않으며 `codex:build`도 Cargo를 실행하기 전에 이 검증을 반드시 거칩니다. `npm run security:validate`는 여기에 npm lock closure, Codex build/protocol metadata, tracked-file secret scan과 배포 최소 권한 정적 계약을 결합합니다. 통합 경계는 [threat model](docs/security/threat-model.md), 결정은 [ADR 0028](docs/adr/0028-integrated-security-boundaries.md), 운영 절차는 [security/release runbook](docs/operations/security-release.md)이 기준입니다.
 
 현재 바이너리가 보고하는 내부 문자열 `codex-cli 0.0.0`은 정식 릴리스 버전으로 표시하지 않습니다. UI와 metadata에는 `Codex source build f1433fc71f20`으로 표시됩니다. 다른 release/tag로 바꾸려면 source·protocol 차이를 검토하고 manifest, binary, generated protocol을 함께 갱신해야 합니다.
 
@@ -83,7 +83,7 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`, desktop은 `%APPDATA%\Kodex\data\tenants\...`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`를 따로 저장합니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. immutable source/runtime root와 writable data base는 별도 신뢰 경계이며, data base로 drive root, 사용자 home, repository/source root를 지정하거나 tenant root를 data base 밖으로 탈출시킬 수 없습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (28단계까지, 필수)
+## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (29단계까지, 필수)
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
@@ -94,7 +94,7 @@ source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uu
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
 docker compose --env-file .env.local -f infra/compose.yaml up -d postgres
-$env:DATABASE_URL = 'postgresql://kodex:<local-password>@127.0.0.1:5432/kodex'
+$env:DATABASE_URL = 'postgresql://kodex_app:<local-application-password>@127.0.0.1:5432/kodex'
 $env:PRODUCT_DB_SSL = 'disable'
 npm run db:migrate
 # Product API(47832), Local Server(47831), Vite UI(5173)를 함께 시작
@@ -104,13 +104,19 @@ npm run dev
 Docker 안에서 API까지 실행하려면 명시적 profile을 사용합니다. 기본 `docker compose up`은 기존처럼 PostgreSQL만 시작합니다.
 
 ```powershell
+docker compose --env-file .env.local -f infra/compose.yaml --profile migration run --rm product-db-migrate
 docker compose --env-file .env.local -f infra/compose.yaml --profile product-api up --build
 ```
+
+Production에서는 Product API/Local Server가 application 역할로 migration을 실행하지 않습니다. 별도 migration
+job만 database-scoped owner 역할을 사용하며 두 역할은 같을 수 없고 어느 쪽도 cluster superuser/CREATEDB/
+CREATEROLE/replication/BYPASSRLS를 가질 수 없습니다. Development/test single-role 흐름은 비운영 profile에만
+남고, production 모양 acceptance 예외는 loopback disposable DB와 explicit flag가 모두 필요합니다.
 
 API 계약은 다음과 같습니다. 모든 응답은 `Cache-Control: no-store`이고, 상태 변경 요청은 정확히 허용한 `Origin`을 요구합니다.
 
 - `GET /api/health/live`: process liveness만 최소 `{ "ok": true }`로 반환합니다.
-- `GET /api/health/ready`: DB에 실제 `SELECT 1`이 성공할 때만 `200`; 실패는 credential/schema 내부 정보 없이 `503 { "ok": false }`입니다. migration은 listen 전에 완료됩니다.
+- `GET /api/health/ready`: DB에 실제 `SELECT 1`이 성공할 때만 `200`; 실패는 credential/schema 내부 정보 없이 `503 { "ok": false }`입니다. Production은 별도 job이 migration을 완료하며 API/Local은 listen 전에 exact ledger를 확인합니다.
 - `GET /api/operations/status`: 각각 `PRODUCT_OPERATIONS_BEARER_TOKEN`/`KODEX_OPERATIONS_BEARER_TOKEN`을 명시한 서버에서만 활성화되는 고정 JSON 운영 상태입니다. Lifecycle worker aggregate도 포함하지만 Browser Origin 요청은 거부하고 tenant ID·경로·대화 payload·오류문·secret을 반환하지 않습니다.
 - `POST|DELETE /api/operations/legal-holds[/<hold-uuid>]`: Product operations bearer 전용으로 user/Workspace hold를 생성·해제합니다. Browser Origin은 거부하며 hold가 있으면 application row와 Local file 삭제가 함께 멈춥니다.
 - `POST /api/operations/data-lifecycle/jobs/<job-uuid>/retry`: 원인을 수정한 terminal job/local target만 operations bearer로 재시도합니다. 일반 사용자나 browser session endpoint가 아닙니다.

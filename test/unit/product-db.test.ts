@@ -1,11 +1,18 @@
 import type { Pool } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
-import { productDatabaseConfigFromEnv } from '../../packages/product-db/src/config.js';
+import {
+  productDatabaseConfigFromEnv,
+  productMigrationDatabaseConfigFromEnv,
+} from '../../packages/product-db/src/config.js';
 import { createProductDatabase } from '../../packages/product-db/src/database.js';
 import {
   loadMigrations,
   migrateProductDatabase,
 } from '../../packages/product-db/src/migrations.js';
+import {
+  assertProductDatabaseRoleContract,
+  productDatabaseDeploymentProfileFromEnv,
+} from '../../packages/product-db/src/privileges.js';
 
 describe('product database configuration', () => {
   it('stays disabled when DATABASE_URL is absent', () => {
@@ -73,6 +80,37 @@ describe('product database configuration', () => {
       .toThrow('DATABASE_URL must be a valid PostgreSQL URL');
     expect(() => productDatabaseConfigFromEnv({ DATABASE_URL: 'https://example.com/kodex' }))
       .toThrow('DATABASE_URL must be a valid PostgreSQL URL');
+  });
+
+  it('keeps production migration credentials separate and acceptance loopback-only', () => {
+    expect(productMigrationDatabaseConfigFromEnv({
+      PRODUCT_DB_MIGRATION_URL: 'postgresql://kodex_migration:opaque@example.invalid/kodex',
+    })?.application_name).toBe('kodex-product-migration');
+    expect(productDatabaseDeploymentProfileFromEnv({ NODE_ENV: 'production' })).toBe('production');
+    expect(() => productDatabaseDeploymentProfileFromEnv({
+      NODE_ENV: 'production',
+      KODEX_DEPLOYMENT_PROFILE: 'development',
+    })).toThrow('production process');
+    expect(() => productDatabaseDeploymentProfileFromEnv({
+      KODEX_DEPLOYMENT_PROFILE: 'acceptance',
+      KODEX_ACCEPTANCE_ALLOW_SINGLE_DB: '1',
+      DATABASE_URL: 'postgresql://kodex:opaque@example.invalid/kodex',
+    })).toThrow('loopback-only');
+  });
+
+  it('rejects broad production database roles without exposing their identity', async () => {
+    const query = vi.fn(async () => ({ rows: [{
+      currentUser: 'kodex_app',
+      canSuperuser: true,
+      canCreateRole: false,
+      canCreateDatabase: false,
+      canReplicate: false,
+      canBypassRls: false,
+      memberOfOwner: false,
+      canCreateSchema: false,
+    }] }));
+    await expect(assertProductDatabaseRoleContract({ query } as unknown as Pick<Pool, 'query'>, 'application', 'kodex_app'))
+      .rejects.toThrow('least-privilege contract');
   });
 });
 

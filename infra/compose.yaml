@@ -6,12 +6,17 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${PRODUCT_DB_NAME:-kodex}
-      POSTGRES_USER: ${PRODUCT_DB_USER:-kodex}
-      POSTGRES_PASSWORD: ${PRODUCT_DB_PASSWORD:?set PRODUCT_DB_PASSWORD in your env file}
+      POSTGRES_USER: ${PRODUCT_DB_ADMIN_USER:-kodex_bootstrap}
+      POSTGRES_PASSWORD: ${PRODUCT_DB_ADMIN_PASSWORD:?set PRODUCT_DB_ADMIN_PASSWORD in your env file}
+      PRODUCT_DB_APP_USER: ${PRODUCT_DB_APP_USER:-kodex_app}
+      PRODUCT_DB_APP_PASSWORD: ${PRODUCT_DB_APP_PASSWORD:?set PRODUCT_DB_APP_PASSWORD in your env file}
+      PRODUCT_DB_MIGRATION_USER: ${PRODUCT_DB_MIGRATION_USER:-kodex_migration}
+      PRODUCT_DB_MIGRATION_PASSWORD: ${PRODUCT_DB_MIGRATION_PASSWORD:?set PRODUCT_DB_MIGRATION_PASSWORD in your env file}
     ports:
       - "${PRODUCT_DB_PORT:-5432}:5432"
     volumes:
       - kodex-product-postgres:/var/lib/postgresql/data
+      - ./postgres/010-kodex-roles.sh:/docker-entrypoint-initdb.d/010-kodex-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
@@ -33,7 +38,7 @@ services:
     environment:
       NODE_ENV: ${PRODUCT_API_NODE_ENV:-development}
       KODEX_DISABLE_ENV_FILE: "1"
-      DATABASE_URL: postgresql://${PRODUCT_DB_USER:-kodex}:${PRODUCT_DB_PASSWORD}@postgres:5432/${PRODUCT_DB_NAME:-kodex}
+      DATABASE_URL: postgresql://${PRODUCT_DB_APP_USER:-kodex_app}:${PRODUCT_DB_APP_PASSWORD}@postgres:5432/${PRODUCT_DB_NAME:-kodex}
       PRODUCT_DB_SSL: disable
       PRODUCT_API_HOST: 0.0.0.0
       PRODUCT_API_PORT: 47832
@@ -62,6 +67,39 @@ services:
       OPENAI_EMBEDDING_DIMENSIONS: ${OPENAI_EMBEDDING_DIMENSIONS:-1536}
     ports:
       - "${PRODUCT_API_PORT:-47832}:47832"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  product-db-migrate:
+    profiles: ["migration"]
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      args:
+        KODEX_RELEASE_COMMIT: ${KODEX_RELEASE_COMMIT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      KODEX_DEPLOYMENT_PROFILE: production
+      KODEX_DISABLE_ENV_FILE: "1"
+      PRODUCT_DB_MIGRATION_URL: postgresql://${PRODUCT_DB_MIGRATION_USER:-kodex_migration}:${PRODUCT_DB_MIGRATION_PASSWORD}@postgres:5432/${PRODUCT_DB_NAME:-kodex}
+      PRODUCT_DB_APPLICATION_ROLE: ${PRODUCT_DB_APP_USER:-kodex_app}
+      PRODUCT_DB_SSL: disable
+    command: ["node", "packages/product-db/dist/cli.js"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   kodex-product-postgres:

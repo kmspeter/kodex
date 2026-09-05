@@ -4,7 +4,7 @@ import {
   requireProductDatabaseConfig,
   type ProductDatabaseConfig,
 } from './config.js';
-import { migrateProductDatabase, type AppliedMigration } from './migrations.js';
+import { migrateProductDatabase, verifyProductDatabaseMigrations, type AppliedMigration } from './migrations.js';
 
 export interface ProductDatabaseOptions {
   onPoolError?: (error: Error) => void;
@@ -78,6 +78,11 @@ export class ProductDatabase {
   async migrate(): Promise<AppliedMigration[]> {
     this.#assertOpen();
     return migrateProductDatabase(this.pool);
+  }
+
+  async verifyMigrations(): Promise<AppliedMigration[]> {
+    this.#assertOpen();
+    return verifyProductDatabaseMigrations(this.pool);
   }
 
   async close(): Promise<void> {

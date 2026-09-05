@@ -5,6 +5,7 @@ $sourceRoot = Join-Path $repositoryRoot 'vendor\openai-codex'
 $manifest = Join-Path $sourceRoot 'codex-rs\Cargo.toml'
 $commitFile = Join-Path $repositoryRoot 'CODEX_UPSTREAM_COMMIT'
 $sourceManifest = Join-Path $repositoryRoot 'VENDOR_SOURCE_SHA256.json'
+$cargoLock = Join-Path $sourceRoot 'codex-rs\Cargo.lock'
 $targetRoot = Join-Path $repositoryRoot '.codex-build\target'
 $temporaryRoot = Join-Path $repositoryRoot '.codex-build\tmp'
 $binRoot = Join-Path $repositoryRoot 'bin'
@@ -83,6 +84,7 @@ Copy-Item -LiteralPath $builtBinary -Destination $destination -Force
 $reportedVersion = (& $destination --version).Trim()
 $sourceIdentity = "Codex source build $($expectedCommit.Substring(0, 12))"
 $metadata = [ordered]@{
+  formatVersion = 2
   upstream = 'https://github.com/openai/codex'
   commit = $expectedCommit
   kind = 'source-build'
@@ -90,6 +92,9 @@ $metadata = [ordered]@{
   cliReportedVersion = $reportedVersion
   builtAt = [DateTime]::UtcNow.ToString('o')
   source = 'vendor/openai-codex'
+  vendorManifestSha256 = (Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+  cargoLockSha256 = (Get-FileHash -LiteralPath $cargoLock -Algorithm SHA256).Hash.ToLowerInvariant()
+  binarySha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $binRoot 'codex-build.json') -Encoding utf8
 Write-Host "Built $destination"

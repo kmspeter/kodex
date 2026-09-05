@@ -56,6 +56,8 @@
     "codex:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-codex.ps1",
     "codex:generate-protocol": "node scripts/generate-protocol.mjs",
     "codex:verify-source": "node scripts/vendor-manifest.mjs",
+    "security:validate": "node scripts/security-validate.mjs",
+    "test:security": "vitest run test/unit/security-validation.test.ts test/unit/product-db.test.ts test/unit/release-artifact.test.ts test/unit/reproducibility.test.ts",
     "desktop:smoke": "electron apps/desktop/main.mjs --smoke",
     "desktop:smoke:postgres": "electron apps/desktop/main.mjs --smoke-real",
     "runtime:bundle": "node scripts/build-runtime.mjs",

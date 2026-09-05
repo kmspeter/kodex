@@ -6,7 +6,7 @@ import {
   PostgresDataLifecycleRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
-  requireProductDatabaseFromEnv,
+  bootstrapProductDatabase,
 } from '@kodex/product-db';
 import { operationsBearerTokenFromEnv } from '@kodex/shared';
 import dotenv from 'dotenv';
@@ -52,7 +52,7 @@ const uiRoot = process.env.KODEX_SERVE_UI === '1'
   ? path.resolve(process.env.KODEX_UI_ROOT || path.join(repositoryRoot, 'apps', 'ui', 'dist'))
   : undefined;
 
-let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
+let database: Awaited<ReturnType<typeof bootstrapProductDatabase>> | undefined;
 let runtimeManager: RuntimeManager | undefined;
 let server: LocalHttpServer | undefined;
 let operationalTelemetry: LocalOperationalTelemetry | undefined;
@@ -80,8 +80,7 @@ try {
     process.env.KODEX_OPERATIONS_BEARER_TOKEN,
     'KODEX_OPERATIONS_BEARER_TOKEN',
   );
-  database = requireProductDatabaseFromEnv();
-  await database.migrate();
+  database = await bootstrapProductDatabase();
   const authorizer = new DatabaseProductAuthorizer(new PostgresAuthRepository(database));
   const history = new PostgresHistoryRepository(database);
   const lifecycleRepository = new PostgresDataLifecycleRepository(database);
