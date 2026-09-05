@@ -178,7 +178,7 @@ function pathIsWithin(parent, child) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function parsePrivateKey(bytes) {
+export function parseEd25519PrivateKey(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > MAX_PRIVATE_KEY_BYTES) {
     throw new Error('Signing key input is empty or exceeds the byte limit.');
   }
@@ -194,11 +194,44 @@ function parsePrivateKey(bytes) {
   }
 }
 
+export function signEd25519Payload(payload, privateKeyBytes) {
+  if (!(payload instanceof Uint8Array) || payload.byteLength < 1) {
+    throw new Error('Ed25519 signing payload is empty or invalid.');
+  }
+  const privateKey = parseEd25519PrivateKey(privateKeyBytes);
+  const signature = signBytes(null, payload, privateKey);
+  if (!verifyBytes(null, payload, createPublicKey(privateKey), signature)) {
+    throw new Error('Ed25519 signature self-verification failed.');
+  }
+  return signature;
+}
+
+export async function verifyTrustedEd25519Payload(options) {
+  if (
+    !isRecord(options)
+    || !exactKeys(options, ['keyId', 'payload', 'signature', 'trustStorePath'])
+    || typeof options.keyId !== 'string'
+    || !KEY_ID.test(options.keyId)
+    || !(options.payload instanceof Uint8Array)
+    || options.payload.byteLength < 1
+    || !(options.signature instanceof Uint8Array)
+    || options.signature.byteLength !== 64
+  ) throw new Error('Ed25519 trust verification options are invalid.');
+  const trustStore = await loadTrustStore(options.trustStorePath);
+  const trustedKey = trustStore.keys.get(options.keyId);
+  if (!trustedKey) throw new Error('Signature key is not present in the trust store.');
+  if (trustedKey.status === 'revoked') throw new Error('Signature key is revoked.');
+  if (!verifyBytes(null, options.payload, trustedKey.publicKeyObject, options.signature)) {
+    throw new Error('Ed25519 signature verification failed.');
+  }
+  return { storeVersion: trustStore.storeVersion };
+}
+
 async function signingKey(options, releaseRoot) {
   const hasFile = typeof options.keyFile === 'string' && options.keyFile.length > 0;
   const hasBytes = options.privateKeyBytes instanceof Uint8Array;
   if (hasFile === hasBytes) throw new Error('Signer requires exactly one private key input boundary.');
-  if (hasBytes) return parsePrivateKey(options.privateKeyBytes);
+  if (hasBytes) return parseEd25519PrivateKey(options.privateKeyBytes);
   const filename = path.resolve(options.keyFile);
   if (
     options.forbiddenKeyRoots !== undefined
@@ -214,7 +247,7 @@ async function signingKey(options, releaseRoot) {
   }
   const bytes = await readBoundedRegularFile(filename, MAX_PRIVATE_KEY_BYTES, 'Signing key file');
   try {
-    return parsePrivateKey(bytes);
+    return parseEd25519PrivateKey(bytes);
   } finally {
     bytes.fill(0);
   }

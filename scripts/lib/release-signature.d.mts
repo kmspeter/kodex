@@ -1,4 +1,5 @@
 import type { ReleaseArtifactManifest } from './release-artifact.mjs';
+import type { KeyObject } from 'node:crypto';
 
 export interface ReleaseSignatureEnvelope {
   algorithm: 'Ed25519';
@@ -11,6 +12,15 @@ export interface ReleaseSignatureEnvelope {
 
 export const RELEASE_SIGNATURE_FORMAT_VERSION: 1;
 export const RELEASE_TRUST_STORE_FORMAT_VERSION: 1;
+
+export function parseEd25519PrivateKey(bytes: Uint8Array): KeyObject;
+export function signEd25519Payload(payload: Uint8Array, privateKeyBytes: Uint8Array): Buffer;
+export function verifyTrustedEd25519Payload(options: {
+  keyId: string;
+  payload: Uint8Array;
+  signature: Uint8Array;
+  trustStorePath: string;
+}): Promise<{ storeVersion: number }>;
 
 export function validateReleaseTrustStore(filename: string): Promise<{
   keyCount: number;

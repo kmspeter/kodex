@@ -76,6 +76,8 @@ await Promise.all([
   copy('apps/desktop/verify-runtime.mjs', 'desktop/verify-runtime.mjs'),
   copy('scripts/kodex-backup.mjs', 'operations/kodex-backup.mjs'),
   copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
+  copy('scripts/lib/offline-backup-envelope.mjs', 'operations/lib/offline-backup-envelope.mjs'),
+  copy('scripts/lib/secret-input.mjs', 'operations/lib/secret-input.mjs'),
   copy('scripts/kodex-release.mjs', 'operations/kodex-release.mjs'),
   copy('scripts/kodex-installer.mjs', 'operations/kodex-installer.mjs'),
   copy('scripts/lib/release-artifact.mjs', 'operations/lib/release-artifact.mjs'),
@@ -119,7 +121,11 @@ for (const name of ['codex-protocol', 'kodex-api', 'product-contract', 'product-
 }
 await writeFile(path.join(appRoot, 'package.json'), `${JSON.stringify({ name: 'kodex-runtime', version: '0.2.0', private: true, type: 'module', main: 'desktop/main.mjs' }, null, 2)}\n`, 'utf8');
 await writeFile(path.join(output, 'Kodex.cmd'), '@echo off\r\n"%~dp0electron.exe" "%~dp0resources\\app" %*\r\n', 'utf8');
-await writeFile(path.join(output, 'Kodex-Backup.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\n', 'utf8');
+await writeFile(
+  path.join(output, 'Kodex-Backup.cmd'),
+  '@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\nset "KODEX_BACKUP_EXIT=%ERRORLEVEL%"\r\nendlocal & exit /b %KODEX_BACKUP_EXIT%\r\n',
+  'utf8',
+);
 await writeFile(
   path.join(output, 'Kodex-Release-Verify.cmd'),
   '@echo off\r\nsetlocal\r\nif /I not "%~1"=="--trust-store" exit /b 2\r\nif "%~2"=="" exit /b 2\r\nif not "%~3"=="" exit /b 2\r\nset ELECTRON_RUN_AS_NODE=1\r\npushd "%~dp0"\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "." --trust-store "%~2"\r\nset "KODEX_RELEASE_VERIFY_EXIT=%ERRORLEVEL%"\r\npopd\r\nexit /b %KODEX_RELEASE_VERIFY_EXIT%\r\n',
@@ -143,6 +149,8 @@ for (const relative of [
   'product-api/main.js',
   'operations/kodex-backup.mjs',
   'operations/lib/offline-backup.mjs',
+  'operations/lib/offline-backup-envelope.mjs',
+  'operations/lib/secret-input.mjs',
   'operations/kodex-release.mjs',
   'operations/kodex-installer.mjs',
   'operations/lib/release-artifact.mjs',

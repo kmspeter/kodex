@@ -383,6 +383,12 @@ export async function verifyOfflineBackup(backupDirectory) {
   const root = normalizedRoot(backupDirectory, 'Backup directory');
   const rootStat = await lstat(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Backup path must be a real directory.');
+  const rootEntries = (await readdir(root, { withFileTypes: true }))
+    .map((entry) => entry.name)
+    .sort();
+  if (JSON.stringify(rootEntries) !== JSON.stringify([DATABASE_DUMP_FILENAME, MANIFEST_FILENAME, TENANT_DIRECTORY].sort())) {
+    throw new Error('Backup root contains unlisted or missing content.');
+  }
   const manifestPath = path.join(root, MANIFEST_FILENAME);
   const manifestStat = await lstat(manifestPath);
   if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size > MAX_MANIFEST_BYTES) {

@@ -30,6 +30,7 @@
     "test:workspace-invitations-postgres": "node scripts/test-workspace-invitations-postgres.mjs",
     "test:history-postgres": "node scripts/test-history-postgres.mjs",
     "test:backup-restore": "node scripts/test-backup-restore.mjs",
+    "test:backup-encryption": "node scripts/test-backup-encryption.mjs",
     "backup:create": "npm run build --workspace @kodex/product-db && node scripts/kodex-backup.mjs create",
     "backup:restore": "npm run build --workspace @kodex/product-db && node scripts/kodex-backup.mjs restore",
     "backup:verify": "npm run build --workspace @kodex/product-db && node scripts/kodex-backup.mjs verify",
