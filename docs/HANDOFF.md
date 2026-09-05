@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only a544d5440b6b977c11f7af1b5e6a00f45bfa49c7..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 1c98825f5d33f9664c8abd7bd9aecb2fe376c41d..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,23 +27,23 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 32 worktree; 메인 통합 탭이 `main` 반영 담당 |
-| 제품 기준 HEAD | `a544d5440b6b977c11f7af1b5e6a00f45bfa49c7` |
-| 제품 기준 commit | `fix: repair phase 32 targeted validation` (Phase 32 최종 코드 기준) |
-| 완료 범위 | Phase 1~32 |
-| 다음 핵심 기능 | 메인 통합 탭에서 Phase 32 통합; 이 전용 작업은 확장하지 않음 |
+| 준비 branch | detached Phase 33 worktree; 메인 통합 탭이 `main` 반영 담당 |
+| 제품 기준 HEAD | `1c98825f5d33f9664c8abd7bd9aecb2fe376c41d` |
+| 제품 기준 commit | `feat: add self-service workspace restore` |
+| 완료 범위 | Phase 1~33 |
+| 다음 핵심 기능 | 메인 통합 탭에서 Phase 33 feature/docs commit 통합; 이 전용 작업은 확장하지 않음 |
 
-Phase 1~32에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~33에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
-throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
+throttling, workspace rename·soft archive·owner self-service recovery, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
 lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
 installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0031](adr/0031-email-verification-and-email-delivery.md)까지가 기준이다.
+[ADR 0032](adr/0032-self-service-workspace-recovery.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -471,11 +471,55 @@ aggregate가 동일한 값으로 통과했다.
 실제 PostgreSQL fresh 0001~0013과 immutable 0001~0012 → 0013 harness, Docker, build, Electron/full-stack,
 실제 email은 실행하지 않았으며 보류 상태다. Rust/MSVC와 binary-required 검증도 기존 blocker로 유지한다.
 
+### Phase 33 — Owner self-service Workspace recovery
+
+Phase 33의 원본 결정은 [ADR 0032](adr/0032-self-service-workspace-recovery.md), 운영 절차는
+[Workspace recovery runbook](operations/workspace-recovery.md), 통합 보안 경계는
+[threat model](security/threat-model.md)이다.
+
+- `GET /api/workspaces/archived`는 verified account가 현재 owner인 복원 가능 대상만 기본 50/최대 100의
+  `deleted_at,id` keyset page로 반환한다. Cursor는 account에 암호화해 묶고 다른 tenant/non-owner, purge 요청,
+  lifecycle job/job-workspace tombstone, Local target과 active legal hold 대상은 존재나 상태를 노출하지 않는다.
+- `POST /api/workspaces/:id/restore`는 exact Origin/CSRF, 현재 session, 기존 Argon2 current-password 검증,
+  transaction에서 잠근 정확한 Workspace 이름과 `RESTORE WORKSPACE`를 요구한다. 없는 ID/다른 tenant/non-owner는
+  generic forbidden이며 duplicate restore와 worker row-lock 경합은 명시적 conflict다.
+- Repository는 Workspace/owner membership/user credential/session과 purge/job/target/hold 상태를 한 transaction에서
+  잠그고 재검증한다. Permanent deletion requested/running/completed/tombstoned 또는 Local cleanup target이 있으면
+  fail-closed한다. Migration 0001~0013, vendor/generated protocol과 source pin/manifest는 변경하지 않았다.
+- 성공은 `workspaces.deleted_at`만 NULL로 만들고 payload-free stable `workspace.restored` audit를 남긴다. Archive 때
+  취소된 invitation, 이미 삭제된 row/file, tenant file이나 runtime start intent는 만들지 않는다. Private
+  History/RAG creator scope도 바꾸지 않고 이후 모든 접근은 정상 auth/membership revalidation을 새로 거친다.
+- React **Archived Workspaces**는 bounded pagination, stale account/selection generation 방어, retry와 exact
+  confirmation flow를 제공한다. Password/name/phrase는 제출 즉시와 scope 변경 시 지우며 복구된 Workspace runtime은
+  자동 시작하지 않고 사용자의 명시적 start를 기다린다. 기존 active workspace/fallback은 유지한다.
+- Unit/API/browser parser tests는 strict DTO, account-bound cursor, Origin/CSRF, password/name/phrase, generic
+  non-owner denial, secret clearing과 no-auto-runtime을 추가했다. PostgreSQL harness는 cross-tenant, legal hold,
+  running worker lock, job/tombstone/permanent deletion, duplicate, invitation 미복원, row/file 불변과 정상 접근 회복을
+  검증하도록 확장했다.
+
+Feature commit은 `1c98825f5d33f9664c8abd7bd9aecb2fe376c41d` (`feat: add self-service workspace restore`)다.
+이 detached worktree는 clean expected base `41f6cfcbee1a2a53334d541e11b726f1a49502d8`에서 시작했고 schema가
+충분해 migration을 추가하지 않았다. Node `v20.19.4`에서 `node --check scripts/security-validate.mjs`, staged
+`git diff --check`와 `node scripts/security-validate.mjs`가 통과했다. Security aggregate는 tracked 8,032 files,
+vendor 6,687 files, npm dependency 392, workspace 9, deployment contract 3, trust store version 2/key 0,
+`binaryPresent=false`였다. Sandbox 내부 첫 security 실행은 child `git` spawn `EPERM`이어서 같은 read-only command를
+허용된 경계에서 재실행했다.
+
+README/ADR 0032/recovery runbook/threat model/HANDOFF를 stage한 최종 `security:validate`도 통과했다. 이때
+tracked file은 새 문서 두 개를 포함한 8,034개였고 vendor 6,687, dependency 392, workspace 9, deployment
+contract 3, trust store version 2/key 0과 `binaryPresent=false`는 동일했다.
+
+이 worktree에는 `node_modules`가 없어 사용자 지시대로 설치하거나 다른 worktree에서 탐색하지 않았다. 따라서
+targeted Vitest, typecheck와 lint는 실행하지 않았다. System Node 20은 `.ts/.tsx`의 `node --check`와
+`--experimental-strip-types`를 지원하지 않아 TypeScript dependency-free parse도 보류했다. 실제 Docker/PostgreSQL,
+Electron/full-stack, build, tenant filesystem mutation과 Rust/MSVC는 금지 범위라 실행하지 않았다. 메인 통합 탭은
+Node 22.13 이상과 설치된 의존성에서 ADR/runbook의 targeted suite와 PostgreSQL harness를 실행해야 한다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 메인 통합 탭에서 검증된 Phase 32를 반영한다.** 별도 승인된 disposable PostgreSQL 환경이 있으면
-   fresh 0001~0013과 immutable 0001~0012 → 0013 harness를 실행한다. 이 전용 작업에서 다음 Phase 기능으로
-   확장하지 않는다.
+1. **P1 — 메인 통합 탭에서 Phase 33 feature/docs commit을 반영하고 보류 검증을 실행한다.** Node 22.13 이상과
+   설치된 dependencies에서 targeted Vitest/typecheck/lint를, 별도 승인된 disposable PostgreSQL 환경에서
+   workspace harness를 실행한다. 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
@@ -503,6 +547,7 @@ npm run verify:ui-bundle
 npm run smoke:production
 npm run test:observability
 npm run test:data-lifecycle-postgres
+npm run test:workspace-postgres
 ```
 
 History/backfill 변경의 최소 직접 검증은 다음이다.
@@ -549,7 +594,7 @@ git status --short
 ## 안전 규칙
 
 - 적용된 migration은 checksum ledger 계약이다. `packages/product-db/migrations/0001_*.sql`부터
-  `0012_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
+  `0013_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
   fresh DB 및 실제 upgrade ledger 검증으로 추가한다.
 - `vendor/openai-codex/`, `VENDOR_SOURCE_SHA256.json`, `CODEX_UPSTREAM_COMMIT`, `bin/codex-build.json`,
   `packages/codex-protocol/src/generated/`와 `schema/`를 일반 기능 작업에서 손대지 않는다. Upstream pin을
@@ -574,7 +619,7 @@ git status --short
   ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
 - Email verification과 opt-in HTTPS invitation webhook은 있지만 SMTP client, template/bounce/complaint 처리,
-  reminder, provider delivery-status API와 self-service workspace restore는 없다. Permanent deletion은 online
+  reminder와 provider delivery-status API는 없다. Permanent deletion은 online
   application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
 - Retention은 terminal auth/invitation/password-reset/email-verification/email-delivery/abuse row와 만료 export
   artifact의 bounded cleanup이다.
@@ -583,8 +628,10 @@ git status --short
 - History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
   limit 밖 record가 누락될 수 있다. Outbox가 가득 차거나 손상되면 새 event 수신이 fail-visible하게 멈춘다.
   운영 metric/alert와 repair 도구는 아직 제한적이다.
-- Workspace archive는 one-way 접근 차단이지 데이터 삭제가 아니다. DB row와 로컬 파일이 누적되며 다른
-  client의 기존 socket은 기본 bounded 재인가 주기까지 잠시 살아 있을 수 있다.
+- Workspace archive는 접근 차단이지 데이터 삭제가 아니다. Permanent deletion이 시작되지 않았고 application
+  row/file이 보존된 경우에만 owner가 self-service restore할 수 있다. Restore는 backup/forensic recovery가 아니며
+  취소된 invitation, 삭제된 row/file과 runtime을 재생성하지 않는다. 다른 client의 기존 socket은 archive 뒤
+  기본 bounded 재인가 주기까지 잠시 살아 있을 수 있다.
 - RAG의 OpenAI embedding 경로는 generation provider가 local이어도 별도다. 명시적 consent와 조직의 외부
   전송 정책이 필요하며 이름 기반 secret 제외는 DLP가 아니다.
 - Abuse limiter는 같은 PostgreSQL을 공유하는 application process 범위다. Edge WAF/CAPTCHA, trusted proxy,

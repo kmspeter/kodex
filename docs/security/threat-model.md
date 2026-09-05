@@ -1,6 +1,6 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 32, 2026-09-05
+- 기준: Phase 33, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
   tenant filesystem, build/vendor/release와 Windows installer state 경로
 - 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`,
@@ -37,6 +37,7 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 | 경계 | 주요 위협 | 강제 통제와 증거 |
 | --- | --- | --- |
 | Renderer → Product API | session 탈취, CSRF, secret bundle 유출 | HttpOnly/Secure cookie, exact Origin, HMAC double-submit CSRF, Vite env 제거; auth/security unit 및 full-stack tests |
+| Workspace recovery → lifecycle | IDOR, non-owner 복구, password/name/phrase 우회, permanent deletion 취소, worker 경합 | account-bound archived cursor, generic forbidden, current Argon2 credential, exact confirmations, transaction row locks와 NOWAIT conflict, purge/job/target/tombstone/hold fail-closed; restore unit/API/PostgreSQL tests |
 | Renderer → Local | loopback의 임의 client, stale membership | exact origin/bootstrap, 매 요청 DB authorization, WS bounded 재인가, loopback bind; local security/runtime tests |
 | Product/Local → DB | cross-tenant 조회, schema/ledger 변조, superuser 사용 | repository scope, production application role posture와 exact ledger read-only 검증; `privileges.ts`, `test/unit/product-db.test.ts` |
 | Product API → Email provider | bearer/recipient/token 유출, redirect/slow body, replay와 provider 장애 | opt-in HTTPS, server-only distinct bearer, redirect 거부, timeout/response bound, payload-free leased retry, attempt별 token rotation; email delivery unit/PostgreSQL tests |
@@ -56,7 +57,8 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 
 - Spoofing: Product session은 hash-only DB record와 HttpOnly cookie로, operations API와 email provider는 서로 다른
   server-only bearer로 식별한다. 미확인 email session은 verification status/resend/logout 외 권한을 얻지 못하며
-  Local bootstrap은 verified Product session과 active membership 없이 발급되지 않는다.
+  Local bootstrap은 verified Product session과 active membership 없이 발급되지 않는다. Workspace restore는 현재
+  verified session의 owner membership과 Argon2 password를 transaction 안에서 다시 확인한다.
 - Tampering: migration checksum ledger, strict vendor manifest, package lock closure, Codex binary build metadata와
   release full-tree SHA-256이 불일치를 거부한다. Exact canonical manifest bytes의 detached Ed25519 signature와
   external trust store가 manifest/artifact 동시 변조와 key substitution을 거부한다. Installer는 signed tree를
@@ -64,22 +66,25 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
   response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Signing private key와
   signature bytes는 signer 성공/실패 log에
-  출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다.
+  출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다. Restore audit는 stable `workspace.restored`와
+  payload-free operation만 남기고 password, Workspace 이름과 confirmation을 기록하지 않는다.
 - Information disclosure: Verification은 domain-separated hash-only이고 delivery queue에는 target FK와 고정 상태만
   둔다. Raw token/fragment URL은 provider 호출 순간 외 DB/log/audit에 없으며 React bootstrap 전 URL에서 제거한다.
   History/RAG는 `(workspace_id, created_by_user_id)` private scope이고 renderer env, operational status, release scan
-  진단에 secret 값이나 payload를 넣지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
+  진단에 secret 값이나 payload를 넣지 않는다. Archived Workspace 목록은 owner에게만 보이며 cursor를 account에
+  암호화해 묶고 lifecycle 상태를 public DTO에 포함하지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
 - Denial of service: request/body/page/outbox/file/count/byte/time/provider-response bounds와 PostgreSQL 공유 limiter를
   사용한다. Verification resend는 account/address, consume은 address/token bucket을 공유한다. Local
   runtime 수와 reconciliation, release tree/state JSON/retained release 수를 제한한다. Live installer lock을 깨지
   않고 stale dead-process lock만 recover한다. Edge DDoS/WAF는 운영자 책임이다.
 - Elevation of privilege: workspace role과 creator scope를 매 경계에서 다시 확인한다. Production application DB
   역할은 DB/schema owner와 broad role attribute/DDL을 가질 수 없고 migration 역할은 application과 달라야 한다.
+  Restore는 admin/member 권한으로 승격되지 않으며 다른 tenant와 없는 Workspace를 같은 forbidden 경계로 처리한다.
 
 ## 불변식과 변경 규칙
 
 Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server 및 approval 경계는
-Phase 29 보안 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
+Phase 33 recovery 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
 사유만 허용하며 stale entry도 실패한다. 새 데이터 흐름, credential, 외부 provider, filesystem root, DB 권한,
 release input, signing key boundary나 trust anchor가 생기면 이 문서와 ADR, 해당 executable validation/test를
 함께 갱신한다.
@@ -93,7 +98,8 @@ retention, email provider의 mailbox/deliverability/body handling과 remote MCP/
 요청을 받은 뒤 응답이 유실되면 retry rotation 때문에 먼저 전달된 링크가 무효화될 수 있다. Offline signing
 host나 현재 trusted private
 key가 장악되면 공격자는 유효한 artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고 해당 key의
-과거 artifact도 격리해야 한다. Local trust-store receipt는 낮은 version과 같은 version의 다른 digest를
+과거 artifact도 격리해야 한다. Self-service restore는 out-of-band로 사라진 application row/file을 증명하거나
+복구하지 않으며 backup/forensic recovery가 아니다. Local trust-store receipt는 낮은 version과 같은 version의 다른 digest를
 거부하지만 trust store 자체의 인증된 배포를 대신하지 않는다. ACL adapter가 손상되면 unsafe root를 승인할 수
 있으므로 packaging trust base에서 보호해야 한다. 현재 checkout의 `bin/codex.exe` 부재로 binary를
 요구하는 runtime/release gate는 실행할 수 없지만, 그 경로는 누락을 성공으로 간주하지 않는다.
