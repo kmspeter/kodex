@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 6094654687462b0f5d4a84f77e8f76a22dec3340..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,21 +28,21 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `6094654687462b0f5d4a84f77e8f76a22dec3340` |
-| 제품 기준 commit | `fix: remove unused security validator constant` (Phase 29 기능 기준) |
-| 완료 범위 | Phase 1~29 |
-| 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 29에서 종료 |
+| 제품 기준 HEAD | `c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205` |
+| 제품 기준 commit | `feat: verify release artifact authenticity` (Phase 30 기능 기준) |
+| 완료 범위 | Phase 1~30 |
+| 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 30에서 종료 |
 
-Phase 1~29에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~30에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
-lifecycle와 통합 security/provenance/least-privilege gate까지 구현했다. 상세 계약은
+lifecycle, 통합 security/provenance/least-privilege gate와 offline Ed25519 release authenticity까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0028](adr/0028-integrated-security-boundaries.md)까지가 기준이다.
+[ADR 0029](adr/0029-release-artifact-authenticity.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -308,9 +308,49 @@ vendor 6,687, npm dependency 392, workspace 9, deployment contract 3, `binaryPre
 Rust/MSVC 설치는 실행하지 않았다. `bin/codex.exe`가 없으므로 binary-required runtime/release provenance gate도
 실행하지 않았으며 누락을 pass로 기록하지 않는다.
 
+### Phase 30 — Offline Ed25519 release authenticity
+
+Phase 30의 원본 결정은 [ADR 0029](adr/0029-release-artifact-authenticity.md), 운영 절차는
+[artifact signing runbook](operations/artifact-signing.md)이다.
+
+- Release manifest는 고정 field 순서, 2-space indentation과 trailing LF의 exact canonical UTF-8 bytes만
+  허용한다. Seal 뒤 Node 표준 `crypto` Ed25519가 이 bytes를 서명하며 root-level detached envelope v1은 exact
+  format/version/algorithm/keyId/manifest SHA-256/canonical base64 signature만 가진다.
+- `create` 결과는 `kodex_release_sealed_unsigned`로 명시되고 공개 `verify`는 external versioned trust store가
+  없거나 signature가 없으면 성공하지 않는다. Verifier는 manifest digest/signature에 더해 기존 identity와
+  full-tree path/size/SHA-256을 검사해 non-canonical manifest, artifact tamper와 unlisted file도 거부한다.
+- Signer는 repository/artifact 밖 explicit PKCS#8 PEM key file 또는 bounded non-interactive stdin만 받는다.
+  Private key 환경 변수/CLI 값은 없고 오류/성공 JSON에 key material을 출력하지 않으며 buffer를 best-effort로
+  지운다. Key file symlink/oversize/non-Ed25519와 signature in-place overwrite를 거부한다.
+- `config/release-trust-store.schema.json`과 key가 없는 fail-closed bootstrap store를 추가했다. Strict parser는
+  최대 256개의 sorted Ed25519 SPKI key, monotonic 운영용 `storeVersion`, `trusted|revoked` status를 강제한다.
+  Unknown/revoked key는 실패하며 trust-store anti-rollback과 배포는 외부 release record/control plane 책임이다.
+- Phase 29 gate를 유지해 sign 전 release-input secret scan을 다시 수행하고, tracked/release input의 PKCS#8 및
+  encrypted PEM header도 값 대신 path/rule/line/fingerprint만 보고한다. 고정 vendor의 기존 test key 세 곳만
+  exact manifest-bound allowlist로 유지한다. Artifact 내부 trust store는 seal 단계에서 거부한다.
+- Runtime bundle은 새 verifier module과 external trust-store 인자를 강제하는 `Kodex-Release-Verify.cmd`를 포함한다.
+  Unit/acceptance는 ephemeral key와 OS temp directory로 unsigned, unknown/revoked key, malformed/non-canonical
+  JSON/base64, manifest/artifact tamper, unlisted file, key-file/stdin과 packaged verifier 경계를 검증하도록 갱신했다.
+
+Phase 30 기능 commit은 `c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205`다. 이 전용 worktree의 dependency-free
+Node `v20.19.4` 환경에서 변경된 executable `.mjs`의 `node --check`, bootstrap trust-store CLI validation,
+`node scripts/test-release-signing.mjs`가 통과했다. Fixture는 ephemeral Ed25519 key/temp artifact만 사용해
+trust-store version 1/2/3, 정상 signature, unsigned/revoked, base64 ambiguity, canonical manifest digest,
+artifact checksum과 unlisted file 거부를 확인하고 전부 정리했다. JSON schema parse, `git diff --check`와
+수정 금지 영역 무변경도 통과했다.
+
+이 worktree에는 `node_modules`가 없어 첫 targeted Vitest 시도는 test discovery 전에 npm cache miss로 시작하지
+못했다. 추가 dependency 탐색/설치는 중단했다. 사용자 지시에 따라 targeted Vitest, `npm run typecheck`,
+`npm run lint`, `npm run security:validate`는 이 탭에서 실행하지 않았으며 메인 탭이 fast-forward 뒤 설치된
+dependencies와 Node 24로 실행해야 한다. Build, `codex:build`, runtime/release/installer artifact 실제 생성,
+Docker, Electron/full-stack과 Rust/MSVC 설치도 실행하지 않았다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+1. **P1 — 메인 탭 통합 검증을 완료한다.** Feature와 이 docs-only commit을 fast-forward한 뒤 Node 24/설치된
+   dependencies에서 targeted release/security Vitest, typecheck, lint와 `security:validate`를 실행한다. 실제
+   통과 결과만 메인 handoff에 추가한다.
+2. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
@@ -326,6 +366,8 @@ npm run dev
 npm run codex:verify-source
 npm run security:validate
 npm run test:security
+npm run release:trust-store:validate
+npm run test:release-signing
 npm run typecheck
 npm run lint
 npm test
@@ -418,7 +460,8 @@ git status --short
   forwarded client identity, multi-database global limiting을 제공하지 않으며 NAT/proxy 사용자가 bucket을
   공유할 수 있다.
 - Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email,
-  installer/signing과 장시간 authorization cadence를 증명하지 않는다. 각 운영 기능에는 별도 acceptance와
+  installer/update orchestration, production key custody/trust-store 배포와 장시간 authorization cadence를
+  증명하지 않는다. 각 운영 기능에는 별도 acceptance와
   runbook이 필요하다.
 - 현재 checkout의 vendored source integrity는 6,687개 전체가 다시 검증된다. 다만 sealed `bin/codex.exe`와
   pinned Rust 1.95/MSVC VCTools가 없어 repository-pinned full-stack/release gate는 아직 재현할 수 없다.
