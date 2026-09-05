@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { createReleaseArtifact } from './lib/release-artifact.mjs';
 import {
   signReleaseArtifact,
@@ -11,6 +12,7 @@ import {
   verifyReleaseArtifact,
 } from './lib/release-signature.mjs';
 
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const commit = 'a'.repeat(40);
 
 async function createFixture(root) {
@@ -44,6 +46,20 @@ async function writeTrustStore(filename, publicKey, status, storeVersion) {
     }],
   }, null, 2)}\n`, 'utf8');
 }
+
+const bootstrapTrustStorePath = path.join(repositoryRoot, 'config', 'release-trust-store.json');
+const bootstrapTrustStoreBytes = await readFile(bootstrapTrustStorePath);
+assert.equal(
+  bootstrapTrustStoreBytes.includes(0x0d),
+  false,
+  'Repository bootstrap trust store must remain LF-only in every Git checkout.',
+);
+assert.deepEqual(await validateReleaseTrustStore(bootstrapTrustStorePath), {
+  keyCount: 0,
+  revokedKeyCount: 0,
+  storeVersion: 2,
+  trustedKeyCount: 0,
+});
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-phase30-signing-'));
 try {
@@ -130,6 +146,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     kind: 'kodex_release_signing_fixture_passed',
     algorithm: 'Ed25519',
+    bootstrapTrustStoreVersion: 2,
     trustStoreVersionsChecked: [1, 2, 3],
   })}\n`);
 } finally {
