@@ -68,3 +68,8 @@ Incident 기록에는 release version/commit, component, fixed alert code, aggre
 예상 밖 key가 생기면 수집을 중지하고 secret scan을 수행한다. DB URL, stack/error message, tenant root, email,
 workspace/thread ID와 outbox record body는 ticket에 첨부하지 않는다. PostgreSQL row와 local spool의 복구/보존은
 offline backup runbook을 따른다. Status endpoint 자체는 삭제나 repair action을 제공하지 않는다.
+
+Phase 35의 `recovery:cli status`는 이 HTTP endpoint에 연결되지 않는 배포 전 파일 검증 명령이다. 따라서 기존
+operations bearer, Origin 거부, default `404`와 payload-free response를 변경하지 않는다. Managed PostgreSQL
+복구 readiness는 [database recovery runbook](database-recovery.md)의 policy digest, receipt validation 결과와 coarse age bucket으로
+별도 확인하며 provider resource ID, WAL LSN/timeline, snapshot ID나 evidence payload를 operations status에 넣지 않는다.

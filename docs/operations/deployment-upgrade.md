@@ -7,7 +7,16 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 1. `main`의 승인된 commit을 checkout하고 `git status --short`가 비어 있는지 확인한다. Tag/release commit과
    vendored Codex pin을 검토한다.
-2. clean checkout에서 새 경로로 artifact를 봉인한다. 이 시점 결과는 unsigned이며 배포 승인 대상이 아니다.
+2. Production database recovery policy/schema/docs drift와 current provider drill receipt를 검증한다. Receipt
+   timestamp를 수정하거나 development/acceptance profile로 낮춰 우회하지 않는다.
+
+   ```powershell
+   npm run recovery:validate
+   npm run recovery:cli -- status --receipt <absolute-receipt-path> --at <canonical-utc-evaluation-time>
+   ```
+
+   상세 exact-key와 payload-free evidence 계약은 [database recovery runbook](database-recovery.md)을 따른다.
+3. clean checkout에서 새 경로로 artifact를 봉인한다. 이 시점 결과는 unsigned이며 배포 승인 대상이 아니다.
 
    ```powershell
    npm ci
@@ -16,7 +25,7 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
    npm run release:build -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
    ```
 
-3. [offline signing runbook](artifact-signing.md)에 따라 repository/artifact 밖의 private key로 candidate를
+4. [offline signing runbook](artifact-signing.md)에 따라 repository/artifact 밖의 private key로 candidate를
    서명한다. 외부 versioned public trust store를 signer와 다른 verifier host에 배포한 뒤 다음 두 경로를
    모두 통과시킨다.
 
@@ -25,17 +34,19 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
    D:\releases\Kodex-0.2.0-windows-x64-<commit12>\Kodex-Release-Verify.cmd --trust-store D:\kodex-trust\release-trust-store.json
    ```
 
-4. JSON의 version/commit/fileCount/keyId/manifestSha256/trustStoreVersion을 release record와 대조한다.
+5. JSON의 version/commit/fileCount/keyId/manifestSha256/trustStoreVersion을 release record와 대조한다.
    `release-manifest.json`과 `release-signature.json`은 보존하되 운영 env/data나 private key와 합치지 않는다.
    Restricted immutable storage에 artifact를 복제한다. Unsigned candidate나 artifact가 제공한 trust store는
    배포하지 않는다.
-5. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
+6. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
    revision label과 `/api/version`을 release record에 대조한다. Mutable tag만으로 배치하지 않는다.
 
 ## 배치 전 준비
 
 - Phase 34 encrypted/signed offline backup을 만들고 external trust store와 passphrase 경계로 `backup:verify`를
   통과시킨다. Exact release provenance, 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
+- Phase 35 policy digest와 fresh `recovery_ready` receipt 결과를 release record에 연결한다. DB URL, provider
+  resource/snapshot/replica ID, WAL LSN/timeline, host/path와 provider error text는 release record에 넣지 않는다.
 - Release record의 trust-store version/digest가 현재 승인 상태보다 오래되지 않았는지 확인한다. Revoked key로
   서명된 이전 artifact도 rollback 대상으로 활성화하지 않는다.
 - application과 migration DB 역할/secret을 분리하고 [security runbook](security-release.md)의 금지 권한을 확인한다.

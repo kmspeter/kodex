@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 74c820fa1b6b977fe3c6e11113f2a9bc28245d9c..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only f12ea5e697d0a3f1796932fe97dc718ef8c584e9..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,13 +27,13 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 34 전용 worktree; 메인 `main` 통합 대기 |
-| 제품 기준 HEAD | `74c820fa1b6b977fe3c6e11113f2a9bc28245d9c` |
-| 제품 기준 commit | `fix: remove phase 34 unused imports` |
-| 완료 범위 | Phase 1~34 |
-| 다음 핵심 기능 | Phase 34 메인 통합·dependency 기반 검증; 이 탭에서 다음 Phase로 확장하지 않음 |
+| 준비 branch | detached Phase 35 전용 worktree; 메인 `main` 통합 대기 |
+| 제품 기준 HEAD | `f12ea5e697d0a3f1796932fe97dc718ef8c584e9` |
+| 제품 기준 commit | `feat: add database recovery policy gate` |
+| 완료 범위 | Phase 1~35 |
+| 다음 핵심 기능 | Phase 35 메인 통합·Node 22.13+ dependency 기반 검증과 실제 provider drill; 이 탭에서 다음 Phase로 확장하지 않음 |
 
-Phase 1~34에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~35에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
@@ -41,9 +41,10 @@ throttling, workspace rename·soft archive·owner self-service recovery, 공개 
 backfill/reconciliation, PostgreSQL과 tenant data의 streaming encrypted/signed offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
 lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
-installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery까지 구현했다. 상세 계약은
+installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery, managed
+PostgreSQL recovery policy/readiness evidence gate까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0033](adr/0033-encrypted-signed-offline-backup.md)까지가 기준이다.
+[ADR 0034](adr/0034-managed-postgresql-recovery-policy.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -606,11 +607,61 @@ Targeted Vitest와 dependency를 요구하는 source CLI/runtime import는 이 w
 PostgreSQL/Docker, `pg_dump`/`pg_restore`, build, Electron/full-stack, Rust/MSVC와 사용자 tenant 경로 mutation도
 지시대로 실행하지 않았고 통과로 기록하지 않는다.
 
+### Phase 35 — Managed PostgreSQL recovery policy and readiness evidence
+
+Phase 35의 원본 결정은 [ADR 0034](adr/0034-managed-postgresql-recovery-policy.md), 운영 절차는
+[database recovery runbook](operations/database-recovery.md), 전체 경계는
+[threat model](security/threat-model.md)이다. Phase 34 encrypted/signed offline backup은 별도 보완 통제이며 이
+Phase의 provider recovery gate가 대체하거나 실행하지 않는다.
+
+- Versioned `config/database-recovery-policy.json`/schema와 dependency-free exact-key parser가 production
+  RPO/RTO/PITR, continuous WAL archive/cadence/retention, base backup, encryption/WORM/TLS `verify-full`, 분리된
+  failure domain/region/account, cross-region replica lag/slot/promotion/fencing, provider snapshot, key/trust rotation
+  reference, legal-hold propagation, restore evidence freshness와 logical deletion 뒤 physical-copy 잔존 상한을 묶는다.
+- Production은 disabled/weak control, retention보다 긴 PITR, RPO보다 느린 WAL archive나 큰 replica lag, RTO보다
+  긴 promotion, single failure domain/region/account, regional/single replica topology, stale freshness와 physical
+  retention 상한 위반을 fail-closed한다. Development/acceptance policy는 구조 검증만 가능하고 production
+  drill-plan/status에서 `policy_profile_not_promotable`로 거부된다.
+- `keyref:`/`trustref:`/`opsref:` 외 URL/path/credential/token-like inline value와 extra key를 거부한다. Policy와
+  receipt는 regular bounded file만 허용하며 symlink/special/oversized/invalid UTF-8 JSON을 거부한다.
+- `recovery:cli validate|drill-plan|receipt-validate|status`는 실제 DB/cloud/provider action을 하지 않는다. Drill
+  plan은 12개의 고정 step code만 가진다. Receipt는 timestamp/result code, exact policy digest, Ed25519 artifact
+  trust ref/version/verified, 관측 RPO/RTO와 여섯 protection boolean만 허용한다. Failed/stale/future/digest/trust/
+  objective/protection mismatch는 readiness를 차단한다.
+- 성공 출력은 format, stable code, policy digest, profile/readiness, coarse age bucket/count만, 실패는
+  `kind/code/ok=false`만 가진다. Tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline, snapshot ID,
+  payload/error text, credential/token/secret을 출력하지 않는다. HTTP operations status에는 연결하지 않아 기존
+  bearer/Origin/default-404/payload-free 계약을 유지한다.
+- `recovery:validate`는 policy와 canonical schema digest, package scripts 및 README/ADR/runbook/threat/lifecycle/
+  backup/deployment docs drift를 확인한다. `security:validate`도 같은 gate를 호출한다. Migration 0001~0013,
+  vendor/generated protocol, upstream pin/manifest와 lockfile은 변경하지 않았다.
+
+Feature commit은 `f12ea5e697d0a3f1796932fe97dc718ef8c584e9`
+(`feat: add database recovery policy gate`)다. 요청한 기준 `9109db63aa9a6147da5130138fa60def35caf112`의 clean
+detached worktree에서 시작했다. 이 worktree의 system Node는 `v20.19.4`이고 `node_modules`가 없으므로 설치하거나
+다른 경로에서 dependency를 탐색하지 않았다. Dependency-free temp fixture 33개와 changed/new executable의
+`node --check`, default policy `validate`, bounded `drill-plan`, `git diff --check`를 실제 실행해 통과했다. Sandbox가
+fixture 내부 child Node spawn을 `EPERM`으로 거부한 경로는 같은 exported CLI command/error formatter를 직접 호출해
+결정성과 leakage를 검증했으며, top-level CLI entrypoint 자체도 별도 process로 실행했다.
+
+Stage된 feature/docs를 대상으로 `node scripts/recovery-validate.mjs`가 document contract 8, policy format 1,
+policy digest `4bfa79415734d6589ac26ea238a57d5fed81a62f044c292a50fe9dd6f5472dbc`로 통과했다.
+`node scripts/security-validate.mjs`의 첫 sandbox 실행은 내부 tracked-file `git` spawn이 `EPERM`이어서 같은
+read-only gate를 허용된 경계에서 다시 실행했다. 최종 결과는 tracked 8,050 files, vendor 6,687 files,
+npm dependency 392, workspace 9, deployment contract 3, recovery document contract 8/policy format 1,
+bootstrap trust store version 2/key 0과 `binaryPresent=false`로 통과했다.
+
+Targeted Vitest `test/unit/database-recovery.test.ts`, typecheck와 lint는 dependency 부재 때문에 이 worktree에서
+시작하지 않았고 메인 검증으로 넘긴다. 실제 PostgreSQL/Docker/WAL/base backup/snapshot/replica/promotion/restore,
+cloud API, Electron/full-stack, build와 Rust/MSVC는 실행하지 않았다. Production 규모 provider drill과 payload-free
+signed evidence receipt 발행도 운영 provider 환경에서 보류되어 있으며 이 fixture 결과를 실제 RPO/RTO 증거로
+해석하면 안 된다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 34를 메인 탭에서 통합·검증한다.** Node 22.13 이상과 설치된 dependency에서 targeted Vitest,
-   typecheck, lint, `security:validate`와 portable wrapper import를 확인한다. 이 전용 작업에서는 다음 Phase 기능으로
-   확장하지 않는다.
+1. **P1 — Phase 35를 메인 탭에서 통합·검증한다.** Node 22.13 이상과 설치된 dependency에서 targeted Vitest,
+   typecheck, lint, `recovery:validate`, `security:validate`를 확인한다. 승인된 managed PostgreSQL 환경에서는 실제
+   provider drill과 receipt signer/verifier를 별도 수행한다. 이 전용 작업에서는 다음 Phase 기능으로 확장하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
@@ -629,6 +680,8 @@ npm run test:security
 npm run release:trust-store:validate
 npm run test:release-signing
 npm run test:backup-encryption
+npm run recovery:validate
+npm run test:recovery
 npm run test:installer
 npm run test:installer-unit
 npm run typecheck
@@ -709,15 +762,17 @@ git status --short
 - 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, 실제 installer binary, admin/system-wide install,
   Windows service와 자동 배포 control plane을 제공하지 않는다. Phase 31 state machine의 process/registry/shortcut/
    ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다.
-   Offline backup은 full artifact AES-GCM/Ed25519만 제공하며 incremental/deduplication, retention scheduler,
-   WAL/PITR, passphrase escrow/HSM, trust-store authenticated distribution과 secure erasure를 제공하지 않는다.
+   Offline backup은 full artifact AES-GCM/Ed25519만 제공하며 incremental/deduplication, passphrase escrow/HSM,
+   trust-store authenticated distribution과 secure erasure를 제공하지 않는다. Phase 35는 WAL/PITR/replica/provider
+   snapshot 정책과 evidence를 검증하지만 control plane이나 retention scheduler를 실행하지 않는다.
 - Email verification과 opt-in HTTPS invitation webhook은 있지만 SMTP client, template/bounce/complaint 처리,
   reminder와 provider delivery-status API는 없다. Permanent deletion은 online
   application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
 - Retention은 terminal auth/invitation/password-reset/email-verification/email-delivery/abuse row와 만료 export
   artifact의 bounded cleanup이다.
   Lifecycle tombstone에는 늦은 Local reconciliation용 UUID가 남고 자동 만료가 없다. PostgreSQL MVCC/autovacuum,
-  WAL/replica/snapshot/backup, manual copy와 영구 disconnected device의 물리 삭제는 별도 운영 정책이 필요하다.
+  WAL/replica/snapshot/backup, manual copy와 영구 disconnected device의 물리 삭제는 Phase 35 외부 provider 정책과
+  실제 운영 절차가 수행해야 하며 Kodex validator가 삭제하지 않는다.
 - History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
   limit 밖 record가 누락될 수 있다. Outbox가 가득 차거나 손상되면 새 event 수신이 fail-visible하게 멈춘다.
   운영 metric/alert와 repair 도구는 아직 제한적이다.

@@ -4,6 +4,11 @@
 Backup에는 계정, 대화, embedding, audit, Codex thread와 pending outbox가 포함된다. Phase 34 CLI는 단일-file
 envelope v2만 생성·검증·복원하며 plaintext backup directory를 production에서 받지 않는다.
 
+이 artifact는 Phase 35의 WAL/PITR/replica/provider snapshot 통제를 대체하지 않는다. 배포 전에는 이 runbook의
+offline backup 검증과 [managed database recovery runbook](database-recovery.md)의 `recovery:validate` 및 fresh
+provider drill receipt를 모두 통과시킨다. Phase 35 CLI는 이 backup을 만들거나 복원하지 않고 외부 managed
+PostgreSQL 정책/evidence만 validate-only로 검사한다.
+
 ## 사전 조건
 
 - 승인된 exact release의 `Kodex-Backup.cmd` 또는 clean source checkout

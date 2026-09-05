@@ -99,3 +99,9 @@ worker는 `VACUUM FULL`, block overwrite, encrypted backup/WAL/PITR/replica/snap
 device 원격 삭제를 수행하지 않는다. Phase 34 backup 암호화/서명도 삭제나 cryptographic erasure를 뜻하지 않는다.
 조직의 별도 보존 일정으로 이 복사본을 만료하고 autovacuum/bloat를 관찰한다. 법적 보존 의무가 있으면 backup
 수명주기에도 동일한 hold를 운영 절차로 전파해야 한다.
+
+Phase 35의 [managed database recovery runbook](database-recovery.md)은 production 정책에서 WAL/base backup/
+replica/provider snapshot 모두에 legal hold와 logical deletion 뒤 `maximumResidualDays`를 선언하고, 외부 provider
+drill receipt가 그 전파와 물리 사본 만료 상한을 검증했다고 표시해야 readiness를 허용한다. Lifecycle worker가
+이 provider 통제를 실행하거나 receipt를 발행하지는 않는다. Active hold는 잔존 상한의 유일한 명시적 예외이며,
+hold 해제 뒤 provider copy의 원래 expiration과 삭제 evidence를 다시 확인한다.

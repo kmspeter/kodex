@@ -33,7 +33,7 @@ bin/codex.exe           위 소스에서 빌드한 공식 App Server 바이너�
 - build metadata: `bin/codex-build.json`
 - protocol metadata: `packages/codex-protocol/codex-version.json`
 
-`npm run codex:verify-source`는 manifest의 commit이 `CODEX_UPSTREAM_COMMIT`과 일치하는지 확인한 뒤 vendored source의 모든 파일을 SHA-256으로 검증합니다. 파일이 추가·삭제·변경되면 명확한 목록과 함께 실패합니다. `.git`이 없어도 검사가 생략되지 않으며 `codex:build`도 Cargo를 실행하기 전에 이 검증을 반드시 거칩니다. `npm run security:validate`는 여기에 npm lock closure, Codex build/protocol metadata, tracked-file secret scan, release public trust-store parser와 배포 최소 권한 정적 계약을 결합합니다. 통합 경계는 [threat model](docs/security/threat-model.md), 결정은 [ADR 0028](docs/adr/0028-integrated-security-boundaries.md), 운영 절차는 [security/release runbook](docs/operations/security-release.md)이 기준입니다.
+`npm run codex:verify-source`는 manifest의 commit이 `CODEX_UPSTREAM_COMMIT`과 일치하는지 확인한 뒤 vendored source의 모든 파일을 SHA-256으로 검증합니다. 파일이 추가·삭제·변경되면 명확한 목록과 함께 실패합니다. `.git`이 없어도 검사가 생략되지 않으며 `codex:build`도 Cargo를 실행하기 전에 이 검증을 반드시 거칩니다. `npm run security:validate`는 여기에 npm lock closure, Codex build/protocol metadata, tracked-file secret scan, release public trust-store parser, 배포 최소 권한 정적 계약과 Phase 35 database recovery policy/docs drift gate를 결합합니다. 통합 경계는 [threat model](docs/security/threat-model.md), 결정은 [ADR 0028](docs/adr/0028-integrated-security-boundaries.md), 운영 절차는 [security/release runbook](docs/operations/security-release.md)이 기준입니다.
 
 현재 바이너리가 보고하는 내부 문자열 `codex-cli 0.0.0`은 정식 릴리스 버전으로 표시하지 않습니다. UI와 metadata에는 `Codex source build f1433fc71f20`으로 표시됩니다. 다른 release/tag로 바꾸려면 source·protocol 차이를 검토하고 manifest, binary, generated protocol을 함께 갱신해야 합니다.
 
@@ -83,11 +83,11 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`, desktop은 `%APPDATA%\Kodex\data\tenants\...`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`를 따로 저장합니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. immutable source/runtime root와 writable data base는 별도 신뢰 경계이며, data base로 drive root, 사용자 home, repository/source root를 지정하거나 tenant root를 data base 밖으로 탈출시킬 수 없습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (34단계까지, 필수)
+## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (35단계까지, 필수)
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
-`0001_initial_product_schema.sql`부터 `0012_operational_data_lifecycle.sql`까지는 immutable입니다. 새 `0013_email_verification_delivery.sql`은 기존 user를 verified로 backfill하고 hash-only email verification proof와 payload-free delivery job을 추가합니다. Phase 33 Workspace recovery와 Phase 34 encrypted backup은 기존 schema로 충분하므로 migration을 추가하지 않습니다. 신규 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership, 제한 session과 verification delivery job을 원자적으로 만들며 확인 전에는 Product/Local runtime 권한을 주지 않습니다. 결정과 운영 절차는 [ADR 0031](docs/adr/0031-email-verification-and-email-delivery.md)과 [email delivery runbook](docs/operations/email-delivery.md), Workspace recovery는 [ADR 0032](docs/adr/0032-self-service-workspace-recovery.md)와 [recovery runbook](docs/operations/workspace-recovery.md), encrypted backup은 [ADR 0033](docs/adr/0033-encrypted-signed-offline-backup.md)과 [backup/restore runbook](docs/operations/backup-restore.md), 데이터 수명주기는 [ADR 0027](docs/adr/0027-operational-data-lifecycle.md)과 [운영 runbook](docs/operations/data-lifecycle.md), 계정 복구는 [ADR 0025](docs/adr/0025-password-reset-account-recovery.md)와 [계정 복구 runbook](docs/operations/account-recovery.md)을 따릅니다. Abuse 제한은 `docs/adr/0020-postgresql-shared-product-abuse-throttling.md`, Workspace lifecycle은 `docs/adr/0021-workspace-lifecycle.md`, Retention은 `docs/adr/0019-bounded-terminal-auth-invitation-retention.md`, 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`에 있습니다.
+`0001_initial_product_schema.sql`부터 `0012_operational_data_lifecycle.sql`까지는 immutable입니다. 새 `0013_email_verification_delivery.sql`은 기존 user를 verified로 backfill하고 hash-only email verification proof와 payload-free delivery job을 추가합니다. Phase 33 Workspace recovery, Phase 34 encrypted backup과 Phase 35 managed PostgreSQL recovery policy는 기존 schema로 충분하므로 migration을 추가하지 않습니다. 신규 등록 transaction은 사용자, credential, `Personal Workspace`, owner membership, 제한 session과 verification delivery job을 원자적으로 만들며 확인 전에는 Product/Local runtime 권한을 주지 않습니다. 결정과 운영 절차는 [ADR 0031](docs/adr/0031-email-verification-and-email-delivery.md)과 [email delivery runbook](docs/operations/email-delivery.md), Workspace recovery는 [ADR 0032](docs/adr/0032-self-service-workspace-recovery.md)와 [recovery runbook](docs/operations/workspace-recovery.md), encrypted backup은 [ADR 0033](docs/adr/0033-encrypted-signed-offline-backup.md)과 [backup/restore runbook](docs/operations/backup-restore.md), managed database recovery는 [ADR 0034](docs/adr/0034-managed-postgresql-recovery-policy.md)와 [database recovery runbook](docs/operations/database-recovery.md), 데이터 수명주기는 [ADR 0027](docs/adr/0027-operational-data-lifecycle.md)과 [운영 runbook](docs/operations/data-lifecycle.md), 계정 복구는 [ADR 0025](docs/adr/0025-password-reset-account-recovery.md)와 [계정 복구 runbook](docs/operations/account-recovery.md)을 따릅니다. Abuse 제한은 `docs/adr/0020-postgresql-shared-product-abuse-throttling.md`, Workspace lifecycle은 `docs/adr/0021-workspace-lifecycle.md`, Retention은 `docs/adr/0019-bounded-terminal-auth-invitation-retention.md`, 인증 수명주기는 `docs/adr/0015-product-auth-lifecycle.md`에 있습니다.
 
 로컬 DB와 API를 실행할 때 실제 암호를 커밋하지 말고 `.env.example`을 ignored `.env.local`로 복사해 모든 placeholder를 바꿉니다. `AUTH_COOKIE_SECRET`은 다음처럼 32바이트 이상 base64url 값으로 생성합니다.
 
@@ -254,6 +254,31 @@ DB transaction은 project/thread/turn/item/tool/approval 상태와 deduplicated 
 
 운영 상태 endpoint는 기본 비활성입니다. 서로 다른 32-byte random secret을 `PRODUCT_OPERATIONS_BEARER_TOKEN`과 `KODEX_OPERATIONS_BEARER_TOKEN`에 주입하면 Product API의 process/DB/retention/lifecycle과 Local Server의 process/DB/runtime/App Server/outbox/reconciliation/authorization revalidation/lifecycle을 조회할 수 있습니다. 응답은 고정 cardinality aggregate와 `product_database_unavailable`, `history_outbox_overflow`, `history_reconciliation_failed`, `authorization_revalidation_unavailable`, `product_data_lifecycle_failed`, `local_data_lifecycle_failed` 같은 stable alert code만 제공합니다. Email, user/workspace/thread ID, local root, DB/provider 오류문과 token은 포함하지 않습니다. 배치, alert 해석과 복구 절차는 [운영 관측 runbook](docs/operations/observability.md), lifecycle 대응은 [데이터 수명주기 runbook](docs/operations/data-lifecycle.md), 보안 결정은 [ADR 0026](docs/adr/0026-payload-free-operational-observability.md)을 따릅니다.
 
+## Managed PostgreSQL recovery policy (Phase 35)
+
+Kodex는 managed PostgreSQL/cloud control plane을 직접 제어하지 않는다. 대신 versioned
+`config/database-recovery-policy.json`과 strict executable parser가 production RPO/RTO/PITR window, continuous WAL
+archive, base backup, cross-region replica/slot/promotion/fencing, provider snapshot, encryption/WORM/TLS `verify-full`,
+failure-domain/region/account 분리, key/trust reference rotation, legal-hold 전파, restore evidence freshness와 logical
+deletion 뒤 physical-copy 잔존 상한을 배포 전에 검증한다. JSON Schema는 구조 문서이고 parser가 exact key와
+cross-field 의미의 권위다.
+
+```powershell
+npm run recovery:validate
+npm run recovery:cli -- validate
+npm run recovery:cli -- drill-plan
+npm run recovery:cli -- receipt-validate --receipt <absolute-receipt-path> --at 2026-09-05T00:00:00.000Z
+npm run recovery:cli -- status --receipt <absolute-receipt-path> --at 2026-09-05T00:00:00.000Z
+```
+
+`drill-plan`은 12개의 bounded step code만 만들며 실제 WAL/snapshot/replica/restore/provider 작업을 실행하지 않는다.
+외부 provider drill이 발행한 receipt는 timestamp/result, exact policy digest, Ed25519 artifact trust reference/version,
+RPO/RTO 충족과 여섯 보호 항목만 허용한다. Stale/future/failed/mismatched evidence와 development/acceptance policy는
+readiness/promotion을 fail-closed한다. 출력은 stable code, digest, profile/readiness, coarse age bucket/count만 포함하며
+tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline, snapshot ID, payload/error text, credential/token/secret을
+허용하지 않는다. 전체 절차와 receipt exact-key 계약은 [database recovery runbook](docs/operations/database-recovery.md),
+결정은 [ADR 0034](docs/adr/0034-managed-postgresql-recovery-policy.md)를 따른다.
+
 ## 연결 복구, 승인, 자동화, 재시작
 
 - WebSocket event는 process epoch와 sequence를 가집니다. `hello`는 cursor를 전진시키지 않으며 reconnect replay는 중복 제거 후 reducer에 한 번만 적용됩니다.
@@ -321,7 +346,8 @@ Restore는 signature/revocation, framing/GCM, archive path/length, inner size/SH
 확인한 뒤 빈 PostgreSQL DB와 존재하지 않는 새 data root에만 mutation합니다. 정확한 secret input, exit code,
 legacy plaintext, quiesce·복원 절차는 [backup/restore runbook](docs/operations/backup-restore.md), 결정은
 [ADR 0033](docs/adr/0033-encrypted-signed-offline-backup.md)과 기존 [ADR 0023](docs/adr/0023-offline-backup-restore.md)에
-있습니다. WAL/PITR과 backup retention scheduler는 별도 운영 책임입니다.
+있습니다. WAL/PITR과 provider backup/replica/snapshot 실행은 별도 운영 책임이며 Phase 35 policy/readiness gate가
+그 외부 통제의 구성·evidence 계약만 검증합니다.
 
 ## 검증
 
@@ -330,6 +356,8 @@ npm run codex:verify-source
 npm run release:trust-store:validate # key 없는 bootstrap store도 schema/parser 계약을 검증
 npm run test:release-signing # Node 표준 crypto, ephemeral key/temp artifact만 사용하는 dependency-free fixture
 npm run test:backup-encryption # streaming encryption/signature/tamper/secret/provenance dependency-free fixture
+npm run recovery:validate # production recovery policy/schema/parser/package/docs drift gate
+npm run test:recovery # temp-only policy/receipt/CLI/symlink/special-file dependency-free fixture
 npm run test:installer # temp signed release/root만 사용하는 dependency-free updater/rollback fixture
 npm run test:installer-unit # strict state/ACL/trust receipt/payload-free CLI targeted Vitest
 npm run typecheck
@@ -387,7 +415,7 @@ npm run test:desktop-data-lifecycle
 $env:KODEX_RAG_LIVE_SMOKE = '1'; $env:OPENAI_API_KEY = '<key>'; npm run test:embedding-smoke
 ```
 
-기본 `npm test`, `test:release-signing`, `test:backup-encryption`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. `test:release-signing`과 `test:backup-encryption`은 production key를 만들지 않고 OS temp directory의 ephemeral Ed25519 key/trust store와 작은 artifact만 사용하며 종료 시 exact temp root를 제거합니다. Backup encryption fixture는 64 KiB보다 큰 multi-chunk input, wrong secret, header/ciphertext/tag/signature/KDF/truncation/trailing tamper, trust/revocation, provenance, archive traversal와 secret input 경계를 검증하지만 실제 PostgreSQL restore를 실행하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:abuse-rate-limit-postgres`, `test:password-reset-postgres`, `test:email-verification-postgres`, `test:data-lifecycle-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:history-postgres`, `test:backup-restore`, `test:release-deployment`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-lifecycle`, `test:desktop-workspace-invitation`, `test:desktop-password-reset`, `test:desktop-data-lifecycle`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. Backup/restore harness만 source/target 두 container를 사용합니다. Release deployment harness는 temp offline key/trust store로 candidate를 서명·검증한 뒤 새 portable runtime을 version directory로 전환하고 packaged API를 production profile로 실행하며 test artifact/key를 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0013`을 upgrade하고, retention harness는 fresh 0001~0013과 실제 0001~0008 ledger의 0009~0013 upgrade를 검증합니다. Abuse limiter harness는 fresh 0001~0013과 immutable 0001~0009 ledger의 0010~0013 upgrade를 검증합니다. Password reset harness는 fresh 0001~0013과 immutable 0001~0010 ledger의 0011~0013 upgrade를 검증합니다. Email verification harness는 fresh 0001~0013과 immutable 0001~0012 → 0013에서 backfill, single-use consume, retry rotation, fragment/DB secret 경계를 검증합니다. Data lifecycle harness는 fresh 0001~0013과 immutable 0001~0011 ledger의 0012~0013 upgrade에서 duplicate/competing workers, expired lease resume, hold, cross-tenant DB/file scope와 Product/Local HTTP를 검증합니다. Invitation harness는 fresh 0001~0013 및 이전 immutable ledger upgrade를 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
+기본 `npm test`, `test:release-signing`, `test:backup-encryption`, `test:recovery`, `smoke:production`, `desktop:smoke`, `runtime:smoke`는 외부 모델·DB·Docker를 호출하지 않습니다. `test:release-signing`과 `test:backup-encryption`은 production key를 만들지 않고 OS temp directory의 ephemeral Ed25519 key/trust store와 작은 artifact만 사용하며 종료 시 exact temp root를 제거합니다. Database recovery fixture도 OS temp의 정책/receipt만 사용하고 provider API나 restore를 호출하지 않습니다. Backup encryption fixture는 64 KiB보다 큰 multi-chunk input, wrong secret, header/ciphertext/tag/signature/KDF/truncation/trailing tamper, trust/revocation, provenance, archive traversal와 secret input 경계를 검증하지만 실제 PostgreSQL restore를 실행하지 않습니다. desktop smoke fixture는 격리 포트에서 readiness 순서, runtime Product API origin, 로그인 화면까지만 검증하며 실제 DB 검증을 가장하지 않습니다. 실제 desktop 경로는 `DATABASE_URL`을 주입한 `desktop:smoke:postgres`로 opt-in합니다. 선택적 실제 OpenAI smoke는 기본 test에 포함하지 않습니다. `test:product-db`, `test:product-auth`, `test:tenant-auth`는 명시한 실제 PostgreSQL에 row를 만들고 종료 시 정리합니다. `test:auth-lifecycle-postgres`, `test:retention-postgres`, `test:abuse-rate-limit-postgres`, `test:password-reset-postgres`, `test:email-verification-postgres`, `test:data-lifecycle-postgres`, `test:workspace-postgres`, `test:workspace-invitations-postgres`, `test:history-postgres`, `test:backup-restore`, `test:release-deployment`, `test:rag-postgres`, `test:full-stack`, `test:desktop-full-stack`, `test:desktop-workspace-lifecycle`, `test:desktop-workspace-invitation`, `test:desktop-password-reset`, `test:desktop-data-lifecycle`, `test:desktop-repository-rag`은 각자 고유한 `pgvector/pgvector:0.8.6-pg17` `--rm` container와 임의 loopback port를 만들고 `finally`에서 정리합니다. Backup/restore harness만 source/target 두 container를 사용합니다. Release deployment harness는 temp offline key/trust store로 candidate를 서명·검증한 뒤 새 portable runtime을 version directory로 전환하고 packaged API를 production profile로 실행하며 test artifact/key를 정리합니다. 인증 수명주기 harness는 실제 `0001`~`0005` ledger에서 `0006`~`0013`을 upgrade하고, retention harness는 fresh 0001~0013과 실제 0001~0008 ledger의 0009~0013 upgrade를 검증합니다. Abuse limiter harness는 fresh 0001~0013과 immutable 0001~0009 ledger의 0010~0013 upgrade를 검증합니다. Password reset harness는 fresh 0001~0013과 immutable 0001~0010 ledger의 0011~0013 upgrade를 검증합니다. Email verification harness는 fresh 0001~0013과 immutable 0001~0012 → 0013에서 backfill, single-use consume, retry rotation, fragment/DB secret 경계를 검증합니다. Data lifecycle harness는 fresh 0001~0013과 immutable 0001~0011 ledger의 0012~0013 upgrade에서 duplicate/competing workers, expired lease resume, hold, cross-tenant DB/file scope와 Product/Local HTTP를 검증합니다. Invitation harness는 fresh 0001~0013 및 이전 immutable ledger upgrade를 검증합니다. Workspace harness는 100개 초과 동일 timestamp fixture, 중간 mutation, IDOR/cross-scope/tamper/limit와 실제 keyset index plan을 검증합니다. 이 스크립트들은 Docker Desktop 자체를 시작하거나 종료하지 않으므로 먼저 daemon을 실행해야 합니다.
 
 Repository RAG의 명시적 동의 경계를 실제 Electron UI부터 검증하려면 Docker daemon이 준비된 상태에서 다음을 실행합니다.
 
@@ -524,12 +552,12 @@ accepted membership, pending 제거와 create/accepted audit를 교차 검증하
 - Workspace rename은 owner/admin에게 제공됩니다. Owner의 archive는 row/file을 보존하는 soft archive이며, owner는 영구 삭제가 시작되지 않고 application row/file이 보존된 대상만 current-password/exact-name/exact-phrase 확인으로 self-service restore할 수 있습니다. Restore는 취소된 초대, 삭제된 row/file 또는 runtime을 재생성하지 않습니다. 별도 exact-confirmation 영구 삭제는 online application row와 알려진 Local tenant root를 제거하며, self-service restore는 backup/forensic recovery나 secure erasure를 제공하지 않습니다.
 - Workspace 초대는 email webhook을 설정하면 transient fragment link를 전달하고 renderer에는 pending 상태만 표시하며, 설정하지 않으면 기존 one-time copy-link를 제공합니다. SMTP client, template/bounce/complaint 처리, reminder와 공개 delivery-status API는 제공하지 않습니다.
 - 신규 가입은 항상 email verification pending입니다. Webhook이 비활성인 동안 raw verification token은 생성되지 않고 payload-free job만 쌓이므로 가입 완료가 불가능합니다. Password reset과 email delivery는 서로 다른 opt-in provider/bearer입니다. Application-level limiter는 distributed edge WAF/CAPTCHA, trusted reverse proxy, forwarded client identity 또는 multi-database global limit을 제공하지 않으며 NAT peer와 reverse proxy 뒤 client는 각각 같은 address bucket을 공유합니다.
-- Lifecycle 삭제는 secure erasure, table bloat 자동 관리, `VACUUM FULL`, WAL/replica/snapshot/backup/manual copy/disconnected device 삭제를 제공하지 않습니다. Late Local reconciliation용 payload-free UUID tombstone은 자동 만료하지 않으며 History/RAG content의 age-based retention도 제공하지 않습니다.
+- Lifecycle 삭제는 secure erasure, table bloat 자동 관리, `VACUUM FULL`, WAL/replica/snapshot/backup/manual copy/disconnected device 삭제를 제공하지 않습니다. Phase 35는 이 physical copy의 보존 상한과 legal-hold evidence를 검증할 뿐 삭제를 실행하지 않습니다. Late Local reconciliation용 payload-free UUID tombstone은 자동 만료하지 않으며 History/RAG content의 age-based retention도 제공하지 않습니다.
 - local provider는 현재 고정 Codex가 지원하는 Responses API 호환성에 한정되며 Chat Completions 전용 서버는 지원하지 않습니다.
 - Apps/Plugins/connector와 원격 MCP의 실제 범위·인증은 고정 Codex source와 사용자의 계정/서버에 따릅니다.
 - History read/export API는 shared workspace에서도 현재 사용자의 `created_by_user_id` 범위만 반환합니다. Backfill은 공개 App Server snapshot과 설정된 per-pass bound 안에서만 복원하며 과거 approval을 추정하지 않습니다. Workspace 전체 협업 공유와 자동 보존 기간은 제공하지 않습니다.
 - RAG는 수동 text 등록, 명시적 동의 기반 active repository 파일 인덱싱과 미리보기/turn 질의를 지원합니다. 기본 `text-embedding-3-small`/1,536 조합은 planner 선택에 따라 HNSW ANN을 사용할 수 있고, 그 밖의 모델/차원은 exact cosine fallback입니다. Shared knowledge, 자동 repository 동기화와 retention은 후속 작업입니다.
-- Portable runtime은 외부 PostgreSQL의 설치·기동·백업·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다.
+- Portable runtime은 외부 PostgreSQL의 설치·기동·백업·WAL/PITR/replica/snapshot·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다. Phase 35 database recovery policy/status는 provider가 발행한 비식별 evidence의 배포 전 gate이며 실제 provider drill이나 복구 orchestration이 아닙니다.
 - Encrypted offline backup은 full backup 단위 AES-GCM confidentiality와 Ed25519 authenticity만 제공한다. Incremental,
   deduplication, WAL/PITR, retention scheduler, key escrow/HSM, trust-store authenticated distribution과 secure erasure는
   운영자가 별도로 제공해야 하며 passphrase 또는 모든 trusted recovery key를 잃으면 복구할 수 없습니다.

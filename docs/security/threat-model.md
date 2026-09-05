@@ -1,19 +1,20 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 34, 2026-09-05
+- 기준: Phase 35, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
-  tenant filesystem, build/vendor/release와 Windows installer state 경로
+  tenant filesystem, build/vendor/release, Windows installer state 경로와 managed PostgreSQL recovery evidence
 - 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`,
-  `npm run test:backup-encryption`, `npm run test:installer`
+  `npm run test:backup-encryption`, `npm run recovery:validate`, `npm run test:recovery`, `npm run test:installer`
 
 ## 자산과 공격자
 
 보호 자산은 Product session/CSRF proof, password hash와 verification/invitation token hash, email delivery와
 provider/operations secret, private History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정,
 release/source provenance, offline signing private key, backup passphrase와 encrypted backup, public trust-store 상태,
-active/last-known-good/rollback pointer와 installer journal이다. 공격자는
+active/last-known-good/rollback pointer와 installer journal, production database recovery policy digest와 signed
+provider drill receipt의 trust version/readiness다. 공격자는
 인증되지 않은 네트워크 client, 다른 user/workspace의 인증 사용자, 악성 repository content, 변조된 dependency/
-vendor/runtime input, 과도한 DB 역할, 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
+vendor/runtime input, 과도한 DB 역할, stale/forged recovery evidence와 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
 release maintainer 자체가 완전히 장악된 경우, PostgreSQL host 관리자, 서명 key 탈취는 이 모델 밖의 상위 신뢰
 실패다.
 
@@ -41,6 +42,10 @@ scrypt + AES-256-GCM envelope -- canonical digest --> external Ed25519 signer
   +------ encrypted backup file <---- signature -------+
                          |
 external public trust store -> verify/decrypt/temp validate -> empty DB + new data root
+
+external managed PostgreSQL operator -- provider drill --> payload-free recovery receipt
+  | WAL/PITR/base backup/replica/snapshot controls                |
+  +--> versioned recovery policy digest/trust version -----------+--> deployment readiness gate
 ```
 
 | 경계 | 주요 위협 | 강제 통제와 증거 |
@@ -59,6 +64,7 @@ external public trust store -> verify/decrypt/temp validate -> empty DB + new da
 | Seal → offline signer | private key 유출, 바뀐 manifest 서명, 재서명 | repo/artifact 밖 explicit key file 또는 bounded non-interactive stdin, sign 전 integrity/secret scan, exclusive detached Ed25519 envelope; signing fixture/tests |
 | DB/data root → encrypted backup | plaintext 유출, weak KDF/nonce reuse, symlink/path traversal, partial archive | offline maintenance lock, 64 KiB archive/gzip/GCM stream, fixed scrypt policy와 fresh salt/nonce, restricted exact temp root, inner path/size/SHA-256; backup encryption fixture |
 | Backup → restore | forged/revoked artifact, wrong passphrase, truncation/trailing, decompression bomb/content, release mismatch, validation 뒤늦은 mutation | external Phase 30 trust store, signature-before-decrypt, GCM AAD/tag, sealed archive length/count/footer, inner manifest, exact version/commit/migration/Codex/vendor check 뒤 empty DB/new root mutation |
+| Provider recovery evidence → deployment | weak/disabled control, RPO/RTO 불일치, single failure domain, stale/failed/다른-policy receipt, URL/path/credential 유출 | strict versioned database recovery policy, exact-key parser, canonical digest, fresh signed-artifact trust version과 objectives/protection receipt; `recovery:validate`, `test:recovery` |
 | Operator → backup secret input | argv/env/log/key bundle 유출, broad file ACL, TTY prompt와 oversized input | passphrase/private key는 bounded pipe 또는 dedicated file만 허용, POSIX mode/Windows owner+DACL/SID 검사, symlink/special/race 거부와 payload-free stable result code |
 | Artifact → install/run/update | 위조/unsigned release, key substitution/revocation 우회, trust-store rollback | artifact 밖 versioned public trust store, strict canonical parsers, unknown/revoked key와 unsigned fail-closed, digest/signature/full-tree verify; release CLI/packaged verifier |
 | Installer state → active code | in-place overwrite, path escape/reparse, unsafe ACL, concurrent/crashed pointer 전환 | signed-first verification, Phase 29 secret scan, external ACL adapter, side-by-side roots, same-directory atomic pointer+journal, exclusive lock, exact-root cleanup; installer fixture/unit |
@@ -76,9 +82,12 @@ external public trust store -> verify/decrypt/temp validate -> empty DB + new da
   external trust store가 manifest/artifact 동시 변조와 key substitution을 거부한다. Installer는 signed tree를
   먼저 검증하고 side-by-side copy를 다시 검증하며 pointer/journal record의 extra/non-canonical field를 거부한다.
   Backup은 header+ciphertext digest+GCM tag canonical representation을 같은 trust primitive로 서명하며, authenticated
-  decryption 뒤에도 inner manifest와 current release provenance를 exact 비교한다.
+  decryption 뒤에도 inner manifest와 current release provenance를 exact 비교한다. Phase 35는 schema/parser/package/docs
+  drift와 policy/receipt digest를 묶고 stale/future/failed/trust/RPO/RTO/protection mismatch를 production promotion 전에 거부한다.
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
-  response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Signing private key와
+  response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Recovery validate/status도
+  stable code, policy digest, coarse age bucket/count만 출력하고 resource ID, WAL LSN/timeline, snapshot ID와
+  evidence payload를 출력하지 않는다. Signing private key와
   signature bytes는 signer 성공/실패 log에
   출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다. Restore audit는 stable `workspace.restored`와
   payload-free operation만 남기고 password, Workspace 이름과 confirmation을 기록하지 않는다.
@@ -101,7 +110,8 @@ external public trust store -> verify/decrypt/temp validate -> empty DB + new da
 ## 불변식과 변경 규칙
 
 Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server 및 approval 경계는
-Phase 34 backup 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
+Phase 34 backup이나 Phase 35 recovery policy 작업으로 완화되지 않는다. `recovery:cli status`는 HTTP operations
+status에 연결되지 않으며 기존 operations bearer/Origin/default-404 계약을 바꾸지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
 사유만 허용하며 stale entry도 실패한다. 새 데이터 흐름, credential, 외부 provider, filesystem root, DB 권한,
 release input, signing key boundary나 trust anchor가 생기면 이 문서와 ADR, 해당 executable validation/test를
 함께 갱신한다.
@@ -111,13 +121,15 @@ release input, signing key boundary나 trust anchor가 생기면 이 문서와 A
 Production key ceremony/HSM과 custody, backup passphrase escrow/recovery, trust-store authenticated distribution,
 transparency/timestamp,
 Authenticode, 실제 installer packaging binary와 process/service/registry/shortcut adapter, admin/system-wide install,
-SBOM/registry attestation, host hardening, PostgreSQL TLS/HA/WAL·backup
-retention, email provider의 mailbox/deliverability/body handling과 remote MCP/Web Search는 별도 통제다. Provider가
+SBOM/registry attestation, host hardening, managed PostgreSQL TLS/HA/WAL·backup/replica/snapshot 통제의 실제 구성과
+provider attestation, email provider의 mailbox/deliverability/body handling과 remote MCP/Web Search는 별도 통제다. Provider가
 요청을 받은 뒤 응답이 유실되면 retry rotation 때문에 먼저 전달된 링크가 무효화될 수 있다. Offline signing
 host나 현재 trusted private
 key가 장악되면 공격자는 유효한 release/backup artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고
 해당 key의 과거 artifact도 격리해야 한다. Backup encryption은 WAL/PITR, incremental/deduplication, retention
-scheduler, cryptographic erasure나 crash residue secure deletion을 제공하지 않는다. Passphrase와 모든 승인된
+scheduler, cryptographic erasure나 crash residue secure deletion을 제공하지 않는다. Phase 35 WAL/PITR/replica/provider snapshot
+policy는 구성과 evidence를 fail-closed 검증할 뿐 provider control plane, 실제 restore/promotion/fencing이나 receipt
+cryptographic 발행을 수행하지 않는다. Passphrase와 모든 승인된
 recovery material을 잃으면 GCM payload를 복구할 수 없다. Self-service restore는 out-of-band로 사라진 application row/file을 증명하거나
 복구하지 않으며 backup/forensic recovery가 아니다. Local trust-store receipt는 낮은 version과 같은 version의 다른 digest를
 거부하지만 trust store 자체의 인증된 배포를 대신하지 않는다. ACL adapter가 손상되면 unsafe root를 승인할 수
