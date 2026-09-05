@@ -3,8 +3,8 @@
   "formatVersion": 1,
   "database": {
     "migrationStrategy": "forward-only",
-    "latestSchemaVersion": 12,
-    "minimumReadableSchemaVersion": 12,
-    "maximumReadableSchemaVersion": 12
+    "latestSchemaVersion": 13,
+    "minimumReadableSchemaVersion": 13,
+    "maximumReadableSchemaVersion": 13
   }
 }
