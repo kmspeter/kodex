@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 2ba02bb241f144ca36350d36a5040ed256b25790..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 7850571eafd66c570c256ace64b68bdbe82e20fd..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `2ba02bb241f144ca36350d36a5040ed256b25790` |
-| 제품 기준 commit | `feat: add Windows installer update state machine` (Phase 31 기능 기준) |
+| 제품 기준 HEAD | `7850571eafd66c570c256ace64b68bdbe82e20fd` |
+| 제품 기준 commit | `fix: remove unused installer preflight result` (Phase 31 최종 코드 기준) |
 | 완료 범위 | Phase 1~31 |
 | 다음 핵심 기능 | 메인 통합 탭에서 지정; 이 전용 작업은 Phase 31에서 종료 |
 
@@ -387,7 +387,8 @@ Phase 31의 원본 결정은 [ADR 0030](adr/0030-windows-installer-updater-rollb
   flag set으로 받고 성공/실패 모두 payload-free JSON을 출력한다. Mutating 명령은 packaging이 제공하는 외부
   Windows ACL verifier가 exit 0으로 증명하지 않으면 시작하지 않는다.
 
-Phase 31 기능 commit은 `2ba02bb241f144ca36350d36a5040ed256b25790`이다. 이 detached 전용 worktree의
+Phase 31 기능 commit은 `2ba02bb241f144ca36350d36a5040ed256b25790`, lint fix commit은
+`7850571eafd66c570c256ace64b68bdbe82e20fd`이다. 이 detached 전용 worktree의
 dependency-free Node `v20.19.4` 환경에서 변경된 executable `.mjs`의 `node --check`,
 `node scripts/test-windows-installer.mjs`, 기존 `node scripts/test-release-signing.mjs`, JSON schema parse,
 staged `git diff --check`와 `npm run security:validate`가 통과했다. Security aggregate는 tracked 8,015 files,
@@ -398,16 +399,23 @@ tamper/unknown key/reparse 거부, incompatible schema rollback 차단, retentio
 전부 정리했다. README/ADR/runbook/threat model을 포함해 stage한 뒤 같은 security gate를 다시 실행했으며 tracked
 8,017 files와 나머지 aggregate가 동일하게 통과했다.
 
-이 worktree에는 `node_modules`가 없으므로 targeted Vitest `test:installer-unit`, typecheck와 lint는 실행하지 않았고
-의존성을 탐색하거나 설치하지 않았다. 메인 통합 worktree에서 설치된 기존 dependencies로 세 명령을 실행해야 한다.
-사용자 지시에 따라 `npm run build`, runtime/release/installer artifact 생성, 실제 설치/삭제, registry/service/
-shortcut/process 조작, Docker, Electron/full-stack, Rust/MSVC 설치는 실행하지 않았다.
+이 전용 worktree에는 `node_modules`가 없어 targeted Vitest, typecheck와 lint를 실행하거나 의존성을 탐색/설치하지
+않았다. 이후 메인 통합 worktree의 Node 24와 설치된 dependencies에서 최종 Phase 31 코드 대상으로 다음이 통과했다.
+
+- `npm run test:installer`: duplicate stage, interrupted recovery, live lock contention, forward-only rollback block,
+  exact-root retention과 sibling 보존
+- `npm run test:installer-unit`: 1 file, 3 tests
+- `npm run security:validate`: tracked 8,017 files, vendor 6,687 files, npm dependency 392
+- `npm run typecheck`
+- `npm run lint`: 최초 unused preflight result 지적을 `7850571eafd66c570c256ace64b68bdbe82e20fd`에서
+  반환값 바인딩만 제거해 수정한 뒤 통과; signed-first preflight 호출은 유지
+
+사용자 지시에 따라 `npm run build`, runtime/release/installer artifact 생성, 실제 installer build/설치/삭제,
+registry/service/shortcut/process 조작, Docker, Electron/full-stack, Rust/MSVC 설치는 계속 실행하지 않았다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 31을 메인에 통합하고 설치된 dependencies로 보류 검증을 실행한다.** `test:installer-unit`,
-   `typecheck`, `lint`를 먼저 실행하고 이 전용 탭의 범위를 다음 Phase로 확장하지 않는다.
-2. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
