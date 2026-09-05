@@ -27,11 +27,12 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 35 전용 worktree; 메인 `main` 통합 대기 |
+| 준비 branch | detached Phase 35 전용 worktree; 메인 통합 Node 24 검증 완료 |
 | 제품 기준 HEAD | `8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7` |
 | 제품 기준 commit | `fix: cryptographically verify recovery receipts` |
+| 메인 통합 검증 HEAD | `daca46b10bda901eceb95a0402e80de403da1760` |
 | 완료 범위 | Phase 1~35 |
-| 다음 핵심 기능 | Phase 35 메인 통합·Node 22.13+ dependency 기반 검증과 실제 provider drill; 이 탭에서 다음 Phase로 확장하지 않음 |
+| 다음 핵심 기능 | 승인된 운영 환경의 실제 provider drill/receipt는 보류; 이 탭에서 다음 Phase로 확장하지 않음 |
 
 Phase 1~35에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
@@ -681,11 +682,28 @@ cloud API, Electron/full-stack, build와 Rust/MSVC는 실행하지 않았다. Pr
 signed evidence receipt 발행도 운영 provider 환경에서 보류되어 있으며 이 fixture 결과를 실제 RPO/RTO 증거로
 해석하면 안 된다.
 
+이후 2026-09-05 메인 통합 Node 24 환경에서 기준 HEAD
+`daca46b10bda901eceb95a0402e80de403da1760`을 대상으로 다음 dependency 기반 검증을 실제 실행해 통과했다.
+
+- `npm run test:recovery`: fixture 51개
+- `npm run recovery:validate`: policy digest
+  `4bfa79415734d6589ac26ea238a57d5fed81a62f044c292a50fe9dd6f5472dbc`, document 8, schema 2,
+  policy/receipt format v1
+- Targeted Vitest `test/unit/database-recovery.test.ts`: 1 file, 4 tests
+- `npm run security:validate`: tracked 8,051, vendor 6,687, dependency 392, recovery document 8/schema 2,
+  deployment contract 3, `binaryPresent=false`
+- `npm run typecheck`와 `npm run lint`
+
+이 메인 검증에서도 build, 실제 PostgreSQL/Docker/WAL/base backup/snapshot/replica/promotion/restore, cloud API,
+actual provider drill/receipt, Electron/full-stack와 Rust/MSVC는 실행하지 않았다. 검증 가능한 Phase 35 코드 gate의
+통과는 실제 provider recovery 또는 provider가 발행한 운영 drill evidence의 완료를 뜻하지 않는다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 35를 메인 탭에서 통합·검증한다.** Node 22.13 이상과 설치된 dependency에서 targeted Vitest,
-   typecheck, lint, `recovery:validate`, `security:validate`를 확인한다. 승인된 managed PostgreSQL 환경에서는 실제
-   provider drill과 receipt signer/verifier를 별도 수행한다. 이 전용 작업에서는 다음 Phase 기능으로 확장하지 않는다.
+1. **P1 — Phase 35의 실제 provider drill은 운영 승인 뒤 별도 수행한다.** 메인 통합 Node 24의 targeted Vitest,
+   typecheck, lint, `recovery:validate`, `security:validate`는 완료했다. 승인된 managed PostgreSQL 환경에서만 실제
+   provider drill과 receipt signer/verifier를 수행하며, 코드 gate 결과를 실제 recovery 증거로 대체하지 않는다.
+   이 전용 작업에서는 다음 Phase 기능으로 확장하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
