@@ -599,7 +599,8 @@ bytes, envelope format version 2, `multiChunk=true`, trust-store version 7이었
 deployment contract 3, `binaryPresent=false`로 통과했다. 첫 sandbox 실행의 내부 `git` spawn `EPERM` 뒤 같은 read-only
 command를 허용된 경계에서 재실행했다. 이 worktree에는 `node_modules`가 없어
 `npm run lint` 재시도는 ESLint 실행 파일을 찾지 못해 시작되지 않았고 dependency를 설치하거나 다른 worktree에서
-탐색하지 않았다. 따라서 correction 뒤 최종 lint 통과 여부는 메인 통합 worktree에서 다시 확인해야 한다.
+탐색하지 않았다. 이후 메인에서 HANDOFF commit `298471a2a42adec61c14aeb731366ca7a3c3bb15`까지 통합한 뒤
+Node 24로 `npm run lint`가 최종 통과했다. 같은 통합 상태에서 `git diff --check` 통과와 clean `main`도 확인했다.
 
 Targeted Vitest와 dependency를 요구하는 source CLI/runtime import는 이 worktree에서 실행하지 않았다. 실제
 PostgreSQL/Docker, `pg_dump`/`pg_restore`, build, Electron/full-stack, Rust/MSVC와 사용자 tenant 경로 mutation도
