@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 2cb7fd710114f4e0565817cc0ff2405eeaf6ce65..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only 33f3a96d02fb70c93cc65a6bf79b9c411f9915c6..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `2cb7fd710114f4e0565817cc0ff2405eeaf6ce65` |
-| 제품 기준 commit | `feat: add operational data lifecycle` |
+| 제품 기준 HEAD | `33f3a96d02fb70c93cc65a6bf79b9c411f9915c6` |
+| 제품 기준 commit | `fix: restore pinned Codex source fixtures` |
 | 완료 범위 | Phase 1~28 |
 | 다음 핵심 기능 | 통합 threat model과 release/security acceptance |
 
@@ -256,20 +256,24 @@ root 재조정을 검증했다. `test:history-postgres` 8개도 새 creator-scop
 다운로드 → exact Workspace permanent deletion → PostgreSQL application row와 exact tenant root 삭제를 통과했다.
 이 환경의 checkout에는 sealed `bin/codex.exe`가 없어 설치된 공식 Codex app의 `codex-cli 0.149.0-alpha.4.3`을
 명시적으로 사용했다. 따라서 이 결과는 Phase 28 Electron 경계를 검증하지만 repository-pinned release provenance를
-대체하지 않는다. `codex:verify-source`는 checkout에 manifest-listed vendor fixture 6개가 없어서 실패했고,
-`test:full-stack`/`test:release-deployment`는 `bin/codex.exe` 부재로 preflight에서 중단됐다. 이 파일들을 임의로
-복원하거나 외부 binary로 sealed release를 가장하지 않았다. 누락 목록은 `.vscode/`의 `extensions.json`,
-`launch.json`, `settings.json`과 `codex-rs/http-client/tests/fixtures/`의 `test-ca-trusted.pem`, `test-ca.pem`,
-`test-intermediate.pem`이다.
+대체하지 않는다. 당시 `codex:verify-source`는 manifest-listed vendor fixture 6개가 checkout에 없어 실패했고,
+`test:full-stack`/`test:release-deployment`는 `bin/codex.exe` 부재로 preflight에서 중단됐다.
+
+후속 commit `33f3a96d02fb70c93cc65a6bf79b9c411f9915c6`은 공식 upstream exact commit
+`f1433fc71f2062ae3c007a03d7ff549bc582d386`에서 `.vscode/`의 `extensions.json`, `launch.json`, `settings.json`과
+`codex-rs/http-client/tests/fixtures/`의 `test-ca-trusted.pem`, `test-ca.pem`, `test-intermediate.pem`만 복구했다.
+Ignore된 이 여섯 파일은 기존 manifest SHA-256과 모두 일치한 뒤 명시적으로 Git 추적했다. Manifest, upstream pin,
+build metadata와 기존 vendor file은 바꾸지 않았으며 main에서 `codex:verify-source`가 6,687개 전체를 통과했다.
+남은 검증 blocker는 sealed `bin/codex.exe`와 이를 재현할 pinned Rust 1.95/MSVC VCTools toolchain이다.
 
 ## 다음 작업 우선순위와 exit criterion
 
 1. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
-2. **P1 — 현재 checkout의 release 검증 입력을 정상화한다.** Manifest-listed vendor fixture 6개와 sealed
-   repository `bin/codex.exe`를 승인된 upstream/provenance 절차로 복구한 뒤 source integrity, browserless full-stack,
-   기존 Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
+2. **P1 — 현재 checkout의 binary 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+   준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
+   Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
 ## 표준 실행과 검증
 
@@ -375,6 +379,7 @@ git status --short
 - Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email,
   installer/signing과 장시간 authorization cadence를 증명하지 않는다. 각 운영 기능에는 별도 acceptance와
   runbook이 필요하다.
-- 현재 checkout에는 sealed `bin/codex.exe`와 manifest-listed vendor fixture 6개가 없어 repository-pinned
-  full-stack/release/source-integrity gate를 재현할 수 없다. 승인된 provenance 절차로 입력을 복구하기 전까지
-  설치된 외부 Codex binary의 Phase 28 Electron 통과를 release proof로 해석하지 않는다.
+- 현재 checkout의 vendored source integrity는 6,687개 전체가 다시 검증된다. 다만 sealed `bin/codex.exe`와
+  pinned Rust 1.95/MSVC VCTools가 없어 repository-pinned full-stack/release gate는 아직 재현할 수 없다.
+  승인된 build toolchain으로 binary를 재생성하기 전까지 설치된 외부 Codex binary의 Phase 28 Electron 통과를
+  release proof로 해석하지 않는다.
