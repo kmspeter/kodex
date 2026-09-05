@@ -32,6 +32,8 @@ Compose는 bootstrap admin을 application process에 전달하지 않고 app/mig
 migration job은 non-root, read-only filesystem, tmpfs, no-new-privileges, dropped capabilities로 실행한다. 기존 volume은
 init script가 다시 실행되지 않으므로 새 역할을 운영자가 별도로 provision하고 검증해야 한다.
 
-이 결정은 artifact 서명, installer/update, registry transparency/SBOM, OS service account provisioning, PostgreSQL
-TLS/HA를 구현하지 않는다. Secret scanning은 고신뢰 패턴과 entropy heuristic으로 제한되므로 DLP나 credential
+이 Phase 29 결정 자체는 artifact 서명, installer/update, registry transparency/SBOM, OS service account
+provisioning, PostgreSQL TLS/HA를 구현하지 않았다. 후속 Phase 30의 offline Ed25519 authenticity와 public trust
+store는 [ADR 0029](0029-release-artifact-authenticity.md)가 추가한다. Installer/update orchestration과 나머지
+항목은 계속 비목표다. Secret scanning은 고신뢰 패턴과 entropy heuristic으로 제한되므로 DLP나 credential
 rotation을 대신하지 않는다.

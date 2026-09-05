@@ -1,4 +1,4 @@
-# Phase 29 security/release runbook
+# Phase 29/30 security/release runbook
 
 ## 변경 및 CI gate
 
@@ -6,7 +6,10 @@
    `npm run test:security`를 실행한다.
 2. Secret 후보가 나오면 값은 ticket/log에 복사하지 않는다. 해당 credential을 폐기·회전하고 파일을 제거한다.
    의도적인 test fixture만 exact path/rule/fingerprint/reason allowlist로 review한다. Directory/prefix 예외는 금지한다.
-3. Dependency 변경은 package manifest와 `package-lock.json`을 같은 review에 둔다. Vendor/pin/protocol은 일반
+3. `security:validate`가 key 없는 bootstrap release trust store까지 strict parser로 검증하는지 확인한다.
+   Production public trust store는 별도 신뢰 경로에서 `trust-store-validate` 후 배포하며 private key는 이 gate의
+   입력이나 환경에 넣지 않는다.
+4. Dependency 변경은 package manifest와 `package-lock.json`을 같은 review에 둔다. Vendor/pin/protocol은 일반
    dependency update로 재생성하지 않는다.
 
 ## Production PostgreSQL 역할
@@ -30,7 +33,10 @@ grant를 고친 뒤 다시 시작한다. Production DB URL은 CLI 인자나 일�
 
 ## Release candidate
 
-`release:build`는 build 전에 repository gate를, seal 전에 runtime input gate를 다시 실행한다. 후보가 생성되면
-`release:verify`를 별도 host에서도 실행하고 version/commit/fileCount를 release record에 남긴다. Candidate 내부에
-환경 파일, tenant/outbox, secret 후보, source와 다른 npm/Cargo lock 또는 Codex metadata가 있으면 배치하지 않는다.
-현재 SHA-256 manifest는 authenticity 증명이 아니므로 승인된 저장소 접근 통제와 별도 signing 정책이 필요하다.
+`release:build`는 build 전에 repository gate를, seal 전에 runtime input gate를 다시 실행한다. 생성된 candidate는
+`kodex_release_sealed_unsigned`이며 trusted로 취급하지 않는다. [offline artifact signing runbook](artifact-signing.md)에
+따라 seal 이후 external private key로 Ed25519 서명하고, 별도 host의 versioned public trust store로
+`release:verify`를 통과시킨 뒤 version/commit/fileCount/keyId/manifest digest/store version을 release record에
+남긴다. Candidate 내부에 환경 파일, tenant/outbox, secret 후보, source와 다른 npm/Cargo lock/Codex metadata,
+private key 또는 artifact-provided trust store가 있으면 배치하지 않는다. 설치·실행·rollback·update 전에도 같은
+independent verifier를 호출한다.

@@ -3,8 +3,9 @@ import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, unlink } from 
 import path from 'node:path';
 
 export const RELEASE_ARTIFACT_FORMAT_VERSION = 1;
+export const RELEASE_MANIFEST_FILENAME = 'release-manifest.json';
+export const RELEASE_SIGNATURE_FILENAME = 'release-signature.json';
 
-const MANIFEST_FILENAME = 'release-manifest.json';
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_FILES = 50_000;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/u;
@@ -77,6 +78,7 @@ async function writePrivateFile(filename, value) {
 function forbiddenArtifactPath(relative) {
   const normalized = `/${relative.toLowerCase()}`;
   return /\/(?:\.env(?:\.|$)|kodex\.env$|instance\.lock$)/u.test(normalized)
+    || /\/(?:release-trust-store\.json)$/u.test(normalized)
     || normalized.includes('/.kodex-data/')
     || normalized.includes('/tenants/users/')
     || normalized.includes('/product-history-outbox/');
@@ -87,7 +89,10 @@ async function inspectFiles(root, relative = '', files = []) {
   for (const entry of entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
     const child = path.join(relative, entry.name);
     const portable = child.split(path.sep).join('/');
-    if (!relative && entry.name === MANIFEST_FILENAME) continue;
+    if (
+      !relative
+      && (entry.name === RELEASE_MANIFEST_FILENAME || entry.name === RELEASE_SIGNATURE_FILENAME)
+    ) continue;
     const absolute = path.join(root, child);
     const metadata = await lstat(absolute);
     if (metadata.isSymbolicLink()) throw new Error('Release artifact contains a symbolic link.');
@@ -97,7 +102,9 @@ async function inspectFiles(root, relative = '', files = []) {
     }
     if (!metadata.isFile()) throw new Error('Release artifact contains an unsupported filesystem entry.');
     if (files.length >= MAX_FILES) throw new Error('Release artifact file limit exceeded.');
-    if (forbiddenArtifactPath(portable)) throw new Error('Release artifact contains local configuration or tenant data.');
+    if (forbiddenArtifactPath(portable)) {
+      throw new Error('Release artifact contains forbidden local configuration, trust metadata, or tenant data.');
+    }
     files.push({ path: portable, sha256: await sha256File(absolute), sizeBytes: metadata.size });
   }
   if (!relative) files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
@@ -129,7 +136,13 @@ function parseManifest(value) {
   if (!isRecord(value) || !exactKeys(value, ['codex', 'createdAt', 'database', 'files', 'formatVersion', 'release'])) {
     throw new Error('Release manifest has an invalid top-level contract.');
   }
-  if (value.formatVersion !== RELEASE_ARTIFACT_FORMAT_VERSION || !Number.isFinite(new Date(value.createdAt).getTime())) {
+  if (
+    value.formatVersion !== RELEASE_ARTIFACT_FORMAT_VERSION
+    || typeof value.createdAt !== 'string'
+    || value.createdAt.length > 64
+    || !Number.isFinite(new Date(value.createdAt).getTime())
+    || new Date(value.createdAt).toISOString() !== value.createdAt
+  ) {
     throw new Error('Release manifest version or timestamp is invalid.');
   }
   if (
@@ -173,16 +186,68 @@ function parseManifest(value) {
   return value;
 }
 
-export async function verifyReleaseArtifact(directory) {
-  const root = normalizedRoot(directory, 'Release directory');
-  const rootStat = await lstat(root);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Release path must be a real directory.');
-  const manifestPath = path.join(root, MANIFEST_FILENAME);
+function canonicalManifestBytes(value) {
+  return Buffer.from(`${JSON.stringify({
+    formatVersion: value.formatVersion,
+    createdAt: value.createdAt,
+    release: {
+      version: value.release.version,
+      commit: value.release.commit,
+      platform: value.release.platform,
+      arch: value.release.arch,
+    },
+    database: {
+      migrations: value.database.migrations.map((migration) => ({
+        version: migration.version,
+        name: migration.name,
+        checksum: migration.checksum,
+      })),
+    },
+    codex: {
+      upstreamCommit: value.codex.upstreamCommit,
+      vendorManifestSha256: value.codex.vendorManifestSha256,
+    },
+    files: value.files.map((file) => ({
+      path: file.path,
+      sha256: file.sha256,
+      sizeBytes: file.sizeBytes,
+    })),
+  }, null, 2)}\n`, 'utf8');
+}
+
+async function readCanonicalManifest(root) {
+  const manifestPath = path.join(root, RELEASE_MANIFEST_FILENAME);
   const manifestStat = await lstat(manifestPath);
   if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size > MAX_MANIFEST_BYTES) {
     throw new Error('Release manifest is missing, linked, or too large.');
   }
-  const manifest = parseManifest(JSON.parse(await readFile(manifestPath, 'utf8')));
+  const bytes = await readFile(manifestPath);
+  let text;
+  let manifest;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    manifest = parseManifest(JSON.parse(text));
+  } catch {
+    throw new Error('Release manifest is not valid canonical JSON.');
+  }
+  if (!bytes.equals(canonicalManifestBytes(manifest))) {
+    throw new Error('Release manifest is not valid canonical JSON.');
+  }
+  return { bytes, manifest };
+}
+
+export async function readCanonicalReleaseManifest(directory) {
+  const root = normalizedRoot(directory, 'Release directory');
+  const rootStat = await lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Release path must be a real directory.');
+  return readCanonicalManifest(root);
+}
+
+export async function verifyReleaseArtifactIntegrity(directory) {
+  const root = normalizedRoot(directory, 'Release directory');
+  const rootStat = await lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Release path must be a real directory.');
+  const { manifest } = await readCanonicalManifest(root);
   const actual = await inspectFiles(root);
   if (actual.length !== manifest.files.length) throw new Error('Release artifact contains unlisted or missing files.');
   for (let index = 0; index < actual.length; index += 1) {
@@ -228,9 +293,16 @@ export async function createReleaseArtifact(options) {
   const metadataRoot = path.join(runtimeRoot, 'resources', 'app', 'metadata');
   await mkdir(metadataRoot, { recursive: true, mode: 0o700 });
   const identityPath = path.join(metadataRoot, 'release.json');
-  const manifestPath = path.join(runtimeRoot, MANIFEST_FILENAME);
+  const manifestPath = path.join(runtimeRoot, RELEASE_MANIFEST_FILENAME);
+  const signaturePath = path.join(runtimeRoot, RELEASE_SIGNATURE_FILENAME);
   let moved = false;
   try {
+    try {
+      await lstat(signaturePath);
+      throw new Error('Runtime directory already contains release signature metadata.');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
     await writePrivateFile(identityPath, `${JSON.stringify({ version: options.version, commit: options.commit }, null, 2)}\n`);
     const files = await inspectFiles(runtimeRoot);
     const manifest = {
@@ -245,8 +317,8 @@ export async function createReleaseArtifact(options) {
       files,
     };
     parseManifest(manifest);
-    await writePrivateFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    await verifyReleaseArtifact(runtimeRoot);
+    await writePrivateFile(manifestPath, canonicalManifestBytes(manifest));
+    await verifyReleaseArtifactIntegrity(runtimeRoot);
     await mkdir(path.dirname(output), { recursive: true, mode: 0o700 });
     await rename(runtimeRoot, output);
     moved = true;

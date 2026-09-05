@@ -19,7 +19,7 @@ const SECRET_RULES = [
   { id: 'github-token', expression: /\bgh[pousr]_[A-Za-z0-9]{30,}\b/gu },
   { id: 'google-api-key', expression: /\bAIza[0-9A-Za-z_-]{35}\b/gu },
   { id: 'openai-api-key', expression: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}\b/gu },
-  { id: 'private-key', expression: /-----BEGIN (?:EC |OPENSSH |PGP |RSA )?PRIVATE KEY-----/gu },
+  { id: 'private-key', expression: /-----BEGIN (?:EC |ENCRYPTED |OPENSSH |PGP |RSA )?PRIVATE KEY-----/gu },
   { id: 'slack-token', expression: /\bxox[baprs]-[0-9A-Za-z-]{20,}\b/gu },
   {
     id: 'credentialed-postgres-url',
@@ -334,7 +334,7 @@ function matchesForText(relative, text) {
     rule.expression.lastIndex = 0;
     for (const match of text.matchAll(rule.expression)) {
       const candidate = rule.candidate ? rule.candidate(match) : match[0];
-      if (likelyPlaceholder(candidate)) continue;
+      if (rule.id !== 'private-key' && likelyPlaceholder(candidate)) continue;
       if (rule.id === 'sensitive-assignment' && entropy(candidate) < 3.5) continue;
       findings.push({
         fingerprint: secretFingerprint(rule.id, candidate),

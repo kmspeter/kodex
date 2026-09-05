@@ -14,7 +14,13 @@ export interface ReleaseArtifactManifest {
 }
 
 export const RELEASE_ARTIFACT_FORMAT_VERSION: 1;
-export function verifyReleaseArtifact(directory: string): Promise<ReleaseArtifactManifest>;
+export const RELEASE_MANIFEST_FILENAME: 'release-manifest.json';
+export const RELEASE_SIGNATURE_FILENAME: 'release-signature.json';
+export function readCanonicalReleaseManifest(directory: string): Promise<{
+  bytes: Buffer;
+  manifest: ReleaseArtifactManifest;
+}>;
+export function verifyReleaseArtifactIntegrity(directory: string): Promise<ReleaseArtifactManifest>;
 export function createReleaseArtifact(options: {
   codexUpstreamCommit: string;
   commit: string;

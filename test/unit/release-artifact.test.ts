@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadProductReleaseIdentity } from '../../apps/api/src/release-identity';
-import { createReleaseArtifact, verifyReleaseArtifact } from '../../scripts/lib/release-artifact.mjs';
+import {
+  createReleaseArtifact,
+  verifyReleaseArtifactIntegrity,
+} from '../../scripts/lib/release-artifact.mjs';
 
 const roots: string[] = [];
 const commit = 'a'.repeat(40);
@@ -46,7 +49,7 @@ describe('versioned release artifacts', () => {
     });
     expect(created.releaseId).toBe('Kodex-0.2.0-windows-x64-aaaaaaaaaaaa');
     await expect(stat(runtime)).rejects.toMatchObject({ code: 'ENOENT' });
-    const verified = await verifyReleaseArtifact(output);
+    const verified = await verifyReleaseArtifactIntegrity(output);
     expect(verified.database.migrations).toEqual(migrations);
     expect(verified.release).toEqual({ version: '0.2.0', commit, platform: 'win32', arch: 'x64' });
     expect(JSON.parse(await readFile(
@@ -55,7 +58,7 @@ describe('versioned release artifacts', () => {
     ))).toEqual({ version: '0.2.0', commit });
 
     await writeFile(path.join(output, 'unlisted.txt'), 'tamper', 'utf8');
-    await expect(verifyReleaseArtifact(output)).rejects.toThrow('unlisted or missing');
+    await expect(verifyReleaseArtifactIntegrity(output)).rejects.toThrow('unlisted or missing');
   });
 
   it('refuses tenant data and leaves the generated runtime recoverable after failure', async () => {
@@ -77,6 +80,21 @@ describe('versioned release artifacts', () => {
     await expect(stat(path.join(runtime, 'release-manifest.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(path.join(runtime, 'resources', 'app', 'metadata', 'release.json')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses an artifact-provided release trust store', async () => {
+    const root = await temporaryRoot();
+    const runtime = await fixture(root);
+    await writeFile(path.join(runtime, 'release-trust-store.json'), '{"keys":[]}\n', 'utf8');
+    await expect(createReleaseArtifact({
+      runtimeRoot: runtime,
+      output: path.join(root, 'Kodex-0.2.0-windows-x64-aaaaaaaaaaaa'),
+      version: '0.2.0',
+      commit,
+      migrations,
+      codexUpstreamCommit: codexCommit,
+      vendorManifestSha256: vendorHash,
+    })).rejects.toThrow('trust metadata');
   });
 });
 

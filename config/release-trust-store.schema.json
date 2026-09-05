@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.local/schemas/release-trust-store-v1.json",
+  "title": "Kodex release trust store",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "storeVersion",
+    "keys"
+  ],
+  "properties": {
+    "format": {
+      "const": "kodex-release-trust-store"
+    },
+    "formatVersion": {
+      "const": 1
+    },
+    "storeVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "keys": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "keyId",
+          "algorithm",
+          "status",
+          "publicKey"
+        ],
+        "properties": {
+          "keyId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "algorithm": {
+            "const": "Ed25519"
+          },
+          "status": {
+            "enum": [
+              "trusted",
+              "revoked"
+            ]
+          },
+          "publicKey": {
+            "type": "string",
+            "minLength": 60,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9+/]{59}=$"
+          }
+        }
+      }
+    }
+  }
+}

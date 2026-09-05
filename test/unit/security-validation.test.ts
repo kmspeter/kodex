@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +30,21 @@ describe('Phase 29 security validation', () => {
     } catch (error) {
       expect(String(error)).toContain('rule=openai-api-key');
       expect(String(error)).not.toContain(candidate);
+    }
+  });
+
+  it('rejects a private key without echoing its encoded material', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'kodex-private-key-scan-'));
+    temporaryRoots.push(root);
+    const privateKey = generateKeyPairSync('ed25519').privateKey
+      .export({ format: 'pem', type: 'pkcs8' }).toString();
+    await writeFile(path.join(root, 'signing-input.pem'), privateKey, 'utf8');
+    try {
+      await scanReleaseInputSecrets(root);
+      throw new Error('Expected private key scan rejection');
+    } catch (error) {
+      expect(String(error)).toContain('rule=private-key');
+      expect(String(error)).not.toContain(privateKey.split('\n')[1]);
     }
   });
 

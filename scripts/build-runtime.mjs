@@ -78,6 +78,7 @@ await Promise.all([
   copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
   copy('scripts/kodex-release.mjs', 'operations/kodex-release.mjs'),
   copy('scripts/lib/release-artifact.mjs', 'operations/lib/release-artifact.mjs'),
+  copy('scripts/lib/release-signature.mjs', 'operations/lib/release-signature.mjs'),
   copy('scripts/lib/security-validation.mjs', 'operations/lib/security-validation.mjs'),
   copy('scripts/vendor-manifest.mjs', 'operations/vendor-manifest.mjs'),
   copy('apps/api/dist', 'product-api'),
@@ -114,7 +115,7 @@ await writeFile(path.join(output, 'Kodex.cmd'), '@echo off\r\n"%~dp0electron.exe
 await writeFile(path.join(output, 'Kodex-Backup.cmd'), '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-backup.mjs" %*\r\n', 'utf8');
 await writeFile(
   path.join(output, 'Kodex-Release-Verify.cmd'),
-  '@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\npushd "%~dp0"\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "."\r\nset "KODEX_RELEASE_VERIFY_EXIT=%ERRORLEVEL%"\r\npopd\r\nexit /b %KODEX_RELEASE_VERIFY_EXIT%\r\n',
+  '@echo off\r\nsetlocal\r\nif /I not "%~1"=="--trust-store" exit /b 2\r\nif "%~2"=="" exit /b 2\r\nif not "%~3"=="" exit /b 2\r\nset ELECTRON_RUN_AS_NODE=1\r\npushd "%~dp0"\r\n"%~dp0electron.exe" "%~dp0resources\\app\\operations\\kodex-release.mjs" verify --path "." --trust-store "%~2"\r\nset "KODEX_RELEASE_VERIFY_EXIT=%ERRORLEVEL%"\r\npopd\r\nexit /b %KODEX_RELEASE_VERIFY_EXIT%\r\n',
   'utf8',
 );
 
@@ -137,6 +138,7 @@ for (const relative of [
   'operations/lib/offline-backup.mjs',
   'operations/kodex-release.mjs',
   'operations/lib/release-artifact.mjs',
+  'operations/lib/release-signature.mjs',
   'node_modules/@kodex/product-contract/dist/index.js',
   'node_modules/@kodex/product-db/dist/index.js',
   'node_modules/@kodex/product-db/migrations/0001_initial_product_schema.sql',

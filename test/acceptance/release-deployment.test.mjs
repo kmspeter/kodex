@@ -1,6 +1,7 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { open, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createProductDatabase } from '@kodex/product-db';
@@ -11,7 +12,8 @@ import {
   unusedLoopbackPort,
   waitForReady,
 } from '../../apps/desktop/runtime-processes.mjs';
-import { createReleaseArtifact, verifyReleaseArtifact } from '../../scripts/lib/release-artifact.mjs';
+import { createReleaseArtifact } from '../../scripts/lib/release-artifact.mjs';
+import { signReleaseArtifact, verifyReleaseArtifact } from '../../scripts/lib/release-signature.mjs';
 
 const repositoryRoot = process.cwd();
 const databaseUrl = process.env.KODEX_RELEASE_TEST_DATABASE_URL;
@@ -28,6 +30,7 @@ const releaseRoot = path.join(
   `Kodex-${applicationVersion}-windows-x64-${releaseCommit.slice(0, 12)}`,
 );
 const children = [];
+let signingRoot;
 
 async function sha256File(filename) {
   const handle = await open(filename, 'r');
@@ -55,12 +58,15 @@ function waitForExit(child, timeoutMs = 20_000) {
   ]);
 }
 
-function runPackagedVerifier() {
+function runPackagedVerifier(trustStorePath) {
   return new Promise((resolve, reject) => {
     const appRoot = path.join(releaseRoot, 'resources', 'app');
     const child = spawn(
       path.join(releaseRoot, 'electron.exe'),
-      [path.join(appRoot, 'operations', 'kodex-release.mjs'), 'verify', '--path', releaseRoot],
+      [
+        path.join(appRoot, 'operations', 'kodex-release.mjs'),
+        'verify', '--path', releaseRoot, '--trust-store', trustStorePath,
+      ],
       {
         cwd: releaseRoot,
         env: {
@@ -120,6 +126,7 @@ afterAll(async () => {
   await stopRuntimeChildren(children);
   await database.close();
   await rm(releaseRoot, { recursive: true, force: true });
+  if (signingRoot) await rm(signingRoot, { recursive: true, force: true });
 });
 
 it('installs, migrates before listen, reports exact version, and recovers from an incompatible ledger', async () => {
@@ -147,9 +154,27 @@ it('installs, migrates before listen, reports exact version, and recovers from a
     codexUpstreamCommit: (await readFile(path.join(appRoot, 'metadata', 'CODEX_UPSTREAM_COMMIT'), 'utf8')).trim(),
     vendorManifestSha256: await sha256File(path.join(appRoot, 'metadata', 'VENDOR_SOURCE_SHA256.json')),
   });
-  const manifest = await verifyReleaseArtifact(releaseRoot);
-  expect(manifest.database.migrations.at(-1)?.version).toBe(12);
-  await runPackagedVerifier();
+  signingRoot = await mkdtemp(path.join(os.tmpdir(), 'kodex-release-acceptance-signing-'));
+  const keys = generateKeyPairSync('ed25519');
+  const keyId = 'acceptance-ephemeral';
+  const privateKeyPath = path.join(signingRoot, 'private-key.pem');
+  const trustStorePath = path.join(signingRoot, 'release-trust-store.json');
+  await writeFile(privateKeyPath, keys.privateKey.export({ format: 'pem', type: 'pkcs8' }), { mode: 0o600 });
+  await writeFile(trustStorePath, `${JSON.stringify({
+    format: 'kodex-release-trust-store',
+    formatVersion: 1,
+    storeVersion: 1,
+    keys: [{
+      keyId,
+      algorithm: 'Ed25519',
+      status: 'trusted',
+      publicKey: keys.publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+    }],
+  }, null, 2)}\n`, 'utf8');
+  await signReleaseArtifact({ directory: releaseRoot, keyFile: privateKeyPath, keyId });
+  const verifiedRelease = await verifyReleaseArtifact(releaseRoot, { trustStorePath });
+  expect(verifiedRelease.manifest.database.migrations.at(-1)?.version).toBe(12);
+  await runPackagedVerifier(trustStorePath);
 
   const firstPort = await unusedLoopbackPort();
   const first = await startReleasedApi(firstPort);

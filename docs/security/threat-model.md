@@ -1,14 +1,15 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 29, 2026-09-05
+- 기준: Phase 30, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
   tenant filesystem, build/vendor/release 경로
-- 검증 entrypoint: `npm run security:validate`, `npm run test:security`
+- 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`
 
 ## 자산과 공격자
 
 보호 자산은 Product session/CSRF proof, password hash와 token hash, provider/operations secret, private
-History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정, release/source provenance다. 공격자는
+History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정, release/source provenance, offline signing
+private key와 public trust-store 상태다. 공격자는
 인증되지 않은 네트워크 client, 다른 user/workspace의 인증 사용자, 악성 repository content, 변조된 dependency/
 vendor/runtime input, 과도한 DB 역할, 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
 release maintainer 자체가 완전히 장악된 경우, PostgreSQL host 관리자, 서명 key 탈취는 이 모델 밖의 상위 신뢰
@@ -39,16 +40,20 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 | Local → App Server | 비공식 state read, approval 우회, secret over-forward | 공식 stdio App Server만 사용, 공개 notification/snapshot, 선택 provider secret만 전달, approval server-request 보존; reproducibility/history tests |
 | History/RAG | payload log, 다른 사용자 content, 무동의 외부 전송 | payload-free fixed logs, creator scope, repository preview→select→consent→confirm, bounded sanitizer/outbox; history/RAG/observability tests |
 | Source/dependency → build | lock drift, vendor 추가/변경, pin/metadata mismatch | lockfile v3 closure, strict vendored manifest/pin, Cargo lock/build/protocol linkage; `security:validate`, `codex:verify-source` |
-| Build → release | stale runtime, secret/tenant 혼입, artifact tamper | clean HEAD, tracked+release-input secret scan, repository/runtime provenance equality, full file manifest; release tests/verifier |
+| Build → seal | stale runtime, secret/tenant 혼입, artifact tamper | clean HEAD, tracked+release-input secret scan, repository/runtime provenance equality, canonical full file manifest; release tests/integrity gate |
+| Seal → offline signer | private key 유출, 바뀐 manifest 서명, 재서명 | repo/artifact 밖 explicit key file 또는 bounded non-interactive stdin, sign 전 integrity/secret scan, exclusive detached Ed25519 envelope; signing fixture/tests |
+| Artifact → install/run/update | 위조/unsigned release, key substitution/revocation 우회, trust-store rollback | artifact 밖 versioned public trust store, strict canonical parsers, unknown/revoked key와 unsigned fail-closed, digest/signature/full-tree verify; release CLI/packaged verifier |
 
 ## Threat 처리
 
 - Spoofing: Product session은 hash-only DB record와 HttpOnly cookie로, operations API는 browser Origin을 거부하는
   별도 bearer로 식별한다. Local bootstrap은 Product session과 active membership 없이 발급되지 않는다.
 - Tampering: migration checksum ledger, strict vendor manifest, package lock closure, Codex binary build metadata와
-  release full-tree SHA-256이 불일치를 거부한다. SHA-256 manifest는 서명을 대신하지 않는다.
+  release full-tree SHA-256이 불일치를 거부한다. Exact canonical manifest bytes의 detached Ed25519 signature와
+  external trust store가 manifest/artifact 동시 변조와 key substitution을 거부한다.
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Prompt, response, email, token, URL, 경로와 provider/
-  DB 오류문은 일반 log에 남기지 않는다.
+  DB 오류문은 일반 log에 남기지 않는다. Signing private key와 signature bytes는 signer 성공/실패 log에
+  출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다.
 - Information disclosure: History/RAG는 `(workspace_id, created_by_user_id)` private scope이며 renderer env, operational
   status, release scan 진단에 secret 값이나 payload를 넣지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
 - Denial of service: request/body/page/outbox/file/count/byte/time bounds와 PostgreSQL 공유 limiter를 사용한다. Local
@@ -61,10 +66,14 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server 및 approval 경계는
 Phase 29 보안 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
 사유만 허용하며 stale entry도 실패한다. 새 데이터 흐름, credential, 외부 provider, filesystem root, DB 권한,
-release input이 생기면 이 문서와 ADR, 해당 executable validation/test를 함께 갱신한다.
+release input, signing key boundary나 trust anchor가 생기면 이 문서와 ADR, 해당 executable validation/test를
+함께 갱신한다.
 
 ## 잔여 위험
 
-Artifact authenticity/signing, installer/update, SBOM/registry attestation, host hardening, PostgreSQL TLS/HA/WAL·backup
-retention, external provider와 remote MCP/Web Search는 별도 통제다. 현재 checkout의 `bin/codex.exe` 부재로 binary를
+Production key ceremony/HSM과 custody, trust-store authenticated distribution/anti-rollback, transparency/timestamp,
+Authenticode, installer/update orchestration, SBOM/registry attestation, host hardening, PostgreSQL TLS/HA/WAL·backup
+retention, external provider와 remote MCP/Web Search는 별도 통제다. Offline signing host나 현재 trusted private
+key가 장악되면 공격자는 유효한 artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고 해당 key의
+과거 artifact도 격리해야 한다. 현재 checkout의 `bin/codex.exe` 부재로 binary를
 요구하는 runtime/release gate는 실행할 수 없지만, 그 경로는 누락을 성공으로 간주하지 않는다.

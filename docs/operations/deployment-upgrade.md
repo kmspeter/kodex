@@ -7,26 +7,36 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 1. `main`의 승인된 commit을 checkout하고 `git status --short`가 비어 있는지 확인한다. Tag/release commit과
    vendored Codex pin을 검토한다.
-2. clean checkout에서 새 경로로 artifact를 만든다.
+2. clean checkout에서 새 경로로 artifact를 봉인한다. 이 시점 결과는 unsigned이며 배포 승인 대상이 아니다.
 
    ```powershell
    npm ci
    npm run security:validate
    npm run codex:verify-source
    npm run release:build -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
-   npm run release:verify -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
-   D:\releases\Kodex-0.2.0-windows-x64-<commit12>\Kodex-Release-Verify.cmd
    ```
 
-3. JSON의 version/commit/fileCount를 CI release record와 대조한다. `release-manifest.json`은 보존하되
-   운영 env/data와 합치지 않는다. Restricted immutable storage에 복제하고 향후 signing 단계의 detached
-   signature를 같은 release record에 연결한다.
-4. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
+3. [offline signing runbook](artifact-signing.md)에 따라 repository/artifact 밖의 private key로 candidate를
+   서명한다. 외부 versioned public trust store를 signer와 다른 verifier host에 배포한 뒤 다음 두 경로를
+   모두 통과시킨다.
+
+   ```powershell
+   npm run release:verify -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12> --trust-store D:\kodex-trust\release-trust-store.json
+   D:\releases\Kodex-0.2.0-windows-x64-<commit12>\Kodex-Release-Verify.cmd --trust-store D:\kodex-trust\release-trust-store.json
+   ```
+
+4. JSON의 version/commit/fileCount/keyId/manifestSha256/trustStoreVersion을 release record와 대조한다.
+   `release-manifest.json`과 `release-signature.json`은 보존하되 운영 env/data나 private key와 합치지 않는다.
+   Restricted immutable storage에 artifact를 복제한다. Unsigned candidate나 artifact가 제공한 trust store는
+   배포하지 않는다.
+5. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
    revision label과 `/api/version`을 release record에 대조한다. Mutable tag만으로 배치하지 않는다.
 
 ## 배치 전 준비
 
 - Phase 24 offline backup을 만들고 `backup:verify`를 통과시킨다. 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
+- Release record의 trust-store version/digest가 현재 승인 상태보다 오래되지 않았는지 확인한다. Revoked key로
+  서명된 이전 artifact도 rollback 대상으로 활성화하지 않는다.
 - application과 migration DB 역할/secret을 분리하고 [security runbook](security-release.md)의 금지 권한을 확인한다.
 - 새 release의 migration ledger와 현재 DB ledger를 비교한다. Migration lock/write blocking, HNSW build 공간과
   유지보수 창을 계획한다.
@@ -39,7 +49,8 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 ## Deploy/upgrade
 
 1. 새 agent mutation을 막고 API/Local Server/Electron을 정상 종료한다. Backup 이후 쓰기가 없음을 확인한다.
-2. Candidate artifact에서 `Kodex-Release-Verify.cmd`를 다시 실행한다. 실패하면 활성 release를 바꾸지 않는다.
+2. Candidate artifact에서 external trust store를 전달한 `Kodex-Release-Verify.cmd --trust-store <path>`를 다시
+   실행한다. 실패하면 활성 release를 바꾸지 않는다.
 3. 별도 migration job에만 migration credential을 주입해 `npm run db:migrate`를 실행한다. 그 credential을 제거한
    뒤 application credential만 가진 Product API candidate를 시작한다. API/Local은 권한과 exact ledger가 다르면
    port를 열지 않는다.
@@ -52,7 +63,8 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 ## 실패와 rollback
 
-- Verify/config/migration 전 실패: candidate를 활성화하지 않고 이전 verified artifact를 재시작한다.
+- Verify/config/migration 전 실패: candidate를 활성화하지 않고 현재 trust store에서 아직 trusted인 이전
+  verified artifact를 재시작한다.
 - Migration이 없거나 이전 artifact가 현재 ledger를 이해하는 경우: 모든 process를 중지하고 이전 directory/
   image digest를 다시 실행한 뒤 readiness/version/smoke를 반복한다.
 - Migration 적용 뒤 이전 artifact가 `Database migration ... is not present`로 거부되는 경우: ledger를 수정하거나

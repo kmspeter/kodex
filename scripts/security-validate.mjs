@@ -1,6 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { validateReleaseTrustStore } from './lib/release-signature.mjs';
 import {
   scanReleaseInputSecrets,
   scanTrackedSecrets,
@@ -17,6 +18,9 @@ if (args.length !== 0 && (args.length !== 2 || args[0] !== '--release-input' || 
 const provenance = await verifyRepositoryProvenance(repositoryRoot, { requireBinary: false });
 const secrets = await scanTrackedSecrets(repositoryRoot);
 const deployment = await verifyDeploymentContracts(repositoryRoot);
+const releaseTrustStore = await validateReleaseTrustStore(
+  path.join(repositoryRoot, 'config', 'release-trust-store.json'),
+);
 let releaseInput;
 if (args.length === 2) releaseInput = await scanReleaseInputSecrets(path.resolve(args[1]));
 
@@ -26,6 +30,8 @@ process.stdout.write(`${JSON.stringify({
   dependencyCount: provenance.dependencyCount,
   deploymentContractCount: deployment.contractCount,
   releaseInputFileCount: releaseInput?.fileCount ?? 0,
+  releaseTrustStoreKeyCount: releaseTrustStore.keyCount,
+  releaseTrustStoreVersion: releaseTrustStore.storeVersion,
   scannedTrackedFileCount: secrets.fileCount,
   vendorFileCount: provenance.vendorFileCount,
   workspaceCount: provenance.workspaceCount,

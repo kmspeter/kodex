@@ -44,4 +44,6 @@ artifact가 listen 전에 종료되는지 확인하고 fixture를 원상복구�
 
 이 단계는 installer, automatic updater, Authenticode/code signing, container registry, DNS/reverse proxy,
 PostgreSQL HA를 제공하지 않는다. SHA-256 manifest는 손상 검출이지 서명/authenticity가 아니므로 artifact
-서명과 배포 권한은 별도 release security 단계에서 닫는다.
+서명과 배포 권한은 별도 release security 단계에서 닫는다. 후속 Phase 30의 manifest authenticity 결정은
+[ADR 0029](0029-release-artifact-authenticity.md)가 이 공백을 닫으며 installer/updater와 Authenticode는 계속
+비목표다.

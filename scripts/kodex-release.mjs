@@ -4,7 +4,12 @@ import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
-import { createReleaseArtifact, verifyReleaseArtifact } from './lib/release-artifact.mjs';
+import { createReleaseArtifact } from './lib/release-artifact.mjs';
+import {
+  signReleaseArtifact,
+  validateReleaseTrustStore,
+  verifyReleaseArtifact,
+} from './lib/release-signature.mjs';
 import {
   scanReleaseInputSecrets,
   scanTrackedSecrets,
@@ -15,15 +20,82 @@ import {
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (process.versions.electron) process.noAsar = true;
 
+const USAGE = 'Usage: kodex-release <create|sign|verify|trust-store-validate> [strict command options]';
+const MAX_STDIN_KEY_BYTES = 64 * 1024;
+
+function parseFlags(values, booleanFlags = []) {
+  const flags = new Map();
+  for (let index = 0; index < values.length; index += 1) {
+    const flag = values[index];
+    if (!/^--[a-z-]+$/u.test(flag) || flags.has(flag)) throw new Error(USAGE);
+    if (booleanFlags.includes(flag)) {
+      flags.set(flag, true);
+      continue;
+    }
+    const value = values[index + 1];
+    if (typeof value !== 'string' || !value || value.startsWith('--')) throw new Error(USAGE);
+    flags.set(flag, value);
+    index += 1;
+  }
+  return flags;
+}
+
+function exactFlagSet(flags, required, optional = []) {
+  const allowed = new Set([...required, ...optional]);
+  return required.every((flag) => flags.has(flag))
+    && [...flags.keys()].every((flag) => allowed.has(flag));
+}
+
 function argumentsFor(values) {
   const [command, ...rest] = values;
-  if (!['create', 'verify'].includes(command)) {
-    throw new Error('Usage: kodex-release <create|verify> --path <directory>');
+  if (command === 'create') {
+    const flags = parseFlags(rest);
+    if (!exactFlagSet(flags, ['--path']) || flags.size !== 1) throw new Error(USAGE);
+    return { command, output: path.resolve(flags.get('--path')) };
   }
-  if (rest.length !== 2 || rest[0] !== '--path' || !rest[1]) {
-    throw new Error('Release arguments must be exactly --path <directory>.');
+  if (command === 'sign') {
+    const flags = parseFlags(rest, ['--key-stdin']);
+    if (!exactFlagSet(flags, ['--path', '--key-id'], ['--key-file', '--key-stdin'])) throw new Error(USAGE);
+    const hasKeyFile = flags.has('--key-file');
+    const hasKeyStdin = flags.has('--key-stdin');
+    if (hasKeyFile === hasKeyStdin || flags.size !== 3) throw new Error(USAGE);
+    return {
+      command,
+      keyFile: hasKeyFile ? path.resolve(flags.get('--key-file')) : undefined,
+      keyId: flags.get('--key-id'),
+      keyStdin: hasKeyStdin,
+      output: path.resolve(flags.get('--path')),
+    };
   }
-  return { command, output: path.resolve(rest[1]) };
+  if (command === 'verify') {
+    const flags = parseFlags(rest);
+    if (!exactFlagSet(flags, ['--path', '--trust-store']) || flags.size !== 2) throw new Error(USAGE);
+    return {
+      command,
+      output: path.resolve(flags.get('--path')),
+      trustStorePath: path.resolve(flags.get('--trust-store')),
+    };
+  }
+  if (command === 'trust-store-validate') {
+    const flags = parseFlags(rest);
+    if (!exactFlagSet(flags, ['--trust-store']) || flags.size !== 1) throw new Error(USAGE);
+    return { command, trustStorePath: path.resolve(flags.get('--trust-store')) };
+  }
+  throw new Error(USAGE);
+}
+
+async function readSigningKeyFromStdin() {
+  if (process.stdin.isTTY) throw new Error('Signing key stdin must be a non-interactive pipe.');
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.length;
+    if (total > MAX_STDIN_KEY_BYTES) throw new Error('Signing key stdin exceeds the byte limit.');
+    chunks.push(bytes);
+  }
+  if (total < 1) throw new Error('Signing key stdin is empty.');
+  return Buffer.concat(chunks, total);
 }
 
 function gitOutput(args) {
@@ -57,14 +129,42 @@ async function sha256File(filename) {
 
 const parsed = argumentsFor(process.argv.slice(2));
 if (parsed.command === 'verify') {
-  const manifest = await verifyReleaseArtifact(parsed.output);
+  const verified = await verifyReleaseArtifact(parsed.output, { trustStorePath: parsed.trustStorePath });
   process.stdout.write(`${JSON.stringify({
     kind: 'kodex_release_verified',
-    commit: manifest.release.commit,
-    fileCount: manifest.files.length,
-    formatVersion: manifest.formatVersion,
-    version: manifest.release.version,
+    commit: verified.manifest.release.commit,
+    fileCount: verified.manifest.files.length,
+    formatVersion: verified.manifest.formatVersion,
+    keyId: verified.keyId,
+    manifestSha256: verified.manifestSha256,
+    trustStoreVersion: verified.trustStoreVersion,
+    version: verified.manifest.release.version,
   })}\n`);
+} else if (parsed.command === 'sign') {
+  await scanReleaseInputSecrets(parsed.output);
+  const stdinKey = parsed.keyStdin ? await readSigningKeyFromStdin() : undefined;
+  let envelope;
+  try {
+    envelope = await signReleaseArtifact({
+      directory: parsed.output,
+      forbiddenKeyRoots: [repositoryRoot],
+      keyFile: parsed.keyFile,
+      keyId: parsed.keyId,
+      privateKeyBytes: stdinKey,
+    });
+  } finally {
+    stdinKey?.fill(0);
+  }
+  process.stdout.write(`${JSON.stringify({
+    kind: 'kodex_release_signed',
+    algorithm: envelope.algorithm,
+    keyId: envelope.keyId,
+    manifestSha256: envelope.manifestSha256,
+    signatureFormatVersion: envelope.formatVersion,
+  })}\n`);
+} else if (parsed.command === 'trust-store-validate') {
+  const trustStore = await validateReleaseTrustStore(parsed.trustStorePath);
+  process.stdout.write(`${JSON.stringify({ kind: 'kodex_release_trust_store_validated', ...trustStore })}\n`);
 } else {
   if (gitOutput(['status', '--porcelain', '--untracked-files=normal'])) {
     throw new Error('Release creation requires a clean Git working tree.');
@@ -106,11 +206,12 @@ if (parsed.command === 'verify') {
     vendorManifestSha256: await sha256File(path.join(appRoot, 'metadata', 'VENDOR_SOURCE_SHA256.json')),
   });
   process.stdout.write(`${JSON.stringify({
-    kind: 'kodex_release_created',
+    kind: 'kodex_release_sealed_unsigned',
     commit: result.manifest.release.commit,
     fileCount: result.manifest.files.length,
     formatVersion: result.manifest.formatVersion,
     releaseId: result.releaseId,
+    signed: false,
     version: result.manifest.release.version,
   })}\n`);
 }
