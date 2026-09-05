@@ -2,6 +2,7 @@ import type { PasswordHasher } from './password.js';
 import {
   PRODUCT_ACCOUNT_DELETE_CONFIRMATION,
   PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+  PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
 } from '@kodex/product-contract';
 import {
   DataLifecycleError,
@@ -11,6 +12,7 @@ import {
 
 export const ACCOUNT_DELETE_CONFIRMATION = PRODUCT_ACCOUNT_DELETE_CONFIRMATION;
 export const WORKSPACE_DELETE_CONFIRMATION = PRODUCT_WORKSPACE_DELETE_CONFIRMATION;
+export const WORKSPACE_RESTORE_CONFIRMATION = PRODUCT_WORKSPACE_RESTORE_CONFIRMATION;
 
 export interface DataLifecycleRequestRepository {
   requestAccountDeletion(confirmation: CredentialConfirmation): Promise<DataLifecycleJob>;
@@ -20,6 +22,11 @@ export interface DataLifecycleRequestRepository {
     workspaceId: string,
     workspaceName: string,
   ): Promise<DataLifecycleJob>;
+  restoreWorkspace(
+    confirmation: CredentialConfirmation,
+    workspaceId: string,
+    workspaceName: string,
+  ): Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,6 +79,25 @@ export class DataLifecycleService {
       || typeof value.confirmationName !== 'string'
     ) throw new DataLifecycleError('confirmation_mismatch');
     return this.repository.requestWorkspaceDeletion(
+      this.#confirmation(userId, currentSessionId, currentPassword(value.currentPassword)),
+      workspaceId,
+      value.confirmationName,
+    );
+  }
+
+  async restoreWorkspace(
+    userId: string,
+    currentSessionId: string,
+    workspaceId: string,
+    value: unknown,
+  ): Promise<void> {
+    if (
+      !isRecord(value)
+      || !exactKeys(value, ['confirmation', 'confirmationName', 'currentPassword'])
+      || value.confirmation !== WORKSPACE_RESTORE_CONFIRMATION
+      || typeof value.confirmationName !== 'string'
+    ) throw new DataLifecycleError('restore_confirmation_mismatch');
+    await this.repository.restoreWorkspace(
       this.#confirmation(userId, currentSessionId, currentPassword(value.currentPassword)),
       workspaceId,
       value.confirmationName,

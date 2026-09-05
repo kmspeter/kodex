@@ -2,6 +2,7 @@ import {
   canUseWorkspaceRuntime,
   isUuid,
   parseProductCreatedWorkspaceInvitation,
+  parseProductArchivedWorkspaces,
   parseProductEmailVerificationStatus,
   parseProductDataLifecycleJob,
   parseProductHistoryThreadDetail,
@@ -22,6 +23,8 @@ import {
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthContextDto,
+  type ProductArchivedWorkspaceDto,
+  type ProductArchivedWorkspacesDto,
   type ProductDataLifecycleJobDto,
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
@@ -42,6 +45,8 @@ import {
 
 export type ProductUser = ProductUserDto;
 export type ProductWorkspace = ProductWorkspaceDto;
+export type ProductArchivedWorkspace = ProductArchivedWorkspaceDto;
+export type ProductArchivedWorkspacePage = ProductArchivedWorkspacesDto;
 export type ProductWorkspaceMember = ProductWorkspaceMemberDto;
 export type ProductWorkspaceMemberPage = ProductWorkspaceMembersDto;
 export type ProductWorkspaceInvitation = ProductWorkspaceInvitationDto;
@@ -576,6 +581,33 @@ export class ProductAuthClient {
     }
   }
 
+  async archivedWorkspaces(
+    options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ProductArchivedWorkspacePage> {
+    const response = await this.#workspaceCollectionPage('/api/workspaces/archived', options);
+    try {
+      return parseProductArchivedWorkspaces(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid recovery list.');
+    }
+  }
+
+  async restoreWorkspace(
+    workspaceId: string,
+    currentPassword: string,
+    confirmationName: string,
+    confirmation: string,
+  ): Promise<void> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, '/restore'),
+      'POST',
+      { confirmation, confirmationName, currentPassword },
+    );
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The workspace restore response was invalid.', response.status);
+    }
+  }
+
   async deleteWorkspace(
     workspaceId: string,
     currentPassword: string,
@@ -787,6 +819,13 @@ export class ProductAuthClient {
     suffix: '/invitations' | '/members',
     options: { cursor?: string; limit?: number; signal?: AbortSignal },
   ): Promise<Response> {
+    return this.#workspaceCollectionPage(this.#workspacePath(workspaceId, suffix), options);
+  }
+
+  async #workspaceCollectionPage(
+    pathname: string,
+    options: { cursor?: string; limit?: number; signal?: AbortSignal },
+  ): Promise<Response> {
     const limit = options.limit ?? PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT;
     if (
       !Number.isSafeInteger(limit)
@@ -801,7 +840,7 @@ export class ProductAuthClient {
         )
       )
     ) throw new ProductAuthError('rejected', 'Workspace page request is invalid.');
-    const url = new URL(this.#workspacePath(workspaceId, suffix), this.apiBase);
+    const url = new URL(pathname, this.apiBase);
     url.searchParams.set('limit', String(limit));
     if (options.cursor) url.searchParams.set('cursor', options.cursor);
     return this.#request(`${url.pathname}${url.search}`, { method: 'GET', signal: options.signal });

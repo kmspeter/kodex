@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   Argon2idPasswordHasher,
   AuthService,
+  DataLifecycleService,
   PostgresAuthRepository,
+  PostgresDataLifecycleRepository,
   PostgresLoginRateLimiter,
   PostgresWorkspaceRepository,
   requireProductDatabaseFromEnv,
@@ -48,12 +50,13 @@ describe('real PostgreSQL workspace membership product flow', () => {
     database = requireProductDatabaseFromEnv();
     await database.migrate();
     const repository = new PostgresAuthRepository(database);
+    const passwordHasher = new Argon2idPasswordHasher();
     config = {
       host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
       cookieSecret: Buffer.alloc(32, 31), secureCookies: false, sessionTtlMs: 3_600_000, maxBodyBytes: 65_536,
       loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
     };
-    auth = await AuthService.create(repository, new Argon2idPasswordHasher(), {
+    auth = await AuthService.create(repository, passwordHasher, {
       sessionTtlMs: config.sessionTtlMs,
       loginRateLimitSecret: config.cookieSecret,
       loginRateLimiter: new PostgresLoginRateLimiter(database, {
@@ -62,9 +65,19 @@ describe('real PostgreSQL workspace membership product flow', () => {
         blockMs: config.loginRateLimitBlockMs,
       }),
     });
+    const lifecycleRepository = new PostgresDataLifecycleRepository(database);
+    const lifecycleService = new DataLifecycleService(lifecycleRepository, passwordHasher);
     server = new ProductApiServer(
       auth, config, undefined, undefined, undefined,
       new PostgresWorkspaceRepository(database, { cursorSecret: config.cookieSecret }),
+      undefined, undefined, undefined, undefined, {
+        requestUserExport: (userId, sessionId, value) => lifecycleService.requestUserExport(userId, sessionId, value),
+        requestAccountDeletion: (userId, sessionId, value) => lifecycleService.requestAccountDeletion(userId, sessionId, value),
+        requestWorkspaceDeletion: (userId, sessionId, workspaceId, value) => lifecycleService.requestWorkspaceDeletion(userId, sessionId, workspaceId, value),
+        restoreWorkspace: (userId, sessionId, workspaceId, value) => lifecycleService.restoreWorkspace(userId, sessionId, workspaceId, value),
+        getJobForUser: (userId, jobId) => lifecycleRepository.getJobForUser(userId, jobId),
+        getExportForUser: (userId, jobId) => lifecycleRepository.getExportForUser(userId, jobId),
+      },
     );
     baseUrl = `http://127.0.0.1:${await server.listen()}`;
   });
@@ -72,6 +85,11 @@ describe('real PostgreSQL workspace membership product flow', () => {
   afterAll(async () => {
     await server?.close();
     if (database) {
+      await database.query('DELETE FROM data_lifecycle_jobs WHERE requested_by_user_id IN (SELECT id FROM users WHERE email LIKE $1)', [`${prefix}-%`]);
+      await database.query('DELETE FROM data_lifecycle_local_tenants WHERE user_id IN (SELECT id FROM users WHERE email LIKE $1)', [`${prefix}-%`]);
+      await database.query(`DELETE FROM data_legal_holds WHERE
+        target_user_id IN (SELECT id FROM users WHERE email LIKE $1)
+        OR target_workspace_id IN (SELECT id FROM workspaces WHERE owner_user_id IN (SELECT id FROM users WHERE email LIKE $1))`, [`${prefix}-%`]);
       await database.query('DELETE FROM workspaces WHERE owner_user_id IN (SELECT id FROM users WHERE email LIKE $1)', [`${prefix}-%`]);
       await database.query('DELETE FROM users WHERE email LIKE $1', [`${prefix}-%`]);
       await database.close();
@@ -445,5 +463,162 @@ describe('real PostgreSQL workspace membership product flow', () => {
     const capped = await request(owner, `/api/workspaces/${workspace.id}/members?limit=100`)
       .then((response) => response.json()) as { members: unknown[] };
     expect(capped.members).toHaveLength(100);
+  });
+
+  it('restores only owner soft archives and rejects deletion, hold, credential, and race conflicts', async () => {
+    const [owner, admin, outsider] = await Promise.all([
+      register('recovery-owner'), register('recovery-admin'), register('recovery-outsider'),
+    ]);
+    const created = await request(owner, '/api/workspaces', 'POST', { name: 'Recoverable Team' })
+      .then((response) => response.json()) as { id: string };
+    expect((await request(owner, `/api/workspaces/${created.id}/members`, 'POST', {
+      email: email('recovery-admin'), role: 'admin',
+    })).status).toBe(201);
+    const pending = await request(owner, `/api/workspaces/${created.id}/invitations`, 'POST', {
+      email: `${prefix}-recovery-pending@example.invalid`, role: 'member',
+    }).then((response) => response.json()) as { invitation: { id: string } };
+    const installationId = randomUUID();
+    const retainedProject = await database.query<{ id: string }>(
+      `INSERT INTO projects (workspace_id, created_by_user_id, name, external_key)
+       VALUES ($1, $2, 'Recovery Project', $3) RETURNING id`,
+      [created.id, owner.userId, `${prefix}-recovery-project`],
+    );
+    const deletedProject = await database.query<{ id: string }>(
+      `INSERT INTO projects (workspace_id, created_by_user_id, name, external_key)
+       VALUES ($1, $2, 'Deleted Before Archive', $3) RETURNING id`,
+      [created.id, owner.userId, `${prefix}-deleted-before-recovery`],
+    );
+    await database.query('DELETE FROM projects WHERE id = $1', [deletedProject.rows[0].id]);
+    await database.query(
+      `INSERT INTO data_lifecycle_local_tenants (installation_id, user_id, workspace_id)
+       VALUES ($1, $2, $3)`,
+      [installationId, owner.userId, created.id],
+    );
+    expect((await request(owner, `/api/workspaces/${created.id}`, 'DELETE', {
+      confirmationName: 'Recoverable Team',
+    })).status).toBe(204);
+    const archivedState = await database.query<{ updated_at: Date }>(
+      'SELECT updated_at FROM workspaces WHERE id = $1', [created.id],
+    );
+
+    const ownerPage = await request(owner, '/api/workspaces/archived?limit=1');
+    expect(ownerPage.status).toBe(200);
+    const ownerBody = await ownerPage.json() as {
+      nextCursor?: string;
+      workspaces: Array<{ archivedAt: string; id: string; name: string; slug: string }>;
+    };
+    expect(ownerBody.workspaces).toEqual([
+      expect.objectContaining({ id: created.id, name: 'Recoverable Team' }),
+    ]);
+    expect(JSON.stringify(ownerBody)).not.toMatch(/purge|job|hold|token|password/iu);
+    expect(await request(admin, '/api/workspaces/archived').then((response) => response.json()))
+      .toEqual({ workspaces: [] });
+    expect(await request(outsider, '/api/workspaces/archived').then((response) => response.json()))
+      .toEqual({ workspaces: [] });
+
+    const restorePath = `/api/workspaces/${created.id}/restore`;
+    const validRestore = {
+      confirmation: 'RESTORE WORKSPACE',
+      confirmationName: 'Recoverable Team',
+      currentPassword: password,
+    };
+    expect((await request(admin, restorePath, 'POST', validRestore)).status).toBe(403);
+    expect((await request(outsider, restorePath, 'POST', validRestore)).status).toBe(403);
+    expect((await request(owner, restorePath, 'POST', {
+      ...validRestore, confirmation: 'restore workspace',
+    })).status).toBe(409);
+    expect((await request(owner, restorePath, 'POST', {
+      ...validRestore, confirmationName: 'recoverable team',
+    })).status).toBe(409);
+    expect((await request(owner, restorePath, 'POST', {
+      ...validRestore, currentPassword: 'wrong password value',
+    })).status).toBe(403);
+
+    const hold = await database.query<{ id: string }>(
+      `INSERT INTO data_legal_holds (target_type, target_workspace_id, reason_code)
+       VALUES ('workspace', $1, 'recovery_test') RETURNING id`,
+      [created.id],
+    );
+    expect((await request(owner, '/api/workspaces/archived').then((response) => response.json()) as { workspaces: Array<{ id: string }> }).workspaces)
+      .not.toContainEqual(expect.objectContaining({ id: created.id }));
+    expect((await request(owner, restorePath, 'POST', validRestore)).status).toBe(423);
+    await database.query('UPDATE data_legal_holds SET released_at = now() WHERE id = $1', [hold.rows[0].id]);
+
+    const job = await database.query<{ id: string }>(
+      `INSERT INTO data_lifecycle_jobs
+         (kind, status, requested_by_user_id, target_workspace_id, lease_owner, lease_expires_at)
+       VALUES ('workspace_delete', 'running', $1, $2, 'recovery-race', now() + interval '1 minute')
+       RETURNING id`,
+      [owner.userId, created.id],
+    );
+    let locked!: () => void;
+    let release!: () => void;
+    const lockedPromise = new Promise<void>((resolve) => { locked = resolve; });
+    const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    const locker = database.transaction(async (client) => {
+      await client.query('SELECT id FROM data_lifecycle_jobs WHERE id = $1 FOR UPDATE', [job.rows[0].id]);
+      locked();
+      await releasePromise;
+    });
+    await lockedPromise;
+    const raced = await request(owner, restorePath, 'POST', validRestore);
+    expect(raced.status).toBe(409);
+    expect((await raced.json() as { error: { code: string } }).error.code).toBe('restore_conflict');
+    release();
+    await locker;
+    expect((await request(owner, '/api/workspaces/archived').then((response) => response.json()) as { workspaces: Array<{ id: string }> }).workspaces)
+      .not.toContainEqual(expect.objectContaining({ id: created.id }));
+    await database.query('DELETE FROM data_lifecycle_jobs WHERE id = $1', [job.rows[0].id]);
+
+    expect((await request(owner, restorePath, 'POST', validRestore)).status).toBe(204);
+    expect((await request(owner, restorePath, 'POST', validRestore)).status).toBe(409);
+    const me = await request(owner, '/api/auth/me').then((response) => response.json()) as {
+      workspaces: Array<{ id: string }>;
+    };
+    expect(me.workspaces).toContainEqual(expect.objectContaining({ id: created.id }));
+    expect((await request(owner, `/api/workspaces/${created.id}/members`)).status).toBe(200);
+    const invitation = await database.query<{ accepted_at: Date | null; revoked_at: Date | null }>(
+      'SELECT accepted_at, revoked_at FROM workspace_invitations WHERE id = $1',
+      [pending.invitation.id],
+    );
+    expect(invitation.rows[0]).toMatchObject({ accepted_at: null });
+    expect(invitation.rows[0].revoked_at).toBeInstanceOf(Date);
+    expect((await database.query(
+      `SELECT 1 FROM data_lifecycle_local_tenants
+       WHERE installation_id = $1 AND user_id = $2 AND workspace_id = $3`,
+      [installationId, owner.userId, created.id],
+    )).rowCount).toBe(1);
+    expect((await database.query(
+      'SELECT 1 FROM projects WHERE id = $1 AND workspace_id = $2',
+      [retainedProject.rows[0].id, created.id],
+    )).rowCount).toBe(1);
+    expect((await database.query('SELECT 1 FROM projects WHERE id = $1', [deletedProject.rows[0].id])).rowCount).toBe(0);
+    expect((await database.query<{ deleted_at: Date | null; updated_at: Date }>(
+      'SELECT deleted_at, updated_at FROM workspaces WHERE id = $1', [created.id],
+    )).rows[0]).toEqual({ deleted_at: null, updated_at: archivedState.rows[0].updated_at });
+    const audit = await database.query<{ action: string; details: unknown }>(
+      `SELECT action, details FROM audit_logs
+       WHERE workspace_id = $1 AND action = 'workspace.restored'`,
+      [created.id],
+    );
+    expect(audit.rows).toEqual([{ action: 'workspace.restored', details: { operation: 'restore' } }]);
+
+    const doomed = await request(owner, '/api/workspaces', 'POST', { name: 'Permanent Target' })
+      .then((response) => response.json()) as { id: string };
+    expect((await request(owner, `/api/workspaces/${doomed.id}`, 'DELETE', {
+      confirmationName: 'Permanent Target',
+    })).status).toBe(204);
+    expect((await request(owner, `/api/workspaces/${doomed.id}/permanent-deletion`, 'POST', {
+      confirmation: 'DELETE WORKSPACE',
+      confirmationName: 'Permanent Target',
+      currentPassword: password,
+    })).status).toBe(202);
+    expect((await request(owner, `/api/workspaces/${doomed.id}/restore`, 'POST', {
+      confirmation: 'RESTORE WORKSPACE',
+      confirmationName: 'Permanent Target',
+      currentPassword: password,
+    })).status).toBe(409);
+    expect((await request(owner, '/api/workspaces/archived').then((response) => response.json()) as { workspaces: Array<{ id: string }> }).workspaces)
+      .not.toContainEqual(expect.objectContaining({ id: doomed.id }));
   });
 });

@@ -4,6 +4,7 @@ import type { BootstrapResponse } from '@kodex/kodex-api';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PRODUCT_WORKSPACE_RESTORE_CONFIRMATION } from '@kodex/product-contract';
 import { ProductWorkspaceApp } from '../../apps/ui/src/App';
 import type { ProductAuthClient, ProductAuthContext } from '../../apps/ui/src/auth/product-auth';
 import type { KodexClient } from '../../apps/ui/src/client/kodex-client';
@@ -266,5 +267,61 @@ describe('workspace switching UI', () => {
     await act(async () => { root.render(<ProductWorkspaceApp account={viewerOnly} authClient={authClient} loggingOut={false} onLogout={vi.fn()} createClient={createClient} />); await flush(); });
     expect(container.textContent).toContain('실행 가능한 workspace가 없습니다');
     expect(createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not start a newly restored workspace runtime until the user selects it', async () => {
+    const empty: ProductAuthContext = {
+      ...account,
+      defaultWorkspace: undefined,
+      workspaces: [],
+    };
+    const restored: ProductAuthContext = {
+      ...empty,
+      workspaces: [{ id: workspaceA, name: 'Alpha', slug: 'alpha', role: 'owner' }],
+    };
+    const authClient = {
+      archivedWorkspaces: vi.fn().mockResolvedValue({
+        workspaces: [{
+          archivedAt: '2026-09-05T00:00:00.000Z', id: workspaceA, name: 'Alpha', slug: 'alpha',
+        }],
+      }),
+      restoreWorkspace: vi.fn().mockResolvedValue(undefined),
+      me: vi.fn().mockResolvedValue(restored),
+    } as unknown as ProductAuthClient;
+    const createClient = vi.fn(() => fakeClient(Promise.resolve(bootstrap)));
+    const render = (next: ProductAuthContext) => root.render(<ProductWorkspaceApp
+      account={next}
+      authClient={authClient}
+      loggingOut={false}
+      onLogout={vi.fn()}
+      onAccountRefresh={(context) => render(context)}
+      createClient={createClient}
+    />);
+    await act(async () => { render(empty); await flush(); });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Workspace 관리'))?.click();
+      await flush();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === '복원')?.click();
+    });
+    const passwordInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 복원 현재 비밀번호"]')!;
+    const nameInput = container.querySelector<HTMLInputElement>('[aria-label="복원할 Workspace 이름 확인"]')!;
+    const confirmationInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 복원 확인"]')!;
+    await act(async () => {
+      setInput(passwordInput, 'current password');
+      setInput(nameInput, 'Alpha');
+      setInput(confirmationInput, PRODUCT_WORKSPACE_RESTORE_CONFIRMATION);
+    });
+    await act(async () => {
+      confirmationInput.closest('form')!.requestSubmit();
+      await flush();
+    });
+    expect(createClient).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Runtime은 자동으로 시작되지 않았습니다');
+    const start = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Alpha runtime 시작'))!;
+    await act(async () => { start.click(); await flush(); });
+    expect(createClient).toHaveBeenCalledWith(workspaceA);
   });
 });

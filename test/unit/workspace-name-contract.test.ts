@@ -1,5 +1,6 @@
 import {
   isValidProductWorkspaceName,
+  parseProductArchivedWorkspaces,
   PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS,
 } from '@kodex/product-contract';
 import { describe, expect, it } from 'vitest';
@@ -26,5 +27,25 @@ describe('workspace name contract', () => {
     ['😀'.repeat(101), 'more than 400 UTF-8 bytes'],
   ])('rejects %s (%s)', (value) => {
     expect(isValidProductWorkspaceName(value)).toBe(false);
+  });
+
+  it('strictly parses bounded archived workspace pages without lifecycle or secret fields', () => {
+    const workspace = {
+      archivedAt: '2026-09-05T00:00:00.000Z',
+      id: '20000000-0000-4000-8000-000000000001',
+      name: 'Archived Team',
+      slug: 'workspace-archived',
+    };
+    expect(parseProductArchivedWorkspaces({ workspaces: [workspace], nextCursor: 'opaque_cursor' }))
+      .toEqual({ workspaces: [workspace], nextCursor: 'opaque_cursor' });
+    expect(() => parseProductArchivedWorkspaces({
+      workspaces: [{ ...workspace, purgeRequestedAt: null }],
+    })).toThrow();
+    expect(() => parseProductArchivedWorkspaces({
+      workspaces: [{ ...workspace, token: 'secret' }],
+    })).toThrow();
+    expect(() => parseProductArchivedWorkspaces({
+      workspaces: Array.from({ length: 101 }, () => workspace),
+    })).toThrow();
   });
 });

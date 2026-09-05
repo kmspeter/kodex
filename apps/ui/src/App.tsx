@@ -68,6 +68,7 @@ export function ProductWorkspaceApp(props: {
     ids: new Set(),
     userId: props.account.user.id,
   }));
+  const [restoredWithoutRuntime, setRestoredWithoutRuntime] = useState<{ userId: string; workspaceId: string } | null>(null);
   const [transitionTargetId, setTransitionTargetId] = useState<string | null>(null);
   const [managingWorkspace, setManagingWorkspace] = useState(false);
   const [managingSecurity, setManagingSecurity] = useState(false);
@@ -81,7 +82,12 @@ export function ProductWorkspaceApp(props: {
       ? { defaultWorkspace: undefined }
       : {}),
   };
-  const reconciledSelection = reconcileProductRuntimeWorkspace(account, selection);
+  const suppressRestoredFallback = selection === null
+    && restoredWithoutRuntime?.userId === account.user.id
+    && account.workspaces.some((entry) => entry.id === restoredWithoutRuntime.workspaceId);
+  const reconciledSelection = suppressRestoredFallback
+    ? null
+    : reconcileProductRuntimeWorkspace(account, selection);
   const workspace = reconciledSelection
     ? account.workspaces.find((membership) => membership.id === reconciledSelection.workspaceId)
     : undefined;
@@ -107,18 +113,28 @@ export function ProductWorkspaceApp(props: {
     setManagingWorkspace(false);
   }
 
+  function handleWorkspaceRestored(userId: string, workspaceId: string): void {
+    if (!workspace) setRestoredWithoutRuntime({ userId, workspaceId });
+  }
+
   if (!workspace) {
+    const restoredWorkspace = restoredWithoutRuntime?.userId === account.user.id
+      ? account.workspaces.find((entry) => entry.id === restoredWithoutRuntime.workspaceId)
+      : undefined;
     return <><main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="workspace-required-title">
       <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
       <div className="auth-status-icon is-error"><ShieldCheck size={20} /></div>
       <h1 id="workspace-required-title">실행 가능한 workspace가 없습니다</h1>
-      <p>{account.workspaces.length > 0
+      <p>{restoredWorkspace
+        ? `${restoredWorkspace.name} workspace가 복원됐습니다. Runtime은 자동으로 시작되지 않았습니다.`
+        : account.workspaces.length > 0
         ? '현재 membership은 읽기 전용입니다. Kodex runtime을 시작하려면 owner, admin 또는 member 역할이 필요합니다.'
         : '계정은 인증되었지만 활성 membership이 없어 로컬 runtime을 시작하지 않았습니다. Workspace 관리자에게 접근 권한을 요청하세요.'}</p>
-      <button className="auth-submit" type="button" onClick={() => setManagingWorkspace(true)}>새 workspace 만들기</button>
+      {restoredWorkspace && <button className="auth-submit" type="button" onClick={() => { setRestoredWithoutRuntime(null); setSelection({ userId: account.user.id, workspaceId: restoredWorkspace.id }); }}>{restoredWorkspace.name} runtime 시작</button>}
+      <button className={restoredWorkspace ? 'secondary-action' : 'auth-submit'} type="button" onClick={() => setManagingWorkspace(true)}>Workspace 관리</button>
       <button className="secondary-action" type="button" onClick={() => setManagingSecurity(true)}>Security</button>
       <button className="secondary-action" type="button" disabled={props.loggingOut} onClick={() => void props.onLogout()}>로그아웃</button>
-    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
+    </section></main>{managingWorkspace && <WorkspaceManagementDialog account={account} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setRestoredWithoutRuntime(null); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} onRestored={handleWorkspaceRestored} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
   }
   return <><AuthenticatedApp
     key={`${props.account.user.id}:${workspace.id}`}
@@ -135,7 +151,7 @@ export function ProductWorkspaceApp(props: {
     onManageWorkspace={() => setManagingWorkspace(true)}
     onManageSecurity={() => setManagingSecurity(true)}
     workspaceId={workspace.id}
-  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
+  />{managingWorkspace && <WorkspaceManagementDialog account={account} activeWorkspace={workspace} client={props.authClient} onArchived={handleWorkspaceArchived} onClose={() => setManagingWorkspace(false)} onRefresh={(context, selectedWorkspaceId) => { props.onAccountRefresh?.(context); if (selectedWorkspaceId) { setRestoredWithoutRuntime(null); setTransitionTargetId(selectedWorkspaceId); setSelection({ userId: context.user.id, workspaceId: selectedWorkspaceId }); } }} onRestored={handleWorkspaceRestored} />}{managingSecurity && <SecurityDialog client={props.authClient} onClose={() => setManagingSecurity(false)} />}</>;
 }
 
 function AuthenticatedApp(props: {

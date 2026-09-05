@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PRODUCT_WORKSPACE_DELETE_CONFIRMATION } from '@kodex/product-contract';
+import { PRODUCT_WORKSPACE_DELETE_CONFIRMATION, PRODUCT_WORKSPACE_RESTORE_CONFIRMATION } from '@kodex/product-contract';
 import type { ProductAuthClient, ProductAuthContext } from '../../apps/ui/src/auth/product-auth';
 import { WorkspaceManagementDialog } from '../../apps/ui/src/components/WorkspaceManagementDialog';
 
@@ -605,5 +605,65 @@ describe('workspace management dialog', () => {
     });
     expect(onArchived).toHaveBeenCalledWith(ownerId, workspaceId);
     expect(onRefresh).toHaveBeenCalledWith(refreshed);
+  });
+
+  it('restores an owner archived workspace with exact confirmations and clears sensitive inputs', async () => {
+    const archivedWorkspace = {
+      archivedAt: '2026-09-05T00:00:00.000Z',
+      id: createdId,
+      name: 'Archived Team',
+      slug: 'workspace-archived',
+    };
+    const restoreResult = deferred<void>();
+    const restoredContext = {
+      ...base,
+      workspaces: [...base.workspaces, { id: createdId, name: 'Archived Team', slug: 'workspace-archived', role: 'owner' as const }],
+    };
+    const client = {
+      archivedWorkspaces: vi.fn().mockResolvedValue({ workspaces: [archivedWorkspace] }),
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      restoreWorkspace: vi.fn(() => restoreResult.promise),
+      me: vi.fn().mockResolvedValue(restoredContext),
+    } as unknown as ProductAuthClient;
+    const onRefresh = vi.fn();
+    const onRestored = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={onRefresh} onRestored={onRestored} />);
+      await flush();
+    });
+    expect(client.archivedWorkspaces).toHaveBeenCalledWith(expect.objectContaining({ limit: 50 }));
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === '복원')?.click();
+    });
+    const passwordInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 복원 현재 비밀번호"]')!;
+    const nameInput = container.querySelector<HTMLInputElement>('[aria-label="복원할 Workspace 이름 확인"]')!;
+    const confirmationInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 복원 확인"]')!;
+    const form = confirmationInput.closest('form')!;
+    const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    await act(async () => {
+      setInput(passwordInput, 'current password');
+      setInput(nameInput, 'archived team');
+      setInput(confirmationInput, PRODUCT_WORKSPACE_RESTORE_CONFIRMATION);
+    });
+    expect(submit.disabled).toBe(true);
+    await act(async () => { setInput(nameInput, 'Archived Team'); });
+    expect(submit.disabled).toBe(false);
+    await act(async () => { form.requestSubmit(); await Promise.resolve(); });
+    expect(client.restoreWorkspace).toHaveBeenCalledWith(
+      createdId,
+      'current password',
+      'Archived Team',
+      PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
+    );
+    expect(passwordInput.value).toBe('');
+    expect(nameInput.value).toBe('');
+    expect(confirmationInput.value).toBe('');
+    await act(async () => { restoreResult.resolve(undefined); await flush(); });
+    expect(onRestored).toHaveBeenCalledWith(ownerId, createdId);
+    expect(onRefresh).toHaveBeenCalledWith(restoredContext);
+    expect(onRefresh).not.toHaveBeenCalledWith(restoredContext, createdId);
+    expect(container.textContent).toContain('Runtime은 자동으로 시작하지 않습니다');
+    expect(container.textContent).not.toContain('current password');
   });
 });

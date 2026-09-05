@@ -1,5 +1,5 @@
 import type { AuthContext, ProductDatabase, WorkspaceApplication } from '@kodex/product-db';
-import { PostgresWorkspaceRepository, WorkspaceCursorError, WorkspaceOperationError } from '@kodex/product-db';
+import { DataLifecycleError, PostgresWorkspaceRepository, WorkspaceCursorError, WorkspaceOperationError } from '@kodex/product-db';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProductApiConfig } from '../../apps/api/src/config.js';
 import { createCsrfToken, csrfCookieName, sessionCookieName } from '../../apps/api/src/cookies.js';
@@ -37,6 +37,7 @@ function application(): WorkspaceApplication {
     archiveWorkspace: vi.fn(async () => undefined),
     createInvitation: vi.fn(),
     listInvitations: vi.fn(async () => ({ invitations: [] })),
+    listArchivedWorkspaces: vi.fn(async () => ({ workspaces: [] })),
     previewInvitation: vi.fn(),
     revokeInvitation: vi.fn(),
     createWorkspace: vi.fn(async () => ({
@@ -71,6 +72,39 @@ describe('workspace Product API boundary', () => {
     await expect(repository.listMembers(userId, workspaceId, { cursor: 'A'.repeat(80), limit: 50 }))
       .rejects.toBeInstanceOf(WorkspaceCursorError);
     expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('binds archived-workspace keyset cursors to the authenticated account', async () => {
+    const query = vi.fn().mockResolvedValue({
+      rowCount: 2,
+      rows: [
+        {
+          cursor_archived_at: '2026-09-05 01:00:00+00',
+          deleted_at: new Date('2026-09-05T01:00:00.000Z'),
+          id: workspaceId,
+          name: 'Platform',
+          slug: 'workspace-platform',
+        },
+        {
+          cursor_archived_at: '2026-09-05 00:00:00+00',
+          deleted_at: new Date('2026-09-05T00:00:00.000Z'),
+          id: '20000000-0000-4000-8000-000000000002',
+          name: 'Older',
+          slug: 'workspace-older',
+        },
+      ],
+    });
+    const repository = new PostgresWorkspaceRepository(
+      { query } as unknown as ProductDatabase,
+      { cursorSecret: secret },
+    );
+    const page = await repository.listArchivedWorkspaces(userId, { limit: 1 });
+    expect(page.workspaces).toEqual([expect.objectContaining({ id: workspaceId, name: 'Platform' })]);
+    expect(page.nextCursor).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(Buffer.from(page.nextCursor!, 'base64url').toString('utf8')).not.toContain(userId);
+    await expect(repository.listArchivedWorkspaces(memberId, { cursor: page.nextCursor, limit: 1 }))
+      .rejects.toBeInstanceOf(WorkspaceCursorError);
+    expect(query).toHaveBeenCalledOnce();
   });
 
   it('enforces CSRF and strict DTOs while routing only allowlisted workspace data', async () => {
@@ -367,6 +401,73 @@ describe('workspace Product API boundary', () => {
       });
       expect(accepted.status).toBe(200);
       expect(workspaces.acceptInvitation).toHaveBeenCalledWith(userId, inviteToken);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('lists only account-scoped archived workspaces and protects restore with Origin and CSRF', async () => {
+    const workspaces = application();
+    const archivedAt = new Date('2026-09-05T00:00:00.000Z');
+    vi.mocked(workspaces.listArchivedWorkspaces!).mockResolvedValue({
+      workspaces: [{ id: workspaceId, name: 'Platform', slug: 'workspace-platform', archivedAt }],
+      nextCursor: 'archived_next',
+    });
+    const restoreWorkspace = vi.fn(async () => undefined);
+    const lifecycle = {
+      getExportForUser: vi.fn(),
+      getJobForUser: vi.fn(),
+      requestAccountDeletion: vi.fn(),
+      requestUserExport: vi.fn(),
+      requestWorkspaceDeletion: vi.fn(),
+      restoreWorkspace,
+    };
+    const config: ProductApiConfig = {
+      host: '127.0.0.1', port: 0, allowedHosts: new Set(), allowedOrigins: new Set([origin]),
+      cookieSecret: secret, secureCookies: false, sessionTtlMs: 60_000, maxBodyBytes: 4_096,
+      loginRateLimitMaxAttempts: 5, loginRateLimitWindowMs: 900_000, loginRateLimitBlockMs: 900_000,
+    };
+    const server = new ProductApiServer({
+      authenticate: vi.fn(async () => context()), login: vi.fn(), logout: vi.fn(), register: vi.fn(),
+    }, config, undefined, undefined, undefined, workspaces, undefined, undefined, undefined, undefined, lifecycle);
+    const port = await server.listen();
+    const base = `http://127.0.0.1:${port}`;
+    const path = `${base}/api/workspaces/${workspaceId}/restore`;
+    const body = {
+      confirmation: 'RESTORE WORKSPACE',
+      confirmationName: 'Platform',
+      currentPassword: 'current password',
+    };
+    try {
+      const listed = await fetch(`${base}/api/workspaces/archived?limit=1`, { headers: { Cookie: cookie } });
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({
+        workspaces: [{ id: workspaceId, name: 'Platform', slug: 'workspace-platform', archivedAt: archivedAt.toISOString() }],
+        nextCursor: 'archived_next',
+      });
+      expect(workspaces.listArchivedWorkspaces).toHaveBeenCalledWith(userId, { limit: 1 });
+
+      expect((await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf },
+        body: JSON.stringify(body),
+      })).status).toBe(403);
+      expect((await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: origin },
+        body: JSON.stringify(body),
+      })).status).toBe(403);
+      expect(restoreWorkspace).not.toHaveBeenCalled();
+
+      const restored = await fetch(path, { method: 'POST', headers: mutationHeaders(), body: JSON.stringify(body) });
+      expect(restored.status).toBe(204);
+      expect(restoreWorkspace).toHaveBeenCalledWith(userId, context().sessionId, workspaceId, body);
+
+      restoreWorkspace.mockRejectedValueOnce(new DataLifecycleError('forbidden'));
+      const hidden = await fetch(path, { method: 'POST', headers: mutationHeaders(), body: JSON.stringify(body) });
+      expect(hidden.status).toBe(403);
+      expect(await hidden.json()).toEqual({
+        ok: false,
+        error: { code: 'lifecycle_forbidden', message: 'Data lifecycle access is not permitted.' },
+      });
     } finally {
       await server.close();
     }

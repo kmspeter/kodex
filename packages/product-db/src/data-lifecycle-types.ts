@@ -57,6 +57,9 @@ export type DataLifecycleErrorCode =
   | 'legal_hold'
   | 'not_found'
   | 'owned_workspace_conflict'
+  | 'restore_confirmation_mismatch'
+  | 'restore_conflict'
+  | 'restore_unavailable'
   | 'scope_conflict';
 
 export class DataLifecycleError extends Error {

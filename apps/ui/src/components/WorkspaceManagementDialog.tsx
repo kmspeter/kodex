@@ -1,10 +1,11 @@
-import { Archive, Building2, Check, Copy, LoaderCircle, Mail, Pencil, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
+import { Archive, Building2, Check, Copy, LoaderCircle, Mail, Pencil, Plus, RefreshCw, RotateCcw, Trash2, Users, X } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   isValidProductWorkspaceName,
   PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
   PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS,
   PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+  PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
   workspaceInvitationRoles,
   workspaceRoles,
   type WorkspaceInvitationRole,
@@ -14,6 +15,7 @@ import { isAbortError } from '../auth/product-auth';
 import type {
   ProductAuthClient,
   ProductAuthContext,
+  ProductArchivedWorkspace,
   ProductWorkspace,
   ProductWorkspaceInvitation,
   ProductWorkspaceMember,
@@ -28,7 +30,14 @@ export function WorkspaceManagementDialog(props: {
   onArchived?: (userId: string, workspaceId: string) => void;
   onClose: () => void;
   onRefresh: (context: ProductAuthContext, selectedWorkspaceId?: string) => void;
+  onRestored?: (userId: string, workspaceId: string) => void;
 }) {
+  const [archived, setArchived] = useState<ProductArchivedWorkspace[]>([]);
+  const [archivedCursor, setArchivedCursor] = useState<string>();
+  const [archivedInitialLoading, setArchivedInitialLoading] = useState(true);
+  const [archivedInitialError, setArchivedInitialError] = useState('');
+  const [archivedMoreLoading, setArchivedMoreLoading] = useState(false);
+  const [archivedMoreError, setArchivedMoreError] = useState('');
   const [members, setMembers] = useState<ProductWorkspaceMember[]>([]);
   const [invitations, setInvitations] = useState<ProductWorkspaceInvitation[]>([]);
   const [membersCursor, setMembersCursor] = useState<string>();
@@ -54,6 +63,13 @@ export function WorkspaceManagementDialog(props: {
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deletePending, setDeletePending] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<ProductArchivedWorkspace>();
+  const [restorePassword, setRestorePassword] = useState('');
+  const [restoreName, setRestoreName] = useState('');
+  const [restoreConfirmation, setRestoreConfirmation] = useState('');
+  const [restoreError, setRestoreError] = useState('');
+  const [restoreNotice, setRestoreNotice] = useState('');
+  const [restorePending, setRestorePending] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceInvitationRole>('member');
@@ -67,12 +83,13 @@ export function WorkspaceManagementDialog(props: {
   const mountedRef = useRef(true);
   const renameRequestRef = useRef<symbol | null>(null);
   const archiveRequestRef = useRef<symbol | null>(null);
+  const restoreRequestRef = useRef<symbol | null>(null);
   const active = props.activeWorkspace;
   const activeId = active?.id;
   const activeName = active?.name ?? '';
   const accountUserId = props.account.user.id;
   const canManage = active?.role === 'owner' || active?.role === 'admin';
-  const dialogBusy = Boolean(pending) || renamePending || archivePending || deletePending;
+  const dialogBusy = Boolean(pending) || renamePending || archivePending || deletePending || restorePending;
   const createValid = isValidProductWorkspaceName(name);
   const renameValid = isValidProductWorkspaceName(renameName);
 
@@ -151,6 +168,45 @@ export function WorkspaceManagementDialog(props: {
     }
   }, [props.client]);
 
+  const loadArchivedPage = useCallback(async (cursor: string | undefined, scope: number) => {
+    if (typeof props.client.archivedWorkspaces !== 'function') {
+      setArchivedInitialLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    requestsRef.current.add(controller);
+    if (cursor) {
+      setArchivedMoreLoading(true);
+      setArchivedMoreError('');
+    } else {
+      setArchivedInitialLoading(true);
+      setArchivedInitialError('');
+    }
+    try {
+      const page = await props.client.archivedWorkspaces({
+        cursor,
+        limit: PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || scopeRef.current !== scope) return;
+      setArchived((current) => cursor
+        ? [...new Map([...current, ...page.workspaces].map((entry) => [entry.id, entry])).values()]
+        : page.workspaces);
+      setArchivedCursor(page.nextCursor);
+    } catch (nextError) {
+      if (controller.signal.aborted || scopeRef.current !== scope) return;
+      const message = nextError instanceof Error ? nextError.message : String(nextError);
+      if (cursor) setArchivedMoreError(message);
+      else setArchivedInitialError(message);
+    } finally {
+      requestsRef.current.delete(controller);
+      if (!controller.signal.aborted && scopeRef.current === scope) {
+        if (cursor) setArchivedMoreLoading(false);
+        else setArchivedInitialLoading(false);
+      }
+    }
+  }, [props.client]);
+
   const reloadFirstPages = useCallback(async (workspaceId: string, manager: boolean) => {
     abortPageRequests();
     const scope = ++scopeRef.current;
@@ -185,6 +241,14 @@ export function WorkspaceManagementDialog(props: {
     setArchiveError('');
     setArchivePending(false);
     archiveRequestRef.current = null;
+    setRestoreTarget(undefined);
+    setRestorePassword('');
+    setRestoreName('');
+    setRestoreConfirmation('');
+    setRestoreError('');
+    setRestoreNotice('');
+    setRestorePending(false);
+    restoreRequestRef.current = null;
     setEmail('');
     setRole('member');
     if (activeId) void reloadFirstPages(activeId, canManage);
@@ -196,10 +260,11 @@ export function WorkspaceManagementDialog(props: {
       setMembersInitialLoading(false);
       setInvitationsInitialLoading(false);
     }
+    void loadArchivedPage(undefined, scopeRef.current);
     return () => {
       abortPageRequests();
     };
-  }, [abortPageRequests, accountUserId, activeId, activeName, canManage, reloadFirstPages]);
+  }, [abortPageRequests, accountUserId, activeId, activeName, canManage, loadArchivedPage, reloadFirstPages]);
 
   useEffect(() => () => {
     mountedRef.current = false;
@@ -334,6 +399,64 @@ export function WorkspaceManagementDialog(props: {
       if (archiveRequestRef.current === request) {
         archiveRequestRef.current = null;
         if (mountedRef.current && scopeRef.current === scope) setArchivePending(false);
+      }
+    }
+  }
+
+  function selectRestoreTarget(workspace: ProductArchivedWorkspace): void {
+    if (dialogBusy) return;
+    setRestoreTarget(workspace);
+    setRestorePassword('');
+    setRestoreName('');
+    setRestoreConfirmation('');
+    setRestoreError('');
+    setRestoreNotice('');
+  }
+
+  async function restore(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (
+      !restoreTarget
+      || restoreRequestRef.current
+      || restoreName !== restoreTarget.name
+      || restoreConfirmation !== PRODUCT_WORKSPACE_RESTORE_CONFIRMATION
+      || !restorePassword
+    ) return;
+    const scope = scopeRef.current;
+    const workspace = restoreTarget;
+    const userId = accountUserId;
+    const currentPassword = restorePassword;
+    const request = Symbol('restore-workspace');
+    restoreRequestRef.current = request;
+    setRestorePassword('');
+    setRestoreName('');
+    setRestoreConfirmation('');
+    setRestorePending(true);
+    setRestoreError('');
+    setRestoreNotice('');
+    let restored = false;
+    try {
+      await props.client.restoreWorkspace(
+        workspace.id,
+        currentPassword,
+        workspace.name,
+        PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
+      );
+      restored = true;
+      if (!mountedRef.current || scopeRef.current !== scope || props.account.user.id !== userId) return;
+      setArchived((current) => current.filter((entry) => entry.id !== workspace.id));
+      setRestoreTarget(undefined);
+      setRestoreNotice(`${workspace.name} workspace를 복원했습니다. Runtime은 자동으로 시작하지 않습니다.`);
+      props.onRestored?.(userId, workspace.id);
+      await revalidate({ expectedUserId: userId, scope });
+    } catch (nextError) {
+      if (!restored && mountedRef.current && scopeRef.current === scope) {
+        setRestoreError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      if (restoreRequestRef.current === request) {
+        restoreRequestRef.current = null;
+        if (mountedRef.current && scopeRef.current === scope) setRestorePending(false);
       }
     }
   }
@@ -485,6 +608,19 @@ export function WorkspaceManagementDialog(props: {
       <section className="workspace-management-section" aria-labelledby="create-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Building2 size={20} /></div><div><h3 id="create-workspace-title">새 workspace</h3><p>생성자는 owner가 되며, 생성 직후 이 workspace로 runtime을 전환합니다.</p></div></div>
         <form className="workspace-inline-form" onSubmit={(event) => void create(event)}><label>Workspace 이름<input required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} value={name} disabled={Boolean(pending)} onChange={(event) => setName(event.target.value)} placeholder="예: Platform Team" /></label><button className="primary-action" type="submit" disabled={Boolean(pending) || !createValid}>{pending === 'create' ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />} 생성</button></form>
       </section>
+      <section className="workspace-management-section" aria-labelledby="archived-workspaces-title"><div className="dialog-intro"><div className="dialog-icon"><RotateCcw size={20} /></div><div><h3 id="archived-workspaces-title">Archived Workspaces</h3><p>내가 owner이고 soft archive 뒤 application data가 보존된 Workspace만 표시합니다. 영구 삭제가 요청됐거나 lifecycle cleanup 흔적이 있는 대상은 복원할 수 없습니다.</p></div></div>
+        <div className="workspace-member-list" aria-live="polite">
+          {archivedInitialLoading && <p className="dialog-empty"><LoaderCircle className="spin" size={13} /> 보관된 Workspace를 불러오는 중…</p>}
+          {!archivedInitialLoading && archivedInitialError && <div className="workspace-management-error" role="alert"><span>{archivedInitialError}</span><button className="secondary-action" disabled={dialogBusy} onClick={() => void loadArchivedPage(undefined, scopeRef.current)}><RefreshCw size={12} /> 다시 시도</button></div>}
+          {!archivedInitialLoading && !archivedInitialError && archived.length === 0 && <p className="dialog-empty">복원 가능한 보관 Workspace가 없습니다.</p>}
+          {!archivedInitialLoading && archived.map((entry) => <div className="workspace-member-row" key={entry.id}><div><strong>{entry.name}</strong><span>{new Date(entry.archivedAt).toLocaleString()} 보관</span></div><button className="secondary-action" type="button" disabled={dialogBusy} onClick={() => selectRestoreTarget(entry)}><RotateCcw size={12} /> 복원</button></div>)}
+          {!archivedInitialLoading && archivedMoreError && <div className="workspace-management-error" role="alert"><span>{archivedMoreError}</span><button className="secondary-action" disabled={dialogBusy || archivedMoreLoading} onClick={() => void loadArchivedPage(archivedCursor, scopeRef.current)}><RefreshCw size={12} /> 더 보기 다시 시도</button></div>}
+          {!archivedInitialLoading && !archivedMoreError && archivedCursor && <button className="secondary-action workspace-page-more" type="button" disabled={dialogBusy || archivedMoreLoading} onClick={() => void loadArchivedPage(archivedCursor, scopeRef.current)}>{archivedMoreLoading ? <LoaderCircle className="spin" size={12} /> : null} 보관 Workspace 더 보기</button>}
+        </div>
+        {restoreTarget && <form className="security-password-form workspace-recovery-form" onSubmit={(event) => void restore(event)}><p className="workspace-archive-note"><strong>{restoreTarget.name}</strong>의 `deleted_at`만 해제합니다. 취소된 초대, 삭제된 row/file은 재생성하지 않고 runtime도 자동 시작하지 않습니다.</p><label>현재 비밀번호<input aria-label="Workspace 복원 현재 비밀번호" type="password" autoComplete="current-password" value={restorePassword} disabled={dialogBusy} onChange={(event) => setRestorePassword(event.target.value)} /></label><label>현재 Workspace 이름<input aria-label="복원할 Workspace 이름 확인" autoComplete="off" value={restoreName} disabled={dialogBusy} onChange={(event) => setRestoreName(event.target.value)} /></label><label><code>{PRODUCT_WORKSPACE_RESTORE_CONFIRMATION}</code> 입력<input aria-label="Workspace 복원 확인" autoComplete="off" value={restoreConfirmation} disabled={dialogBusy} onChange={(event) => setRestoreConfirmation(event.target.value)} /></label><div className="workspace-recovery-actions"><button className="danger-action" type="submit" disabled={dialogBusy || !restorePassword || restoreName !== restoreTarget.name || restoreConfirmation !== PRODUCT_WORKSPACE_RESTORE_CONFIRMATION}>{restorePending ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />} Workspace 복원</button><button className="secondary-action" type="button" disabled={dialogBusy} onClick={() => { setRestoreTarget(undefined); setRestorePassword(''); setRestoreName(''); setRestoreConfirmation(''); setRestoreError(''); }}>취소</button></div></form>}
+        {restoreError && <div className="workspace-management-error" role="alert"><span>{restoreError}</span></div>}
+        {restoreNotice && <p className="security-notice" role="status">{restoreNotice}</p>}
+      </section>
       {active && canManage && <section className="workspace-management-section" aria-labelledby="rename-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Pencil size={20} /></div><div><h3 id="rename-workspace-title">Workspace 이름 변경</h3><p>표시 이름만 갱신하며 현재 runtime 연결은 다시 시작하지 않습니다.</p></div></div>
         <form className="workspace-inline-form workspace-rename-form" onSubmit={(event) => void rename(event)}><label>새 workspace 이름<input aria-label="새 workspace 이름" required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} value={renameName} disabled={renamePending || archivePending} onChange={(event) => setRenameName(event.target.value)} /></label><button className="primary-action" type="submit" disabled={renamePending || archivePending || !renameValid || renameName === active.name}>{renamePending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />} 이름 변경</button></form>
         {renameError && <div className="workspace-management-error" role="alert"><span>{renameError}</span></div>}
@@ -516,7 +652,7 @@ export function WorkspaceManagementDialog(props: {
         {actionError && <div className="workspace-management-error" role="alert"><span>{actionError}</span></div>}
       </section>}
       {active?.role === 'owner' && <section className="workspace-management-section workspace-danger-section" aria-labelledby="archive-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Archive size={20} /></div><div><h3 id="archive-workspace-title">워크스페이스 보관</h3><p>새 접근은 즉시 차단되고 현재 UI runtime은 즉시 전환되거나 종료됩니다. 다른 곳에서 이미 열린 연결은 세션 만료 또는 최대 5분 주기의 재인가 때 닫힙니다. Database, history, RAG, audit 행과 로컬 tenant 파일은 그대로 유지되며 안전한 삭제가 아닙니다.</p></div></div>
-        <p className="workspace-archive-note">이 단계의 보관은 한 방향이며 self-service 복원 기능이 없습니다. 계속하려면 현재 이름 <strong>{active.name}</strong>을 정확히 입력하세요.</p>
+        <p className="workspace-archive-note">Soft archive 뒤 영구 삭제를 요청하지 않고 보존 경계를 통과한 owner 대상은 위 Archived Workspaces에서 복원할 수 있습니다. 계속하려면 현재 이름 <strong>{active.name}</strong>을 정확히 입력하세요.</p>
         <form className="workspace-inline-form workspace-archive-form" onSubmit={(event) => void archive(event)}><label>현재 workspace 이름 확인<input aria-label="보관할 workspace 이름 확인" required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} autoComplete="off" value={archiveConfirmation} disabled={archivePending || renamePending} onChange={(event) => setArchiveConfirmation(event.target.value)} /></label><button className="danger-action" type="submit" disabled={archivePending || renamePending || archiveConfirmation !== active.name}>{archivePending ? <LoaderCircle className="spin" size={13} /> : <Archive size={13} />} 워크스페이스 보관</button></form>
         {archiveError && <div className="workspace-management-error" role="alert"><span>{archiveError}</span></div>}
       </section>}

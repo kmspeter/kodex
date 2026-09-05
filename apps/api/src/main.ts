@@ -208,6 +208,7 @@ try {
     {
       requestUserExport: (userId, sessionId, value) => lifecycleService.requestUserExport(userId, sessionId, value),
       requestAccountDeletion: (userId, sessionId, value) => lifecycleService.requestAccountDeletion(userId, sessionId, value),
+      restoreWorkspace: (userId, sessionId, workspaceId, value) => lifecycleService.restoreWorkspace(userId, sessionId, workspaceId, value),
       requestWorkspaceDeletion: (userId, sessionId, workspaceId, value) => lifecycleService.requestWorkspaceDeletion(userId, sessionId, workspaceId, value),
       getJobForUser: (userId, jobId) => lifecycleRepository.getJobForUser(userId, jobId),
       getExportForUser: (userId, jobId) => lifecycleRepository.getExportForUser(userId, jobId),

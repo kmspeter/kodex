@@ -478,6 +478,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .security-password-form label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
 .security-password-form input { height: 32px; border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 0 9px; color: var(--ink); font: inherit; }
 .security-password-form > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 8.5px; }
+.workspace-recovery-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
 .security-actions { display: flex; justify-content: flex-end; gap: 7px; margin-bottom: 10px; }
 .security-session-list { display: grid; max-height: 280px; gap: 5px; overflow-y: auto; }
 .security-session-row { display: grid; grid-template-columns: 20px minmax(0,1fr) 30px; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; color: #62625d; }

@@ -8,6 +8,7 @@ export const PRODUCT_WORKSPACE_NAME_MAX_UTF8_BYTES = 400;
 export const PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS = PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS * 2;
 export const PRODUCT_ACCOUNT_DELETE_CONFIRMATION = 'DELETE MY ACCOUNT';
 export const PRODUCT_WORKSPACE_DELETE_CONFIRMATION = 'DELETE WORKSPACE';
+export const PRODUCT_WORKSPACE_RESTORE_CONFIRMATION = 'RESTORE WORKSPACE';
 
 /** Browser-safe workspace-name predicate shared by Product API and UI boundaries. */
 export function isValidProductWorkspaceName(value: unknown): value is string {
@@ -58,6 +59,24 @@ export interface ProductWorkspaceRenameRequestDto {
 /** Exact-name confirmation used only for the one-way soft-archive operation. */
 export interface ProductWorkspaceArchiveRequestDto {
   confirmationName: string;
+}
+
+export interface ProductArchivedWorkspaceDto {
+  archivedAt: string;
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface ProductArchivedWorkspacesDto {
+  workspaces: ProductArchivedWorkspaceDto[];
+  nextCursor?: string;
+}
+
+export interface ProductWorkspaceRestoreRequestDto {
+  confirmation: string;
+  confirmationName: string;
+  currentPassword: string;
 }
 
 export interface ProductWorkspaceMemberDto {
@@ -354,6 +373,37 @@ export function parseProductWorkspace(value: unknown): ProductWorkspaceDto {
     || !workspaceRoles.includes(value.role as WorkspaceRole)
   ) throw new Error('Invalid workspace response.');
   return value as unknown as ProductWorkspaceDto;
+}
+
+export function parseProductArchivedWorkspace(value: unknown): ProductArchivedWorkspaceDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['archivedAt', 'id', 'name', 'slug'])
+    || !isUuid(value.id)
+    || !isValidProductWorkspaceName(value.name)
+    || typeof value.slug !== 'string'
+    || !/^[a-z0-9][a-z0-9-]{0,127}$/u.test(value.slug)
+    || !workspaceDate(value.archivedAt)
+  ) throw new Error('Invalid archived workspace response.');
+  return value as unknown as ProductArchivedWorkspaceDto;
+}
+
+/** Strict owner-only recovery-list parser; rejects role, lifecycle, and secret fields. */
+export function parseProductArchivedWorkspaces(value: unknown): ProductArchivedWorkspacesDto {
+  if (
+    !workspaceRecord(value)
+    || !(
+      exactWorkspaceKeys(value, ['workspaces'])
+      || exactWorkspaceKeys(value, ['nextCursor', 'workspaces'])
+    )
+    || !Array.isArray(value.workspaces)
+    || value.workspaces.length > PRODUCT_WORKSPACE_PAGE_MAX_LIMIT
+    || (Object.hasOwn(value, 'nextCursor') && !workspaceCursor(value.nextCursor))
+  ) throw new Error('Invalid archived workspace list response.');
+  return {
+    workspaces: value.workspaces.map(parseProductArchivedWorkspace),
+    ...(Object.hasOwn(value, 'nextCursor') ? { nextCursor: value.nextCursor as string } : {}),
+  };
 }
 
 export function parseProductWorkspaceMember(value: unknown): ProductWorkspaceMemberDto {

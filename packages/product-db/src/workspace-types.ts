@@ -22,6 +22,18 @@ export interface WorkspaceRecord {
   slug: string;
 }
 
+export interface ArchivedWorkspaceRecord {
+  archivedAt: Date;
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface ArchivedWorkspacePage {
+  nextCursor?: string;
+  workspaces: ArchivedWorkspaceRecord[];
+}
+
 export interface WorkspaceInvitation {
   createdAt: Date;
   createdByUserId: string | null;
@@ -102,6 +114,7 @@ export interface WorkspaceApplication {
   acceptInvitation(actorUserId: string, token: string): Promise<WorkspaceRecord>;
   createInvitation(actorUserId: string, workspaceId: string, email: string, role: WorkspaceInvitationRole): Promise<CreatedWorkspaceInvitation>;
   listInvitations(actorUserId: string, workspaceId: string, options: WorkspacePageOptions): Promise<WorkspaceInvitationPage>;
+  listArchivedWorkspaces?(actorUserId: string, options: WorkspacePageOptions): Promise<ArchivedWorkspacePage>;
   previewInvitation(token: string): Promise<WorkspaceInvitationPreview>;
   renameWorkspace(actorUserId: string, workspaceId: string, name: string): Promise<WorkspaceRecord>;
   revokeInvitation(actorUserId: string, workspaceId: string, invitationId: string): Promise<void>;

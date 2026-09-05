@@ -115,6 +115,12 @@ function safeErrorCode(value: string): void {
   if (!/^[a-z][a-z0-9_]{0,63}$/u.test(value)) throw new Error('Lifecycle error code is invalid.');
 }
 
+function postgresCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : undefined;
+}
+
 async function verifyCredential(client: PoolClient, input: CredentialConfirmation): Promise<void> {
   const result = await client.query<{ password_hash: string }>(
     `SELECT credential.password_hash
@@ -477,6 +483,100 @@ export class PostgresDataLifecycleRepository {
       );
       return job(result.rows[0]);
     });
+  }
+
+  async restoreWorkspace(
+    input: CredentialConfirmation,
+    workspaceId: string,
+    confirmationName: string,
+  ): Promise<void> {
+    requireUuid(workspaceId, 'Workspace ID');
+    try {
+      await this.database.transaction(async (client) => {
+        const workspace = await client.query<{
+          deleted_at: Date | null;
+          name: string;
+          purge_requested_at: Date | null;
+        }>(
+          `SELECT name, deleted_at, purge_requested_at
+           FROM workspaces WHERE id = $1 FOR UPDATE`,
+          [workspaceId],
+        );
+        const current = workspace.rows[0];
+        if (!current) throw new DataLifecycleError('forbidden');
+
+        const membership = await client.query<{ role: string }>(
+          `SELECT role FROM workspace_members
+           WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`,
+          [workspaceId, input.userId],
+        );
+        if (membership.rows[0]?.role !== 'owner') throw new DataLifecycleError('forbidden');
+        await verifyCredential(client, input);
+        if (current.name !== confirmationName) {
+          throw new DataLifecycleError('restore_confirmation_mismatch');
+        }
+        if (!current.deleted_at) throw new DataLifecycleError('restore_conflict');
+        if (current.purge_requested_at) throw new DataLifecycleError('restore_unavailable');
+
+        const lifecycleJobs = await client.query(
+          `SELECT lifecycle_job.id
+           FROM data_lifecycle_jobs lifecycle_job
+           WHERE lifecycle_job.target_workspace_id = $1
+              OR EXISTS (
+                SELECT 1 FROM data_lifecycle_job_workspaces job_workspace
+                WHERE job_workspace.job_id = lifecycle_job.id
+                  AND job_workspace.workspace_id = $1
+              )
+           ORDER BY lifecycle_job.id
+           FOR UPDATE NOWAIT`,
+          [workspaceId],
+        );
+        if (lifecycleJobs.rowCount) throw new DataLifecycleError('restore_unavailable');
+
+        const localTargets = await client.query(
+          `SELECT id FROM data_lifecycle_local_targets
+           WHERE workspace_id = $1 ORDER BY id FOR UPDATE NOWAIT`,
+          [workspaceId],
+        );
+        if (localTargets.rowCount) throw new DataLifecycleError('restore_unavailable');
+
+        const legalHolds = await client.query(
+          `SELECT hold_record.id FROM data_legal_holds hold_record
+           WHERE hold_record.released_at IS NULL AND (
+             (hold_record.target_type = 'workspace' AND hold_record.target_workspace_id = $1)
+             OR
+             (hold_record.target_type = 'user' AND hold_record.target_user_id IN (
+               SELECT member.user_id FROM workspace_members member WHERE member.workspace_id = $1
+               UNION SELECT project.created_by_user_id FROM projects project
+                 WHERE project.workspace_id = $1 AND project.created_by_user_id IS NOT NULL
+               UNION SELECT thread_record.created_by_user_id FROM agent_threads thread_record
+                 WHERE thread_record.workspace_id = $1 AND thread_record.created_by_user_id IS NOT NULL
+               UNION SELECT source.created_by_user_id FROM knowledge_sources source
+                 WHERE source.workspace_id = $1
+             ))
+           )
+           ORDER BY hold_record.id FOR UPDATE NOWAIT`,
+          [workspaceId],
+        );
+        if (legalHolds.rowCount) throw new DataLifecycleError('legal_hold');
+
+        const restored = await client.query(
+          `UPDATE workspaces SET deleted_at = NULL
+           WHERE id = $1 AND deleted_at IS NOT NULL AND purge_requested_at IS NULL`,
+          [workspaceId],
+        );
+        if (restored.rowCount !== 1) throw new DataLifecycleError('restore_conflict');
+        await client.query(
+          `INSERT INTO audit_logs (workspace_id, actor_user_id, action, target_type, target_id, details)
+           VALUES ($1, $2, 'workspace.restored', 'workspace', $1::uuid::text,
+             '{"operation":"restore"}'::jsonb)`,
+          [workspaceId, input.userId],
+        );
+      });
+    } catch (error) {
+      if (postgresCode(error) === '55P03') throw new DataLifecycleError('restore_conflict');
+      throw error;
+    }
   }
 
   async getJobForUser(userId: string, jobId: string): Promise<DataLifecycleJob | undefined> {

@@ -19,6 +19,8 @@ import {
   WorkspaceInvitationError,
   WorkspaceCursorError,
   WorkspaceOperationError,
+  type ArchivedWorkspacePage,
+  type ArchivedWorkspaceRecord,
   type CreatedWorkspaceInvitation,
   type WorkspaceApplication,
   type WorkspaceInvitation,
@@ -49,6 +51,14 @@ interface InvitationRow {
   requested_role: WorkspaceInvitationRole;
   target_email: string;
   workspace_id: string;
+}
+
+interface ArchivedWorkspaceRow {
+  cursor_archived_at: string;
+  deleted_at: Date;
+  id: string;
+  name: string;
+  slug: string;
 }
 
 export const WORKSPACE_INVITATION_TOKEN_BYTES = 32;
@@ -83,7 +93,15 @@ interface InvitationCursorPayload {
   workspaceId: string;
 }
 
-type WorkspaceCursorPayload = InvitationCursorPayload | MemberCursorPayload;
+interface ArchivedWorkspaceCursorPayload {
+  archivedAt: string;
+  id: string;
+  kind: 'archived_workspaces';
+  userId: string;
+  version: 1;
+}
+
+type WorkspaceCursorPayload = ArchivedWorkspaceCursorPayload | InvitationCursorPayload | MemberCursorPayload;
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -115,7 +133,11 @@ class WorkspaceCursorCodec {
     return Buffer.concat([nonce, ciphertext, cipher.getAuthTag()]).toString('base64url');
   }
 
-  decode(value: string | undefined, kind: WorkspaceCursorPayload['kind'], workspaceId: string): WorkspaceCursorPayload | undefined {
+  decode(
+    value: string | undefined,
+    kind: InvitationCursorPayload['kind'] | MemberCursorPayload['kind'],
+    workspaceId: string,
+  ): InvitationCursorPayload | MemberCursorPayload | undefined {
     if (!value) return undefined;
     if (value.length > PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS || !/^[A-Za-z0-9_-]+$/u.test(value)) {
       throw new WorkspaceCursorError();
@@ -148,7 +170,46 @@ class WorkspaceCursorCodec {
         || !isUuid(record.id)
         || !validTimestamp(record[timestampKey])
       ) throw new WorkspaceCursorError();
-      return record as unknown as WorkspaceCursorPayload;
+      return record as unknown as InvitationCursorPayload | MemberCursorPayload;
+    } catch (error) {
+      if (error instanceof WorkspaceCursorError) throw error;
+      throw new WorkspaceCursorError();
+    }
+  }
+
+  decodeArchived(value: string | undefined, userId: string): ArchivedWorkspaceCursorPayload | undefined {
+    if (!value) return undefined;
+    if (value.length > PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+      throw new WorkspaceCursorError();
+    }
+    try {
+      const packed = Buffer.from(value, 'base64url');
+      if (
+        packed.toString('base64url') !== value
+        || packed.length <= CURSOR_NONCE_BYTES + CURSOR_TAG_BYTES
+      ) throw new WorkspaceCursorError();
+      const nonce = packed.subarray(0, CURSOR_NONCE_BYTES);
+      const tag = packed.subarray(packed.length - CURSOR_TAG_BYTES);
+      const decipher = createDecipheriv('aes-256-gcm', this.#key, nonce);
+      decipher.setAAD(CURSOR_AAD);
+      decipher.setAuthTag(tag);
+      const plaintext = Buffer.concat([
+        decipher.update(packed.subarray(CURSOR_NONCE_BYTES, -CURSOR_TAG_BYTES)),
+        decipher.final(),
+      ]).toString('utf8');
+      const parsed = JSON.parse(plaintext) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new WorkspaceCursorError();
+      const record = parsed as Record<string, unknown>;
+      if (
+        !exactKeys(record, ['archivedAt', 'id', 'kind', 'userId', 'version'])
+        || record.version !== 1
+        || record.kind !== 'archived_workspaces'
+        || record.userId !== userId
+        || !isUuid(record.userId)
+        || !isUuid(record.id)
+        || !validTimestamp(record.archivedAt)
+      ) throw new WorkspaceCursorError();
+      return record as unknown as ArchivedWorkspaceCursorPayload;
     } catch (error) {
       if (error instanceof WorkspaceCursorError) throw error;
       throw new WorkspaceCursorError();
@@ -191,6 +252,15 @@ function member(row: MemberRow): WorkspaceMember {
     displayName: row.display_name,
     role: row.role,
     joinedAt: row.joined_at,
+  };
+}
+
+function archivedWorkspace(row: ArchivedWorkspaceRow): ArchivedWorkspaceRecord {
+  return {
+    archivedAt: row.deleted_at,
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
   };
 }
 
@@ -340,6 +410,74 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
         'workspace',
       );
     });
+  }
+
+  async listArchivedWorkspaces(
+    actorUserId: string,
+    options: WorkspacePageOptions,
+  ): Promise<ArchivedWorkspacePage> {
+    assertPageOptions(options);
+    const cursor = this.#cursorCodec.decodeArchived(options.cursor, actorUserId);
+    const result = await this.database.query<ArchivedWorkspaceRow>(
+      `SELECT workspace.id, workspace.name, workspace.slug, workspace.deleted_at,
+              workspace.deleted_at::text AS cursor_archived_at
+       FROM workspaces workspace
+       JOIN workspace_members actor
+         ON actor.workspace_id = workspace.id
+        AND actor.user_id = $1
+        AND actor.role = 'owner'
+       WHERE workspace.deleted_at IS NOT NULL
+         AND workspace.purge_requested_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM data_lifecycle_jobs lifecycle_job
+           WHERE lifecycle_job.target_workspace_id = workspace.id
+              OR EXISTS (
+                SELECT 1 FROM data_lifecycle_job_workspaces job_workspace
+                WHERE job_workspace.job_id = lifecycle_job.id
+                  AND job_workspace.workspace_id = workspace.id
+              )
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM data_lifecycle_local_targets local_target
+           WHERE local_target.workspace_id = workspace.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM data_legal_holds hold_record
+           WHERE hold_record.released_at IS NULL AND (
+             (hold_record.target_type = 'workspace' AND hold_record.target_workspace_id = workspace.id)
+             OR
+             (hold_record.target_type = 'user' AND hold_record.target_user_id IN (
+               SELECT member.user_id FROM workspace_members member WHERE member.workspace_id = workspace.id
+               UNION SELECT project.created_by_user_id FROM projects project
+                 WHERE project.workspace_id = workspace.id AND project.created_by_user_id IS NOT NULL
+               UNION SELECT thread_record.created_by_user_id FROM agent_threads thread_record
+                 WHERE thread_record.workspace_id = workspace.id AND thread_record.created_by_user_id IS NOT NULL
+               UNION SELECT source.created_by_user_id FROM knowledge_sources source
+                 WHERE source.workspace_id = workspace.id
+             ))
+           )
+         )
+         AND ($2::timestamptz IS NULL
+           OR (workspace.deleted_at, workspace.id) < ($2::timestamptz, $3::uuid))
+       ORDER BY workspace.deleted_at DESC, workspace.id DESC
+       LIMIT $4`,
+      [actorUserId, cursor?.archivedAt ?? null, cursor?.id ?? null, options.limit + 1],
+    );
+    const hasMore = result.rows.length > options.limit;
+    const rows = result.rows.slice(0, options.limit);
+    const last = rows.at(-1);
+    return {
+      workspaces: rows.map(archivedWorkspace),
+      ...(hasMore && last ? {
+        nextCursor: this.#cursorCodec.encode({
+          archivedAt: last.cursor_archived_at,
+          id: last.id,
+          kind: 'archived_workspaces',
+          userId: actorUserId,
+          version: 1,
+        }),
+      } : {}),
+    };
   }
 
   async listMembers(

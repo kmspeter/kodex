@@ -36,6 +36,7 @@ import type {
   RagConfig,
   RetrievalResult,
   WorkspaceApplication,
+  ArchivedWorkspaceRecord,
   DataExportArtifact,
   DataLifecycleJob,
   LegalHold,
@@ -119,6 +120,12 @@ export interface DataLifecycleApplication {
   getExportForUser(userId: string, jobId: string): Promise<DataExportArtifact | undefined>;
   getJobForUser(userId: string, jobId: string): Promise<DataLifecycleJob | undefined>;
   requestAccountDeletion(userId: string, currentSessionId: string, value: unknown): Promise<DataLifecycleJob>;
+  restoreWorkspace?(
+    userId: string,
+    currentSessionId: string,
+    workspaceId: string,
+    value: unknown,
+  ): Promise<void>;
   requestUserExport(userId: string, currentSessionId: string, value: unknown): Promise<DataLifecycleJob>;
   requestWorkspaceDeletion(
     userId: string,
@@ -379,9 +386,12 @@ function errorResponse(response: ServerResponse, error: unknown): void {
       export_limit: [409, 'export_limit', 'The export exceeds the configured bounded limit.'],
       forbidden: [403, 'lifecycle_forbidden', 'Data lifecycle access is not permitted.'],
       invalid: [400, 'invalid_lifecycle_request', 'The data lifecycle request is invalid.'],
-      legal_hold: [423, 'legal_hold', 'A legal hold prevents deletion.'],
+      legal_hold: [423, 'legal_hold', 'A legal hold prevents this data lifecycle operation.'],
       not_found: [404, 'not_found', 'The data lifecycle target was not found.'],
       owned_workspace_conflict: [409, 'owned_workspace_conflict', 'Transfer or separately delete workspaces that still have other members.'],
+      restore_confirmation_mismatch: [409, 'restore_confirmation_mismatch', 'Workspace restore confirmation did not match.'],
+      restore_conflict: [409, 'restore_conflict', 'The workspace restore conflicted with its current state.'],
+      restore_unavailable: [409, 'workspace_restore_unavailable', 'The workspace is not eligible for self-service restore.'],
       scope_conflict: [409, 'scope_conflict', 'The stored data scope requires operator repair before deletion.'],
     } as const;
     const [status, code, message] = responses[error.code];
@@ -839,6 +849,18 @@ export class ProductApiServer {
         json(response, 201, publicWorkspace(await application.createWorkspace(context.user.id, input.name)));
         return;
       }
+      if (url.pathname === '/api/workspaces/archived' && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        const page = await this.#listArchivedWorkspaces(
+          context.user.id,
+          workspacePageOptions(url),
+        );
+        json(response, 200, {
+          workspaces: page.workspaces.map(publicArchivedWorkspace),
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        });
+        return;
+      }
       const workspaceMatch = /^\/api\/workspaces\/([^/]+)$/u.exec(url.pathname);
       if (workspaceMatch && request.method === 'PATCH') {
         const { context } = await this.#workspaceMutationContext(request);
@@ -873,6 +895,24 @@ export class ProductApiServer {
           workspaceId,
           await readJsonBody(request, this.config.maxBodyBytes),
         )));
+        return;
+      }
+      const workspaceRestoreMatch = /^\/api\/workspaces\/([^/]+)\/restore$/u.exec(url.pathname);
+      if (workspaceRestoreMatch && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        requireJson(request);
+        const restoreWorkspace = this.#requireLifecycle().restoreWorkspace;
+        if (!restoreWorkspace) {
+          throw new HttpError(503, 'workspace_recovery_unavailable', 'Workspace recovery is temporarily unavailable.');
+        }
+        await restoreWorkspace(
+          context.user.id,
+          context.sessionId,
+          decodeUuidPath(workspaceRestoreMatch[1]),
+          await readJsonBody(request, this.config.maxBodyBytes),
+        );
+        response.statusCode = 204;
+        response.end();
         return;
       }
       const workspaceInvitationsMatch = /^\/api\/workspaces\/([^/]+)\/invitations$/u.exec(url.pathname);
@@ -1048,6 +1088,18 @@ export class ProductApiServer {
   #requireWorkspaces(): WorkspaceApplication {
     if (!this.workspaces) throw new HttpError(503, 'workspace_unavailable', 'Workspace management is temporarily unavailable.');
     return this.workspaces;
+  }
+
+  #listArchivedWorkspaces(
+    actorUserId: string,
+    options: { cursor?: string; limit: number },
+  ): ReturnType<NonNullable<WorkspaceApplication['listArchivedWorkspaces']>> {
+    const workspaces = this.#requireWorkspaces();
+    const list = workspaces.listArchivedWorkspaces;
+    if (!list) {
+      throw new HttpError(503, 'workspace_recovery_unavailable', 'Workspace recovery is temporarily unavailable.');
+    }
+    return list.call(workspaces, actorUserId, options);
   }
 
   #requireLifecycle(): DataLifecycleApplication {
@@ -1503,6 +1555,15 @@ function validateWorkspaceRoleUpdate(value: unknown): { role: WorkspaceRole } {
 
 function publicWorkspace(workspace: { id: string; name: string; role: WorkspaceRole; slug: string }): Record<string, unknown> {
   return { id: workspace.id, name: workspace.name, role: workspace.role, slug: workspace.slug };
+}
+
+function publicArchivedWorkspace(workspace: ArchivedWorkspaceRecord): Record<string, unknown> {
+  return {
+    archivedAt: workspace.archivedAt.toISOString(),
+    id: workspace.id,
+    name: workspace.name,
+    slug: workspace.slug,
+  };
 }
 
 function publicWorkspaceMember(entry: {

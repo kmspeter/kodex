@@ -687,4 +687,45 @@ describe('product auth browser contract', () => {
     await malformed.me();
     await expect(malformed.requestDataExport('current password')).rejects.toMatchObject({ kind: 'invalid-response' });
   });
+
+  it('parses bounded archived pages and keeps restore credentials in one CSRF request body', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const archived = {
+      archivedAt: '2026-09-05T00:00:00.000Z',
+      id: workspaceId,
+      name: 'Archived Team',
+      slug: 'workspace-archived',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse({ workspaces: [archived], nextCursor: 'archived_next' }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await client.me();
+    await expect(client.archivedWorkspaces({ limit: 25 })).resolves.toEqual({
+      workspaces: [archived], nextCursor: 'archived_next',
+    });
+    await client.restoreWorkspace(workspaceId, 'current password', 'Archived Team', 'RESTORE WORKSPACE');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://127.0.0.1:47832/api/workspaces/archived?limit=25');
+    expect(fetchMock.mock.calls[2][0]).toBe(`http://127.0.0.1:47832/api/workspaces/${workspaceId}/restore`);
+    expect(new Headers(fetchMock.mock.calls[2][1].headers).get('X-CSRF-Token')).toBe(csrfToken);
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1].body))).toEqual({
+      confirmation: 'RESTORE WORKSPACE',
+      confirmationName: 'Archived Team',
+      currentPassword: 'current password',
+    });
+
+    const malformed = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse(authBody()))
+        .mockResolvedValueOnce(jsonResponse({ workspaces: [{ ...archived, lifecycleStatus: 'running' }] })),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await malformed.me();
+    await expect(malformed.archivedWorkspaces()).rejects.toMatchObject({ kind: 'invalid-response' });
+  });
 });

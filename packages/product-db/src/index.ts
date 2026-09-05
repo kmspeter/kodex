@@ -212,6 +212,8 @@ export {
   WorkspaceInvitationError,
   WorkspaceOperationError,
   type CreatedWorkspaceInvitation,
+  type ArchivedWorkspacePage,
+  type ArchivedWorkspaceRecord,
   type WorkspaceApplication,
   type WorkspaceInvitation,
   type WorkspaceInvitationPage,
@@ -231,6 +233,7 @@ export {
   ACCOUNT_DELETE_CONFIRMATION,
   DataLifecycleService,
   WORKSPACE_DELETE_CONFIRMATION,
+  WORKSPACE_RESTORE_CONFIRMATION,
   type DataLifecycleRequestRepository,
 } from './data-lifecycle-service.js';
 export {

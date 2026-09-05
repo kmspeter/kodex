@@ -1,6 +1,7 @@
 import {
   PRODUCT_ACCOUNT_DELETE_CONFIRMATION,
   PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+  PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
   parseProductDataLifecycleJob,
 } from '@kodex/product-contract';
 import {
@@ -46,6 +47,9 @@ function service() {
       expect(await input.verifyCurrentPassword('stored-hash')).toBe(true);
       return lifecycleJob('workspace_delete');
     }),
+    restoreWorkspace: vi.fn(async (input) => {
+      expect(await input.verifyCurrentPassword('stored-hash')).toBe(true);
+    }),
   };
   const hasher: PasswordHasher = {
     hash: vi.fn(async () => 'unused'),
@@ -68,9 +72,19 @@ describe('data lifecycle request and browser boundaries', () => {
       confirmationName: 'Personal Workspace',
       currentPassword: 'current password',
     });
+    await lifecycle.restoreWorkspace(userId, sessionId, workspaceId, {
+      confirmation: PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
+      confirmationName: 'Personal Workspace',
+      currentPassword: 'current password',
+    });
     expect(repository.requestUserExport).toHaveBeenCalledOnce();
     expect(repository.requestAccountDeletion).toHaveBeenCalledOnce();
     expect(repository.requestWorkspaceDeletion).toHaveBeenCalledWith(
+      expect.objectContaining({ currentSessionId: sessionId, userId }),
+      workspaceId,
+      'Personal Workspace',
+    );
+    expect(repository.restoreWorkspace).toHaveBeenCalledWith(
       expect.objectContaining({ currentSessionId: sessionId, userId }),
       workspaceId,
       'Personal Workspace',
@@ -84,6 +98,16 @@ describe('data lifecycle request and browser boundaries', () => {
     })).rejects.toMatchObject({ code: 'confirmation_mismatch' });
     await expect(lifecycle.requestWorkspaceDeletion(userId, sessionId, workspaceId, {
       confirmation: PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+      confirmationName: 'Personal Workspace',
+      currentPassword: 'short',
+    })).rejects.toMatchObject({ code: 'invalid' });
+    await expect(lifecycle.restoreWorkspace(userId, sessionId, workspaceId, {
+      confirmation: 'restore workspace',
+      confirmationName: 'Personal Workspace',
+      currentPassword: 'current password',
+    })).rejects.toMatchObject({ code: 'restore_confirmation_mismatch' });
+    await expect(lifecycle.restoreWorkspace(userId, sessionId, workspaceId, {
+      confirmation: PRODUCT_WORKSPACE_RESTORE_CONFIRMATION,
       confirmationName: 'Personal Workspace',
       currentPassword: 'short',
     })).rejects.toMatchObject({ code: 'invalid' });
