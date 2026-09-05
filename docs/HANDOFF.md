@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 33f3a96d02fb70c93cc65a6bf79b9c411f9915c6..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only 87abf7d121a5cce1b9239c8a2c07b5261a20310b..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,21 +28,21 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `33f3a96d02fb70c93cc65a6bf79b9c411f9915c6` |
-| 제품 기준 commit | `fix: restore pinned Codex source fixtures` |
-| 완료 범위 | Phase 1~28 |
-| 다음 핵심 기능 | 통합 threat model과 release/security acceptance |
+| 제품 기준 HEAD | `87abf7d121a5cce1b9239c8a2c07b5261a20310b` |
+| 제품 기준 commit | `feat: enforce phase 29 security boundaries` |
+| 완료 범위 | Phase 1~29 |
+| 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 29에서 종료 |
 
-Phase 1~28에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~29에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
-forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성과 durable data
-lifecycle까지 구현했다. 상세 계약은
+forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
+lifecycle와 통합 security/provenance/least-privilege gate까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0027](adr/0027-operational-data-lifecycle.md)까지가 기준이다.
+[ADR 0028](adr/0028-integrated-security-boundaries.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -58,6 +58,8 @@ Electron / React renderer
   provider key와 DB 연결 정보가 renderer payload, Web Storage, bundle 또는 log에 들어가면 안 된다.
 - `apps/api`는 별도 process/port에서 인증, workspace, Saved DB History, Knowledge API를 제공한다.
   Local Server bootstrap secret이나 Codex runtime을 공유하지 않는다.
+- Production Product API와 Local Server는 application DB 역할로 migration을 실행하지 않는다. 별도 migration
+  job만 database-scoped owner 역할을 사용하며 broad cluster privilege나 동일 역할 구성은 startup 전에 거부한다.
 - `apps/local-server`는 매 요청에서 Product session과 active workspace membership을 다시 확인한다.
   runtime과 writable data root는 인증된 `(userId, workspaceId)`마다 분리하며 UUID/path escape를 다시
   검증한다. 같은 workspace의 다른 사용자도 `CODEX_HOME`, outbox와 raw runtime을 공유하지 않는다.
@@ -266,11 +268,46 @@ Ignore된 이 여섯 파일은 기존 manifest SHA-256과 모두 일치한 뒤 �
 build metadata와 기존 vendor file은 바꾸지 않았으며 main에서 `codex:verify-source`가 6,687개 전체를 통과했다.
 남은 검증 blocker는 sealed `bin/codex.exe`와 이를 재현할 pinned Rust 1.95/MSVC VCTools toolchain이다.
 
+### Phase 29 — 통합 threat model, provenance, secret scan과 최소 권한
+
+Phase 29의 원본 결정은 [ADR 0028](adr/0028-integrated-security-boundaries.md), 전체 경계는
+[threat model](security/threat-model.md), 운영 절차는 [security/release runbook](operations/security-release.md)이다.
+
+- `security:validate`는 npm lockfile v3의 root/workspace/registry integrity closure, strict Codex pin/vendor
+  manifest/build/protocol metadata, Git tracked file의 bounded secret scan, Compose/Docker/Local 최소 권한 계약을
+  하나의 fail-closed gate로 검증한다. Secret 후보 값은 출력하지 않고 path/rule/line/fingerprint만 기록하며
+  allowlist는 exact path/rule/fingerprint/reason이고 stale entry도 실패한다.
+- Codex build metadata v2는 binary/vendor manifest/Cargo lock SHA-256을 연결한다. Runtime bundle과 release create는
+  binary가 있는 완전한 repository provenance를 요구하며 package/Cargo lock과 build metadata를 runtime에 넣고
+  source/runtime equality 및 release-input secret scan을 통과해야 한다.
+- Production API/Local startup은 application 역할의 broad attribute, DB/schema owner/CREATE, table privilege와
+  read-only migration ledger를 검사하고 migration을 실행하지 않는다. 별도 migration CLI만 database-scoped owner
+  역할을 사용하며 application 역할과 같거나 superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS이면 실패한다.
+  Development/test single-role 흐름은 비운영 profile, production 모양 acceptance는 explicit flag와 loopback
+  disposable DB로 격리했다.
+- Compose는 bootstrap/admin, migration, application credential을 분리하고 API/migration container에 non-root,
+  read-only root filesystem, tmpfs, no-new-privileges와 cap-drop을 적용한다. 기존 volume에는 init script가 자동
+  재실행되지 않으므로 runbook에 따른 별도 role provision이 필요하다.
+- Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server/approval 경계는
+  변경하지 않았다. 기존 migration `0001~0012`, vendored source, generated protocol, upstream manifest/pin과
+  `package-lock.json`, 현재 `bin/codex-build.json`은 수정하지 않았다.
+
+2026-09-05에 제품 commit `87abf7d121a5cce1b9239c8a2c07b5261a20310b`의 동일 staged content 대상으로
+`npm run security:validate`가 통과했다. 결과는 tracked 7,996 files, vendor 6,687 files, npm dependency 392,
+workspace 9, deployment contract 3이며 `binaryPresent=false`를 명시했다. `scripts/lib/security-validation.mjs`,
+`scripts/security-validate.mjs`, `scripts/build-runtime.mjs`, `scripts/kodex-release.mjs`의 `node --check`와
+`git diff --check`도 통과했다. 이 shell의 Node는 project 최소 버전보다 낮은 `v20.19.4`였으므로 메인 환경의
+Node 22.13+에서 같은 gate를 다시 실행해야 한다.
+
+이 worktree에는 `node_modules`가 없어 `npm run test:security`는 `vitest` executable 부재로 시작 전에 실패했다.
+같은 이유로 typecheck와 lint는 실행하지 않았다. 사용자 지시에 따라 `npm run build`, `codex:build`, runtime/
+release/installer 생성, Docker/Electron/full-stack, Rust/MSVC 설치는 실행하지 않았다. `bin/codex.exe`가 없으므로
+binary-required runtime/release provenance gate도 실행하지 않았으며 누락을 pass로 기록하지 않는다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
-   least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
-   acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
+1. **P1 — Phase 29 변경을 통합 검증한다.** 메인 worktree의 설치된 의존성으로 `test:security`, typecheck와 lint를
+   실행하고 production 역할 fixture에서 migration/application privilege contract를 실제 PostgreSQL로 검증한다.
 2. **P1 — 현재 checkout의 binary 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
@@ -285,6 +322,8 @@ npm install
 npm run dev
 
 npm run codex:verify-source
+npm run security:validate
+npm run test:security
 npm run typecheck
 npm run lint
 npm test
