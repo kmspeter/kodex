@@ -129,7 +129,7 @@ try {
       windowMs: config.loginRateLimitWindowMs,
       blockMs: config.loginRateLimitBlockMs,
     }),
-    requireEmailVerification: Boolean(emailDeliveryConfig),
+    requireEmailVerification: true,
   });
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   const passwordReset = passwordResetConfig
@@ -141,12 +141,10 @@ try {
       { ttlMs: passwordResetConfig.ttlMs },
     )
     : undefined;
-  const emailVerification = emailDeliveryConfig
-    ? new EmailVerificationService(
-      new PostgresEmailVerificationRepository(database),
-      abuseRateLimiter,
-    )
-    : undefined;
+  const emailVerification = new EmailVerificationService(
+    new PostgresEmailVerificationRepository(database),
+    abuseRateLimiter,
+  );
   emailDeliveryWorker = emailDeliveryConfig
     ? new EmailDeliveryWorker(
       new PostgresEmailDeliveryRepository(database),

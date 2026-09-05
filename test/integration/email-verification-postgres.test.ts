@@ -187,6 +187,12 @@ it(`verifies a new account once and delivers invitation links without renderer t
   const pending = await registration.json() as { csrfToken: string; email: string; status: string };
   expect(pending).toEqual({ csrfToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u), email, status: 'verification_pending' });
   expect((await fetch(`${apiBase}/api/auth/me`, { headers: { Cookie: cookie } })).status).toBe(401);
+  const beforeDelivery = await database.query<{ jobs: number; requests: number }>(
+    `SELECT
+       (SELECT count(*)::int FROM email_delivery_jobs WHERE kind = 'email_verification') AS jobs,
+       (SELECT count(*)::int FROM email_verification_requests) AS requests`,
+  );
+  expect(beforeDelivery.rows[0]).toEqual({ jobs: 1, requests: 0 });
 
   await worker.runOnce();
   expect(deliveries[0]).toMatchObject({ kind: 'email_verification', email });

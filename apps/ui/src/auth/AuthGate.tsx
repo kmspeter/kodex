@@ -568,7 +568,7 @@ function EmailVerificationPending(props: {
   pending: ProductVerificationPending;
 }) {
   const [busy, setBusy] = useState<'check' | 'resend' | ''>('');
-  const [message, setMessage] = useState('확인 링크를 보냈습니다. 이메일에서 링크를 연 뒤 상태를 확인하세요.');
+  const [message, setMessage] = useState('확인 이메일 전달을 요청했습니다. 링크를 받은 뒤 상태를 확인하세요.');
   const [error, setError] = useState('');
 
   async function check(): Promise<void> {
