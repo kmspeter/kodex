@@ -32,6 +32,8 @@ process.stdout.write(`${JSON.stringify({
   dependencyCount: provenance.dependencyCount,
   databaseRecoveryDocumentContractCount: databaseRecovery.documentContractCount,
   databaseRecoveryPolicyFormatVersion: databaseRecovery.policyFormatVersion,
+  databaseRecoveryReceiptFormatVersion: databaseRecovery.receiptFormatVersion,
+  databaseRecoverySchemaContractCount: databaseRecovery.schemaContractCount,
   deploymentContractCount: deployment.contractCount,
   releaseInputFileCount: releaseInput?.fileCount ?? 0,
   releaseTrustStoreKeyCount: releaseTrustStore.keyCount,

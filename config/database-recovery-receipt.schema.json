@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/database-recovery-drill-receipt-v1.json",
+  "title": "Kodex managed PostgreSQL recovery drill receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "performedAt",
+    "resultCode",
+    "policyDigest",
+    "artifactSignature",
+    "objectives",
+    "protections"
+  ],
+  "properties": {
+    "format": { "const": "kodex-database-recovery-drill-receipt" },
+    "formatVersion": { "const": 1 },
+    "performedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "resultCode": { "enum": ["control-failed", "failed", "passed", "rpo-missed", "rto-missed"] },
+    "policyDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "artifactSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "trustRef", "trustVersion", "keyId", "signature"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "trustRef": { "$ref": "#/$defs/trustReference" },
+        "trustVersion": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        "signature": {
+          "type": "string",
+          "minLength": 88,
+          "maxLength": 88,
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        }
+      }
+    },
+    "objectives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rpoMet", "rtoMet", "observedRecoveryPointAgeMinutes", "observedRecoveryTimeMinutes"],
+      "properties": {
+        "rpoMet": { "type": "boolean" },
+        "rtoMet": { "type": "boolean" },
+        "observedRecoveryPointAgeMinutes": { "type": "integer", "minimum": 0, "maximum": 10080 },
+        "observedRecoveryTimeMinutes": { "type": "integer", "minimum": 0, "maximum": 10080 }
+      }
+    },
+    "protections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "walArchiveVerified",
+        "baseBackupVerified",
+        "replicaVerified",
+        "snapshotVerified",
+        "legalHoldPropagationVerified",
+        "physicalDeletionBoundVerified"
+      ],
+      "properties": {
+        "walArchiveVerified": { "type": "boolean" },
+        "baseBackupVerified": { "type": "boolean" },
+        "replicaVerified": { "type": "boolean" },
+        "snapshotVerified": { "type": "boolean" },
+        "legalHoldPropagationVerified": { "type": "boolean" },
+        "physicalDeletionBoundVerified": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "trustReference": {
+      "type": "string",
+      "pattern": "^trustref:[a-z0-9][a-z0-9.-]{2,63}$",
+      "not": { "pattern": "(?:access[-.]?key|api[-.]?key|credential|password|private[-.]?key|secret|sk-|token)" }
+    }
+  }
+}

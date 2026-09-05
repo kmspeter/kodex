@@ -1,15 +1,22 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  signEd25519Payload,
+  verifyTrustedEd25519Payload,
+} from './release-signature.mjs';
 
 export const DATABASE_RECOVERY_POLICY_FORMAT_VERSION = 1;
 export const DATABASE_RECOVERY_RECEIPT_FORMAT_VERSION = 1;
+export const DATABASE_RECOVERY_RECEIPT_SIGNATURE_DOMAIN = 'kodex-database-recovery-drill-receipt-signature-v1';
 
 const POLICY_FORMAT = 'kodex-database-recovery-policy';
 const RECEIPT_FORMAT = 'kodex-database-recovery-drill-receipt';
 const MAX_POLICY_BYTES = 64 * 1024;
 const MAX_RECEIPT_BYTES = 32 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/u;
+const KEY_ID = /^[a-z0-9](?:[a-z0-9._-]{0,63})$/u;
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const REFERENCE = /^(?:keyref|opsref|trustref):[a-z0-9][a-z0-9.-]{2,63}$/u;
 const FORBIDDEN_REFERENCE_TEXT = /(?:access[-.]?key|api[-.]?key|credential|password|private[-.]?key|secret|sk-|token)/u;
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -71,6 +78,13 @@ function parseCanonicalTimestamp(value, code) {
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) fail(code);
   return milliseconds;
+}
+
+function canonicalSignatureBytes(value) {
+  if (typeof value !== 'string' || value.length > 128 || !BASE64.test(value)) fail('receipt_contract_invalid');
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.length !== 64 || bytes.toString('base64') !== value) fail('receipt_contract_invalid');
+  return bytes;
 }
 
 async function readBoundedJson(filename, maximumBytes, code) {
@@ -304,7 +318,7 @@ export async function readDatabaseRecoveryPolicy(filename) {
   return parseDatabaseRecoveryPolicy(await readBoundedJson(path.resolve(filename), MAX_POLICY_BYTES, 'policy_input_invalid'));
 }
 
-function parseReceiptContract(value) {
+function parseReceiptContract(value, signatureMode = 'required') {
   if (
     !exactKeys(value, [
       'artifactSignature', 'format', 'formatVersion', 'objectives', 'performedAt', 'policyDigest', 'protections', 'resultCode',
@@ -315,13 +329,18 @@ function parseReceiptContract(value) {
     || !RESULT_CODES.includes(value.resultCode)
   ) fail('receipt_contract_invalid');
   parseCanonicalTimestamp(value.performedAt, 'receipt_contract_invalid');
+  const artifactSignatureKeys = signatureMode === 'absent'
+    ? ['algorithm', 'keyId', 'trustRef', 'trustVersion']
+    : ['algorithm', 'keyId', 'signature', 'trustRef', 'trustVersion'];
   if (
-    !exactKeys(value.artifactSignature, ['algorithm', 'trustRef', 'trustVersion', 'verified'])
+    !exactKeys(value.artifactSignature, artifactSignatureKeys)
     || value.artifactSignature.algorithm !== 'Ed25519'
     || !reference(value.artifactSignature.trustRef, 'trustref')
     || !integer(value.artifactSignature.trustVersion, 1, 2_147_483_647)
-    || typeof value.artifactSignature.verified !== 'boolean'
+    || typeof value.artifactSignature.keyId !== 'string'
+    || !KEY_ID.test(value.artifactSignature.keyId)
   ) fail('receipt_contract_invalid');
+  if (signatureMode === 'required') canonicalSignatureBytes(value.artifactSignature.signature).fill(0);
   if (
     !exactKeys(value.objectives, ['observedRecoveryPointAgeMinutes', 'observedRecoveryTimeMinutes', 'rpoMet', 'rtoMet'])
     || !integer(value.objectives.observedRecoveryPointAgeMinutes, 0, 10_080)
@@ -337,6 +356,53 @@ function parseReceiptContract(value) {
     || Object.values(value.protections).some((entry) => typeof entry !== 'boolean')
   ) fail('receipt_contract_invalid');
   return value;
+}
+
+function receiptSigningFields(value) {
+  return {
+    artifactSignature: {
+      algorithm: value.artifactSignature.algorithm,
+      keyId: value.artifactSignature.keyId,
+      trustRef: value.artifactSignature.trustRef,
+      trustVersion: value.artifactSignature.trustVersion,
+    },
+    format: value.format,
+    formatVersion: value.formatVersion,
+    objectives: value.objectives,
+    performedAt: value.performedAt,
+    policyDigest: value.policyDigest,
+    protections: value.protections,
+    resultCode: value.resultCode,
+  };
+}
+
+export function databaseRecoveryReceiptSigningPayload(value) {
+  const hasSignature = isRecord(value?.artifactSignature)
+    && Object.hasOwn(value.artifactSignature, 'signature');
+  parseReceiptContract(value, hasSignature ? 'required' : 'absent');
+  return Buffer.from(canonicalDatabaseRecoveryJson({
+    domain: DATABASE_RECOVERY_RECEIPT_SIGNATURE_DOMAIN,
+    receipt: receiptSigningFields(value),
+  }), 'utf8');
+}
+
+export function signDatabaseRecoveryReceipt(unsignedReceipt, privateKeyBytes) {
+  parseReceiptContract(unsignedReceipt, 'absent');
+  if (!(privateKeyBytes instanceof Uint8Array) || privateKeyBytes.byteLength < 1) fail('receipt_signing_key_invalid');
+  const payload = databaseRecoveryReceiptSigningPayload(unsignedReceipt);
+  let signature;
+  try {
+    signature = signEd25519Payload(payload, privateKeyBytes).toString('base64');
+  } catch {
+    fail('receipt_signing_key_invalid');
+  }
+  return {
+    ...unsignedReceipt,
+    artifactSignature: {
+      ...unsignedReceipt.artifactSignature,
+      signature,
+    },
+  };
 }
 
 export function parseDatabaseRecoveryReceipt(value) {
@@ -371,21 +437,45 @@ function ageBucket(ageMilliseconds) {
   return '90d-or-more';
 }
 
-export function validateDatabaseRecoveryReceipt(parsedPolicy, parsedReceipt, evaluatedAt) {
+function mapReceiptSignatureFailure(error) {
+  if (error?.message === 'Signature key is not present in the trust store.') fail('receipt_key_untrusted');
+  if (error?.message === 'Signature key is revoked.') fail('receipt_key_revoked');
+  if (error?.message === 'Ed25519 signature verification failed.') fail('receipt_signature_invalid');
+  fail('receipt_trust_store_invalid');
+}
+
+export async function validateDatabaseRecoveryReceipt(parsedPolicy, parsedReceipt, evaluatedAt, trustStorePath) {
   assertPromotionPolicy(parsedPolicy);
   if (!isRecord(parsedReceipt) || !exactKeys(parsedReceipt, ['receipt', 'receiptDigest'])) fail('receipt_contract_invalid');
   const verifiedReceipt = parseDatabaseRecoveryReceipt(parsedReceipt.receipt);
   if (parsedReceipt.receiptDigest !== verifiedReceipt.receiptDigest) fail('receipt_contract_invalid');
+  if (typeof trustStorePath !== 'string' || !path.isAbsolute(trustStorePath)) fail('receipt_trust_store_invalid');
   const atMilliseconds = parseCanonicalTimestamp(evaluatedAt, 'evaluation_time_invalid');
   const receipt = parsedReceipt.receipt;
   const performedMilliseconds = parseCanonicalTimestamp(receipt.performedAt, 'receipt_contract_invalid');
+  let trust;
+  const signature = canonicalSignatureBytes(receipt.artifactSignature.signature);
+  try {
+    trust = await verifyTrustedEd25519Payload({
+      keyId: receipt.artifactSignature.keyId,
+      payload: databaseRecoveryReceiptSigningPayload(receipt),
+      signature,
+      trustStorePath,
+    });
+  } catch (error) {
+    mapReceiptSignatureFailure(error);
+  } finally {
+    signature.fill(0);
+  }
+  if (
+    trust.storeVersion !== receipt.artifactSignature.trustVersion
+    || trust.storeVersion < parsedPolicy.policy.restoreDrill.trustVersionMinimum
+  ) fail('receipt_trust_version_mismatch');
+  if (receipt.artifactSignature.trustRef !== parsedPolicy.policy.rotation.artifactTrustRef) {
+    fail('receipt_trust_reference_mismatch');
+  }
   if (receipt.policyDigest !== parsedPolicy.policyDigest) fail('receipt_policy_mismatch');
   if (receipt.resultCode !== 'passed') fail('receipt_failed');
-  if (
-    receipt.artifactSignature.verified !== true
-    || receipt.artifactSignature.trustRef !== parsedPolicy.policy.rotation.artifactTrustRef
-    || receipt.artifactSignature.trustVersion < parsedPolicy.policy.restoreDrill.trustVersionMinimum
-  ) fail('receipt_trust_rejected');
   if (
     receipt.objectives.rpoMet !== true
     || receipt.objectives.rtoMet !== true
@@ -473,12 +563,13 @@ export function databaseRecoveryStatusResult(parsedPolicy, validation) {
 }
 
 export const DATABASE_RECOVERY_POLICY_SCHEMA_SHA256 = '30c3f2b59d7e3494cb7119b9d18d14a8c3b289e8634e75a96916baa1036f1b79';
+export const DATABASE_RECOVERY_RECEIPT_SCHEMA_SHA256 = 'ae68e57b9b6d17075290daa4cfbbd9d1ff81fc9c8d4d7e52503852e72860489f';
 
 const DOCUMENT_CONTRACTS = [
-  ['README.md', ['database-recovery-policy.json', 'recovery:validate', 'database-recovery.md']],
+  ['README.md', ['database-recovery-policy.json', 'database-recovery-receipt.schema.json', 'recovery:validate', 'database-recovery.md']],
   ['docs/HANDOFF.md', ['Phase 35', 'recovery:validate', 'provider drill']],
   ['docs/adr/0034-managed-postgresql-recovery-policy.md', ['Phase 35', 'validate-only', 'payload-free']],
-  ['docs/operations/database-recovery.md', ['recovery:validate', 'receipt-validate', 'provider drill']],
+  ['docs/operations/database-recovery.md', ['--trust-store', 'recovery:validate', 'receipt-validate', 'provider drill']],
   ['docs/operations/backup-restore.md', ['database-recovery.md']],
   ['docs/operations/data-lifecycle.md', ['database-recovery.md']],
   ['docs/operations/deployment-upgrade.md', ['recovery:validate']],
@@ -488,26 +579,28 @@ const DOCUMENT_CONTRACTS = [
 export async function verifyDatabaseRecoveryRepositoryContracts(root) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) fail('repository_contract_invalid');
   const policyPath = path.join(root, 'config', 'database-recovery-policy.json');
-  const schemaPath = path.join(root, 'config', 'database-recovery-policy.schema.json');
   const parsedPolicy = await readDatabaseRecoveryPolicy(policyPath);
-  let schemaBytes;
-  try {
-    schemaBytes = await readFile(schemaPath);
-  } catch {
-    fail('repository_contract_invalid');
-  }
-  if (schemaBytes.length < 2 || schemaBytes.length > 256 * 1024) fail('repository_contract_invalid');
-  let schema;
-  try {
-    schema = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(schemaBytes));
-  } catch {
-    fail('repository_contract_invalid');
-  }
-  if (
-    createHash('sha256').update(canonicalDatabaseRecoveryJson(schema)).digest('hex')
-      !== DATABASE_RECOVERY_POLICY_SCHEMA_SHA256
-  ) {
-    fail('repository_contract_invalid');
+  const schemaContracts = [
+    ['database-recovery-policy.schema.json', DATABASE_RECOVERY_POLICY_SCHEMA_SHA256],
+    ['database-recovery-receipt.schema.json', DATABASE_RECOVERY_RECEIPT_SCHEMA_SHA256],
+  ];
+  for (const [name, expectedDigest] of schemaContracts) {
+    let schemaBytes;
+    try {
+      schemaBytes = await readFile(path.join(root, 'config', name));
+    } catch {
+      fail('repository_contract_invalid');
+    }
+    if (schemaBytes.length < 2 || schemaBytes.length > 256 * 1024) fail('repository_contract_invalid');
+    let schema;
+    try {
+      schema = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(schemaBytes));
+    } catch {
+      fail('repository_contract_invalid');
+    }
+    if (createHash('sha256').update(canonicalDatabaseRecoveryJson(schema)).digest('hex') !== expectedDigest) {
+      fail('repository_contract_invalid');
+    }
   }
   let packageJson;
   try {
@@ -533,5 +626,7 @@ export async function verifyDatabaseRecoveryRepositoryContracts(root) {
     documentContractCount: DOCUMENT_CONTRACTS.length,
     policyDigest: parsedPolicy.policyDigest,
     policyFormatVersion: DATABASE_RECOVERY_POLICY_FORMAT_VERSION,
+    receiptFormatVersion: DATABASE_RECOVERY_RECEIPT_FORMAT_VERSION,
+    schemaContractCount: schemaContracts.length,
   };
 }

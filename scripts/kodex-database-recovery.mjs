@@ -58,12 +58,17 @@ export async function runDatabaseRecoveryCommand(values) {
       : createDatabaseRecoveryDrillPlan(policy);
   }
   if (command === 'receipt-validate' || command === 'status') {
-    exactFlags(flags, ['--at', '--receipt'], ['--policy']);
+    exactFlags(flags, ['--at', '--receipt', '--trust-store'], ['--policy']);
     const policy = await readDatabaseRecoveryPolicy(flags.has('--policy')
       ? absolutePath(flags.get('--policy'))
       : defaultPolicyPath);
     const receipt = await readDatabaseRecoveryReceipt(absolutePath(flags.get('--receipt')));
-    const validation = validateDatabaseRecoveryReceipt(policy, receipt, flags.get('--at'));
+    const validation = await validateDatabaseRecoveryReceipt(
+      policy,
+      receipt,
+      flags.get('--at'),
+      absolutePath(flags.get('--trust-store')),
+    );
     return command === 'receipt-validate'
       ? databaseRecoveryReceiptValidationResult(policy, validation)
       : databaseRecoveryStatusResult(policy, validation);

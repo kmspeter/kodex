@@ -20,6 +20,8 @@ if (process.argv.length !== 2) {
       kind: 'kodex_database_recovery_repository_validation',
       ok: true,
       policyDigest: result.policyDigest,
+      receiptFormatVersion: result.receiptFormatVersion,
+      schemaContractCount: result.schemaContractCount,
     })}\n`);
   } catch (error) {
     const code = error instanceof DatabaseRecoveryError ? error.code : 'recovery_validation_failed';
