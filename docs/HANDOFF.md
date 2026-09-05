@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only a5006236bcd3bccad47a937d337dd8871e9dd207..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 2ba02bb241f144ca36350d36a5040ed256b25790..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,10 +28,10 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `a5006236bcd3bccad47a937d337dd8871e9dd207` |
-| 제품 기준 commit | `fix: preserve canonical trust store line endings` (Phase 30 최종 기능 기준) |
-| 완료 범위 | Phase 1~30 |
-| 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 30에서 종료 |
+| 제품 기준 HEAD | `2ba02bb241f144ca36350d36a5040ed256b25790` |
+| 제품 기준 commit | `feat: add Windows installer update state machine` (Phase 31 기능 기준) |
+| 완료 범위 | Phase 1~31 |
+| 다음 핵심 기능 | 메인 통합 탭에서 지정; 이 전용 작업은 Phase 31에서 종료 |
 
 Phase 1~30에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
@@ -40,9 +40,10 @@ workspace 전환, browserless/Electron full-stack acceptance, membership, 명시
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
-lifecycle, 통합 security/provenance/least-privilege gate와 offline Ed25519 release authenticity까지 구현했다. 상세 계약은
+lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
+installer/updater/rollback code boundary까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0029](adr/0029-release-artifact-authenticity.md)까지가 기준이다.
+[ADR 0030](adr/0030-windows-installer-updater-rollback.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -354,9 +355,59 @@ dependencies에서 최종 제품 commit `a5006236bcd3bccad47a937d337dd8871e9dd20
 사용자 지시에 따라 실제 artifact build, `codex:build`, runtime/release/installer artifact 생성,
 Docker, Electron/full-stack, binary-required provenance/release gate와 Rust/MSVC 설치는 계속 보류했다.
 
+### Phase 31 — Windows installer/updater/rollback code boundary
+
+Phase 31의 원본 결정은 [ADR 0030](adr/0030-windows-installer-updater-rollback.md), 운영 절차는
+[Windows installer/updater runbook](operations/windows-installer-updater.md)이다.
+
+- `config/windows-installer-layout.json`과 schema는 per-user code root의 `releases/`, `.installer-state/`, 최대
+  release 3개, current/LKG/rollback/journal/lock/trust receipt와 install root 밖 데이터 분류를 고정한다. State
+  schema와 executable parser는 pointer/transaction/lock/receipt exact key와 canonical JSON만 허용한다.
+- `config/windows-release-compatibility.json`은 signed runtime tree 안
+  `resources/app/metadata/installer-compatibility.json`으로 들어가며 current migration `0012`, forward-only와
+  readable schema `12..12`를 선언한다. Runtime bundler가 실제 packaged migration ledger와 대조한다.
+- `plan`/`stage`는 Phase 30 external versioned trust-store Ed25519 verifier를 content gate의 첫 단계로 그대로
+  호출하고 Phase 29 release-input secret scan을 이어서 재사용한다. Candidate/install root 안 trust store/ACL
+  verifier, unsigned/tampered/unknown/revoked key, 낮은 trust-store version, 같은 version의 다른 digest, path escape,
+  reparse/special file, unsafe 또는 판단 불가 ACL은 fail-closed다.
+- Stage는 같은 `releases/` directory의 `.staging-<uuid>`에 regular file만 exclusive copy하고 전체 검증 뒤 exact
+  release ID로 rename한다. In-place overwrite는 없고 같은 signed digest 재실행만 idempotent다.
+- Activation은 canonical journal `prepared → current pointer atomic rename → awaiting-health` 순서다. Explicit
+  `confirm`만 candidate를 LKG로 승격하고 이전 LKG를 rollback candidate로 보존한다. 중단된 prepared/confirming,
+  health 미확정 active pointer, dead-process stale lock과 exact staging/removal tombstone은 `recover`가 재개한다.
+  Live lock이나 예상하지 않은 state 조합은 고치지 않는다.
+- Candidate latest schema가 이전 release의 signed readable range 밖이면 자동 rollback을 허용하지 않고
+  `operator_recovery_required`를 보존한다. Manual rollback도 현재 schema가 target range 안일 때만 새 health-confirm
+  transaction을 시작한다. Down migration/ledger 편집은 제공하지 않는다.
+- Retention은 current/LKG/rollback/pending transaction release를 보호하고 direct child의 exact validated root만
+  same-directory tombstone을 거쳐 지운다. `uninstall-code-boundary`는 code removal/process/shortcut adapter plan만
+  반환하며 실제 filesystem/service/registry/shortcut mutation을 하지 않는다. Tenant data, tenant별 `CODEX_HOME`,
+  `kodex.env`, PostgreSQL data와 backup은 install root 밖에 보존한다.
+- CLI는 `plan`, `stage`, `activate`, `confirm`, `rollback`, `recover`, `status`, `uninstall-code-boundary`만 strict
+  flag set으로 받고 성공/실패 모두 payload-free JSON을 출력한다. Mutating 명령은 packaging이 제공하는 외부
+  Windows ACL verifier가 exit 0으로 증명하지 않으면 시작하지 않는다.
+
+Phase 31 기능 commit은 `2ba02bb241f144ca36350d36a5040ed256b25790`이다. 이 detached 전용 worktree의
+dependency-free Node `v20.19.4` 환경에서 변경된 executable `.mjs`의 `node --check`,
+`node scripts/test-windows-installer.mjs`, 기존 `node scripts/test-release-signing.mjs`, JSON schema parse,
+staged `git diff --check`와 `npm run security:validate`가 통과했다. Security aggregate는 tracked 8,015 files,
+vendor 6,687 files, npm dependency 392, workspace 9, deployment contract 3, trust store version 2/key 0,
+`binaryPresent=false`였다. Installer fixture는 ephemeral Ed25519 key와 OS temp directory만 사용하고 duplicate
+stage/activate/confirm/rollback, live lock 경합, interrupted journal rollback, trust-store version rollback,
+tamper/unknown key/reparse 거부, incompatible schema rollback 차단, retention exact-root와 sibling 보존을 확인한 뒤
+전부 정리했다. README/ADR/runbook/threat model을 포함해 stage한 뒤 같은 security gate를 다시 실행했으며 tracked
+8,017 files와 나머지 aggregate가 동일하게 통과했다.
+
+이 worktree에는 `node_modules`가 없으므로 targeted Vitest `test:installer-unit`, typecheck와 lint는 실행하지 않았고
+의존성을 탐색하거나 설치하지 않았다. 메인 통합 worktree에서 설치된 기존 dependencies로 세 명령을 실행해야 한다.
+사용자 지시에 따라 `npm run build`, runtime/release/installer artifact 생성, 실제 설치/삭제, registry/service/
+shortcut/process 조작, Docker, Electron/full-stack, Rust/MSVC 설치는 실행하지 않았다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+1. **P1 — Phase 31을 메인에 통합하고 설치된 dependencies로 보류 검증을 실행한다.** `test:installer-unit`,
+   `typecheck`, `lint`를 먼저 실행하고 이 전용 탭의 범위를 다음 Phase로 확장하지 않는다.
+2. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
@@ -374,6 +425,8 @@ npm run security:validate
 npm run test:security
 npm run release:trust-store:validate
 npm run test:release-signing
+npm run test:installer
+npm run test:installer-unit
 npm run typecheck
 npm run lint
 npm test
@@ -447,8 +500,9 @@ git status --short
 
 ## 알려진 비목표와 운영 위험
 
-- 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 자동 배포 control plane을
-  제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
+- 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, 실제 installer binary, admin/system-wide install,
+  Windows service와 자동 배포 control plane을 제공하지 않는다. Phase 31 state machine의 process/registry/shortcut/
+  ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
 - Email verification, SMTP invitation delivery와 self-service workspace restore는 아직 없다. Permanent deletion은
   online application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
@@ -466,7 +520,7 @@ git status --short
   forwarded client identity, multi-database global limiting을 제공하지 않으며 NAT/proxy 사용자가 bucket을
   공유할 수 있다.
 - Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email,
-  installer/update orchestration, production key custody/trust-store 배포와 장시간 authorization cadence를
+  installer packaging/process adapter, production key custody/trust-store 배포와 장시간 authorization cadence를
   증명하지 않는다. 각 운영 기능에는 별도 acceptance와
   runbook이 필요하다.
 - 현재 checkout의 vendored source integrity는 6,687개 전체가 다시 검증된다. 다만 sealed `bin/codex.exe`와

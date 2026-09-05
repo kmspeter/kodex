@@ -83,7 +83,7 @@ OpenAI 모드가 기본값입니다. Vite/renderer 환경에서는 `OPENAI_API_K
 
 source 실행은 `.kodex-data/tenants/users/<user-uuid>/workspaces/<workspace-uuid>/`, desktop은 `%APPDATA%\Kodex\data\tenants\...`마다 공식 `CODEX_HOME`, projects/settings/automations JSON, 마스킹된 approval/log, `instance.lock`과 `product-history-outbox/`를 따로 저장합니다. UUID는 브라우저 입력이 아니라 DB가 인증한 scope에서만 가져오며 path segment 형식을 재검사합니다. 같은 workspace의 사용자도 raw Codex runtime과 `CODEX_HOME`을 공유하지 않습니다. immutable source/runtime root와 writable data base는 별도 신뢰 경계이며, data base로 drive root, 사용자 home, repository/source root를 지정하거나 tenant root를 data base 밖으로 탈출시킬 수 없습니다. 제품 history는 공식 App Server 공개 notification/server-request stream에서 PostgreSQL로 투영하며 upstream Codex SQLite를 직접 읽거나 polling하지 않습니다.
 
-## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (29단계까지, 필수)
+## 제품 PostgreSQL, 인증·데이터 수명주기, tenant runtime, 내구성 history와 private RAG (31단계까지, 필수)
 
 `packages/product-db`는 제품 데이터의 pool, migration, SQL repository와 인증/RAG service를 소유합니다. `apps/api`가 등록·로그인과 인증된 history/knowledge API를 담당하고, Local Server도 같은 hash-only session repository를 통해 매 요청의 active user, session 만료/폐기, workspace membership을 독립적으로 확인합니다. Repository consent/trust boundary는 `docs/adr/0013-consent-repository-rag-indexing.md`, 앞선 제품 결정은 `docs/adr/0001-product-database-boundary.md` 이후 ADR에 있습니다.
 
@@ -279,6 +279,21 @@ Clean Git checkout의 `npm run release:build -- --path <new-directory>`는 porta
 
 기본 `config/release-trust-store.json`은 key가 없는 bootstrap 상태이므로 어떤 production release도 신뢰하지 않습니다. Public key rotation/revocation, store version과 offline signer 절차는 [artifact signing runbook](docs/operations/artifact-signing.md)과 [ADR 0029](docs/adr/0029-release-artifact-authenticity.md)가 기준입니다. Product API의 `GET /api/version`은 실행 중인 `{ version, commit }`을 반환하므로 서명 검증 record와 대조할 수 있습니다. 배치·upgrade·호환 가능한 rollback 및 backup restore fallback은 [deployment/upgrade runbook](docs/operations/deployment-upgrade.md)과 [ADR 0024](docs/adr/0024-versioned-release-and-upgrade.md)를 따릅니다.
 
+Phase 31은 실제 installer binary 대신 per-user Windows code layout과 updater/rollback state machine을 제공합니다.
+기본 code root는 `%LOCALAPPDATA%\Programs\Kodex`이며 signed release는 `releases/<release-id>`에만 side-by-side로
+stage됩니다. 외부 trust store의 Ed25519 검증이 먼저 통과한 뒤 Phase 29 release-input secret scan, reparse/special
+file 검사와 packaging이 제공한 fail-closed Windows ACL verifier를 거칩니다. `.installer-state/current.json`은 같은
+directory의 임시 파일에서 atomic rename하는 active pointer이고, crash journal은 confirm 전 장애를 compatible
+last-known-good로 자동 rollback합니다. 이전 binary의 signed readable schema 범위를 벗어난 forward migration은
+`operator_recovery_required`로 차단하며 down migration이나 ledger 편집을 하지 않습니다.
+
+CLI는 `installer:plan|stage|activate|confirm|rollback|recover|status|uninstall-code-boundary`를 strict parser와
+payload-free JSON으로 제공합니다. Process/service/registry/shortcut 및 실제 code removal은 명시적인 packaging
+adapter 경계이고 이 단계에서는 실행하지 않습니다. Tenant data, tenant별 `CODEX_HOME`, `kodex.env`, PostgreSQL
+data와 backup은 install root 밖에 남으며 installer/uninstaller가 삭제하지 않습니다. 전체 절차와 ACL adapter
+계약은 [Windows installer/updater runbook](docs/operations/windows-installer-updater.md), 결정은
+[ADR 0030](docs/adr/0030-windows-installer-updater-rollback.md)이 기준입니다.
+
 운영 backup은 실행 중인 Local Server/Electron을 먼저 종료하고 새 output directory에만 만듭니다. Restore는 checksum을 먼저 검증하며 빈 PostgreSQL DB와 존재하지 않는 새 data root에만 허용됩니다. Source checkout에서는 `npm run backup:create|backup:verify|backup:restore -- --path <directory>`, runtime에서는 `Kodex-Backup.cmd create|verify|restore --path <directory>`를 사용합니다. Backup 자체 암호화와 서명, WAL/PITR은 운영 책임입니다. 정확한 quiesce·복원·rollback 절차는 [offline backup/restore runbook](docs/operations/backup-restore.md)과 [ADR 0023](docs/adr/0023-offline-backup-restore.md)에 있습니다.
 
 ## 검증
@@ -287,6 +302,8 @@ Clean Git checkout의 `npm run release:build -- --path <new-directory>`는 porta
 npm run codex:verify-source
 npm run release:trust-store:validate # key 없는 bootstrap store도 schema/parser 계약을 검증
 npm run test:release-signing # Node 표준 crypto, ephemeral key/temp artifact만 사용하는 dependency-free fixture
+npm run test:installer # temp signed release/root만 사용하는 dependency-free updater/rollback fixture
+npm run test:installer-unit # strict state/ACL/trust receipt/payload-free CLI targeted Vitest
 npm run typecheck
 npm run lint
 npm test
@@ -484,7 +501,7 @@ accepted membership, pending 제거와 create/accepted audit를 교차 검증하
 - History read/export API는 shared workspace에서도 현재 사용자의 `created_by_user_id` 범위만 반환합니다. Backfill은 공개 App Server snapshot과 설정된 per-pass bound 안에서만 복원하며 과거 approval을 추정하지 않습니다. Workspace 전체 협업 공유와 자동 보존 기간은 제공하지 않습니다.
 - RAG는 수동 text 등록, 명시적 동의 기반 active repository 파일 인덱싱과 미리보기/turn 질의를 지원합니다. 기본 `text-embedding-3-small`/1,536 조합은 planner 선택에 따라 HNSW ANN을 사용할 수 있고, 그 밖의 모델/차원은 exact cosine fallback입니다. Shared knowledge, 자동 repository 동기화와 retention은 후속 작업입니다.
 - Portable runtime은 외부 PostgreSQL의 설치·기동·백업·upgrade를 관리하지 않으며 Windows x64 압축 배포물 수준입니다.
-- Release verifier는 offline Ed25519 authenticity를 제공하지만 production key custody/HSM, trust-store anti-rollback 배포, transparency/timestamp service, Authenticode, installer와 automatic updater를 제공하지 않습니다.
+- Release verifier와 installer state machine은 offline Ed25519 authenticity, local trust-store receipt, side-by-side update와 compatible rollback을 제공하지만 production key custody/HSM, trust-store authenticated 배포, transparency/timestamp service, Authenticode, 실제 installer binary, system service와 admin/system-wide install을 제공하지 않습니다.
 - SSR, cloud task, Kodex 전용 cloud backend와 배포 기능은 제공하지 않습니다.
 
 제3자 license와 notice는 `THIRD_PARTY.md` 및 각 dependency에 포함된 license 파일을 참조하십시오.
