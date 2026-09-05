@@ -96,7 +96,8 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 docker compose --env-file .env.local -f infra/compose.yaml up -d postgres
 $env:DATABASE_URL = 'postgresql://kodex_app:<local-application-password>@127.0.0.1:5432/kodex'
 $env:PRODUCT_DB_SSL = 'disable'
-npm run db:migrate
+$env:KODEX_DEPLOYMENT_PROFILE = 'production'
+docker compose --env-file .env.local -f infra/compose.yaml --profile migration run --rm product-db-migrate
 # Product API(47832), Local Server(47831), Vite UI(5173)를 함께 시작
 npm run dev
 ```

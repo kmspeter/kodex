@@ -37,6 +37,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: ${PRODUCT_API_NODE_ENV:-development}
+      KODEX_DEPLOYMENT_PROFILE: production
       KODEX_DISABLE_ENV_FILE: "1"
       DATABASE_URL: postgresql://${PRODUCT_DB_APP_USER:-kodex_app}:${PRODUCT_DB_APP_PASSWORD}@postgres:5432/${PRODUCT_DB_NAME:-kodex}
       PRODUCT_DB_SSL: disable

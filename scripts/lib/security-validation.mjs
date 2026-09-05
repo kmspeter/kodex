@@ -461,6 +461,7 @@ export async function verifyDeploymentContracts(root) {
     'PRODUCT_DB_MIGRATION_URL:',
     'PRODUCT_DB_APP_PASSWORD:',
     'PRODUCT_DB_MIGRATION_PASSWORD:',
+    'KODEX_DEPLOYMENT_PROFILE: production',
     'read_only: true',
     'no-new-privileges:true',
     'cap_drop:',
