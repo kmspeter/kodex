@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 42a0767e10fff7b7d8af3ccd12855c490dbc6ee9..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only dd9d4a9c967e5fbbe0140dfb296a8a38200420ec..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,23 +27,23 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 33 handoff worktree; 메인 `main` fast-forward 통합 검증 완료 |
-| 제품 기준 HEAD | `42a0767e10fff7b7d8af3ccd12855c490dbc6ee9` |
-| 제품 기준 commit | `docs: document workspace recovery boundary` (Phase 33 main fast-forward 기준) |
-| 완료 범위 | Phase 1~33 |
-| 다음 핵심 기능 | Phase 33 통합 완료; 이 전용 작업에서 다음 Phase로 확장하지 않음 |
+| 준비 branch | detached Phase 34 전용 worktree; 메인 `main` 통합 대기 |
+| 제품 기준 HEAD | `dd9d4a9c967e5fbbe0140dfb296a8a38200420ec` |
+| 제품 기준 commit | `feat: encrypt and sign offline backups` |
+| 완료 범위 | Phase 1~34 |
+| 다음 핵심 기능 | Phase 34 메인 통합·dependency 기반 검증; 이 탭에서 다음 Phase로 확장하지 않음 |
 
-Phase 1~33에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~34에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename·soft archive·owner self-service recovery, 공개 App Server pagination 기반 기존 thread History
-backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
+backfill/reconciliation, PostgreSQL과 tenant data의 streaming encrypted/signed offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
 lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
 installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0032](adr/0032-self-service-workspace-recovery.md)까지가 기준이다.
+[ADR 0033](adr/0033-encrypted-signed-offline-backup.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -531,11 +531,62 @@ vendor 6,687 files, dependency 392, workspace 9, deployment contract 3과 `binar
 Build, Docker/PostgreSQL harness, Electron/full-stack과 Rust/MSVC는 지시대로 실행하지 않았으며 통과로 기록하지
 않는다.
 
+### Phase 34 — Streaming encrypted and signed offline backup
+
+Phase 34의 원본 결정은 [ADR 0033](adr/0033-encrypted-signed-offline-backup.md), 운영 절차는
+[encrypted backup/restore runbook](operations/backup-restore.md), 전체 경계는
+[threat model](security/threat-model.md)이다.
+
+- Phase 24의 verified plaintext directory/manifest v1은 inner format과 실제 PostgreSQL acceptance용으로 유지하고,
+  source/portable production CLI `create|verify|restore`는 새 single-file envelope v2만 취급한다. Plaintext
+  auto-detection이나 allow flag는 없다. 기존 plaintext는 exact legacy release의 격리 경로로 복원한 뒤 새 encrypted
+  artifact로 다시 만든다.
+- Envelope는 canonical public header, gzip-compressed AES-256-GCM ciphertext, 16-byte tag와 canonical Ed25519
+  signature envelope 순서다. Scrypt는 domain-separated fresh 32-byte salt와 고정 `N=32768,r=8,p=1,keyLength=32`,
+  GCM은 fresh 12-byte nonce를 사용한다. 64 KiB chunks와 disk staging으로 dump/tenant payload 전체를 메모리에
+  올리지 않는다.
+- Canonical signing manifest는 exact header, streaming ciphertext SHA-256와 GCM tag를 봉인한다. Phase 30의
+  Ed25519 signing/verification helper와 external `kodex-release-trust-store` parser를 재사용하며 unknown/revoked key는
+  복호화 전에 거부한다. Private signing key나 passphrase/trust store는 runtime/UI/artifact에 포함하지 않는다.
+- Public header에는 tenant ID/path 없이 timestamp, size/count, algorithm/KDF parameters와 exact application
+  version/commit, migration ledger, Codex upstream/vendor digest만 있다. Decrypt 뒤 inner timestamp/application/migration과
+  현재 signed runtime/source provenance를 모두 exact 비교해 version/commit/migration/vendor mismatch를 거부한다.
+- Passphrase/private key bytes는 argv/env/env-file/log/manifest가 아니라 bounded non-interactive stdin 또는 dedicated
+  file만 허용한다. Empty/oversized/multiline/NUL, TTY, symlink/special/replaced file을 거부한다. POSIX group/other mode와
+  Windows current user/SYSTEM/Administrators 외 allow ACE를 fail-closed 검사한다. Artifact directory도 같은 restrictive
+  ACL/mode를 요구해 transient plaintext UUID root가 안전한 parent를 상속한다.
+- Restore는 structure/trailing → external signature/trust → GCM authentication → gzip/archive/path/length → inner
+  manifest/DB dump/tenant SHA-256 → provenance를 전부 완료한 뒤에만 기존 empty DB/new data-root restore를 호출한다.
+  앞선 실패에서는 mutation callback 자체가 실행되지 않고 성공·실패 모두 exact temporary root만 정리한다.
+- Portable bundler는 envelope/secret modules와 exit-preserving `Kodex-Backup.cmd`를 포함한다. CLI 오류는 secret,
+  tenant ID, path나 DB diagnostic 없이 stable `backup_*` code와 exit 1~7만 출력한다. Migration 0001~0013,
+  vendor/generated protocol, upstream pin/manifest와 lockfile은 변경하지 않았다.
+
+Feature commit은 `dd9d4a9c967e5fbbe0140dfb296a8a38200420ec` (`feat: encrypt and sign offline backups`)다.
+Expected main base `3dfdeefb863c697099730c296d51195d849ca17b`의 clean detached worktree에서 시작했다. System Node
+`v20.19.4`로 changed/new executable `.mjs`의 `node --check`, `node scripts/test-backup-encryption.mjs`, 기존
+`node scripts/test-release-signing.mjs`와 `git diff --check`가 통과했다. Encryption fixture는 ephemeral key/store와
+temp-only 390 KiB급 multi-chunk input으로 round trip, fresh salt/nonce, wrong secret, header/nonce/ciphertext/tag/
+signature/KDF/truncation/trailing tamper, unknown/revoked key, version/commit/migration/vendor mismatch, plaintext/unlisted,
+malformed gzip/path traversal, secret pipe/file/ACL/size/symlink, no plaintext secret, verification-before-callback와 exact-root
+cleanup을 확인했다. Sandbox가 Windows DACL 변경을 허용하지 않아 broad inherited ACL 거부는 실행했으며 restrictive
+DACL positive path는 production host/main 검증 대상으로 남겼다.
+
+Feature와 README/ADR 0033/runbook/threat model/HANDOFF를 stage한 `node scripts/security-validate.mjs`도 통과했다.
+Aggregate는 tracked 8,040 files, vendor 6,687 files, npm dependency 392, workspace 9, deployment contract 3,
+bootstrap trust store version 2/key 0과 `binaryPresent=false`였다. 첫 sandbox 실행은 내부 `git` spawn이 EPERM이어서
+동일 read-only command를 허용된 경계에서 다시 실행했다.
+
+이 worktree에는 `node_modules`가 없어 설치하거나 다른 worktree dependency를 탐색하지 않았다. 따라서 targeted
+Vitest, typecheck, lint와 dependency를 요구하는 source CLI/runtime import는 실행하지 않았다. 실제 PostgreSQL/Docker,
+`pg_dump`/`pg_restore`, build, Electron/full-stack, Rust/MSVC와 사용자 tenant 경로 mutation도 지시대로 실행하지 않았고
+통과로 기록하지 않는다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 33 main 통합은 완료됐다.** 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다. 실제
-   PostgreSQL/Electron/full-stack/build 검증은 이번 결과에 포함하지 않으며 별도 명시적 범위와 승인 없이는
-   실행하거나 통과로 기록하지 않는다.
+1. **P1 — Phase 34를 메인 탭에서 통합·검증한다.** Node 22.13 이상과 설치된 dependency에서 targeted Vitest,
+   typecheck, lint, `security:validate`와 portable wrapper import를 확인한다. 이 전용 작업에서는 다음 Phase 기능으로
+   확장하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
@@ -553,6 +604,7 @@ npm run security:validate
 npm run test:security
 npm run release:trust-store:validate
 npm run test:release-signing
+npm run test:backup-encryption
 npm run test:installer
 npm run test:installer-unit
 npm run typecheck
@@ -632,8 +684,9 @@ git status --short
 
 - 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, 실제 installer binary, admin/system-wide install,
   Windows service와 자동 배포 control plane을 제공하지 않는다. Phase 31 state machine의 process/registry/shortcut/
-  ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
-  backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
+   ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다.
+   Offline backup은 full artifact AES-GCM/Ed25519만 제공하며 incremental/deduplication, retention scheduler,
+   WAL/PITR, passphrase escrow/HSM, trust-store authenticated distribution과 secure erasure를 제공하지 않는다.
 - Email verification과 opt-in HTTPS invitation webhook은 있지만 SMTP client, template/bounce/complaint 처리,
   reminder와 provider delivery-status API는 없다. Permanent deletion은 online
   application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.

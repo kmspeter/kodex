@@ -34,7 +34,8 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 ## 배치 전 준비
 
-- Phase 24 offline backup을 만들고 `backup:verify`를 통과시킨다. 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
+- Phase 34 encrypted/signed offline backup을 만들고 external trust store와 passphrase 경계로 `backup:verify`를
+  통과시킨다. Exact release provenance, 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
 - Release record의 trust-store version/digest가 현재 승인 상태보다 오래되지 않았는지 확인한다. Revoked key로
   서명된 이전 artifact도 rollback 대상으로 활성화하지 않는다.
 - application과 migration DB 역할/secret을 분리하고 [security runbook](security-release.md)의 금지 권한을 확인한다.

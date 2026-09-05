@@ -3,6 +3,10 @@
 - 상태: 승인
 - 날짜: 2026-09-04
 
+> Phase 34는 이 plaintext directory/manifest를 검증된 inner format으로 유지하면서 production CLI 바깥
+> encrypted/signed envelope v2를 추가했다. 현재 운영 경계와 plaintext 호환 정책은
+> [ADR 0033](0033-encrypted-signed-offline-backup.md)이 우선한다.
+
 ## 배경과 결정
 
 제품의 durable 상태는 PostgreSQL과 Local Server의 `KODEX_DATA_ROOT`에 나뉜다. PostgreSQL에는 계정,
@@ -41,9 +45,10 @@ process secret을 상속하지 않는다. `verify-full`은 `PRODUCT_DB_CA_CERT`�
 file로 전달하고 즉시 삭제한다. `--database-container`는 Compose/test의 동일 database/user를 local socket로
 접속할 때만 쓰며 strict container name을 요구한다.
 
-Backup은 인증정보와 사용자 content를 포함하는 민감 artifact다. 애플리케이션은 자체 암호화를 제공하지
-않으므로 storage encryption, ACL, off-site copy, key rotation, immutable retention과 backup 삭제는 운영자가
-책임진다. Manifest checksum은 무결성 검출이지 authenticity/signature가 아니다.
+Backup은 인증정보와 사용자 content를 포함하는 민감 artifact다. 이 Phase의 plaintext manifest checksum은
+무결성 검출이지 authenticity/signature가 아니다. Phase 34 production CLI는 이 directory를 직접 배포하지 않고
+AES-256-GCM/Ed25519 envelope로만 게시한다. Storage ACL, off-site copy, key rotation, immutable retention과 backup
+삭제는 계속 운영자가 책임진다.
 
 ## Acceptance
 

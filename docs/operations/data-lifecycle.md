@@ -94,7 +94,8 @@ credential, DB/provider 오류문은 status와 worker log에 포함하지 않는
 backup을 수행한다. Restore는 삭제 이전 backup의 데이터를 되살릴 수 있으므로 복원 직후 lifecycle job/hold와
 복원 시점 이후 승인된 삭제 ticket을 재조정한 다음 서비스를 공개한다.
 
-일반 PostgreSQL `DELETE`는 dead tuple, WAL, replica와 snapshot의 즉시 물리 소거를 보장하지 않는다. Kodex는
-`VACUUM FULL`, block overwrite, backup/WAL/PITR/replica/snapshot 만료, backup 암호화/서명 또는 disconnected
-device 원격 삭제를 수행하지 않는다. 조직의 별도 보존 일정으로 이 복사본을 만료하고 autovacuum/bloat를
-관찰한다. 법적 보존 의무가 있으면 backup 수명주기에도 동일한 hold를 운영 절차로 전파해야 한다.
+일반 PostgreSQL `DELETE`는 dead tuple, WAL, replica와 snapshot의 즉시 물리 소거를 보장하지 않는다. Lifecycle
+worker는 `VACUUM FULL`, block overwrite, encrypted backup/WAL/PITR/replica/snapshot 만료·rekey 또는 disconnected
+device 원격 삭제를 수행하지 않는다. Phase 34 backup 암호화/서명도 삭제나 cryptographic erasure를 뜻하지 않는다.
+조직의 별도 보존 일정으로 이 복사본을 만료하고 autovacuum/bloat를 관찰한다. 법적 보존 의무가 있으면 backup
+수명주기에도 동일한 hold를 운영 절차로 전파해야 한다.

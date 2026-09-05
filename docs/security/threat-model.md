@@ -1,17 +1,17 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 33, 2026-09-05
+- 기준: Phase 34, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
   tenant filesystem, build/vendor/release와 Windows installer state 경로
 - 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`,
-  `npm run test:installer`
+  `npm run test:backup-encryption`, `npm run test:installer`
 
 ## 자산과 공격자
 
 보호 자산은 Product session/CSRF proof, password hash와 verification/invitation token hash, email delivery와
 provider/operations secret, private History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정,
-release/source provenance, offline signing
-private key, public trust-store 상태, active/last-known-good/rollback pointer와 installer journal이다. 공격자는
+release/source provenance, offline signing private key, backup passphrase와 encrypted backup, public trust-store 상태,
+active/last-known-good/rollback pointer와 installer journal이다. 공격자는
 인증되지 않은 네트워크 client, 다른 user/workspace의 인증 사용자, 악성 repository content, 변조된 dependency/
 vendor/runtime input, 과도한 DB 역할, 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
 release maintainer 자체가 완전히 장악된 경우, PostgreSQL host 관리자, 서명 key 탈취는 이 모델 밖의 상위 신뢰
@@ -32,6 +32,15 @@ Local Server (127.0.0.1) ----------------+
   | authenticated (user, workspace), bounded/redacted JSONL
   v
 official Codex App Server --> per-user/per-workspace CODEX_HOME
+
+quiesced PostgreSQL + KODEX_DATA_ROOT
+  | verified inner manifest/archive stream
+  v
+scrypt + AES-256-GCM envelope -- canonical digest --> external Ed25519 signer
+  |                                                    |
+  +------ encrypted backup file <---- signature -------+
+                         |
+external public trust store -> verify/decrypt/temp validate -> empty DB + new data root
 ```
 
 | 경계 | 주요 위협 | 강제 통제와 증거 |
@@ -48,6 +57,9 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 | Source/dependency → build | lock drift, vendor 추가/변경, pin/metadata mismatch | lockfile v3 closure, strict vendored manifest/pin, Cargo lock/build/protocol linkage; `security:validate`, `codex:verify-source` |
 | Build → seal | stale runtime, secret/tenant 혼입, artifact tamper | clean HEAD, tracked+release-input secret scan, repository/runtime provenance equality, canonical full file manifest; release tests/integrity gate |
 | Seal → offline signer | private key 유출, 바뀐 manifest 서명, 재서명 | repo/artifact 밖 explicit key file 또는 bounded non-interactive stdin, sign 전 integrity/secret scan, exclusive detached Ed25519 envelope; signing fixture/tests |
+| DB/data root → encrypted backup | plaintext 유출, weak KDF/nonce reuse, symlink/path traversal, partial archive | offline maintenance lock, 64 KiB archive/gzip/GCM stream, fixed scrypt policy와 fresh salt/nonce, restricted exact temp root, inner path/size/SHA-256; backup encryption fixture |
+| Backup → restore | forged/revoked artifact, wrong passphrase, truncation/trailing, decompression bomb/content, release mismatch, validation 뒤늦은 mutation | external Phase 30 trust store, signature-before-decrypt, GCM AAD/tag, sealed archive length/count/footer, inner manifest, exact version/commit/migration/Codex/vendor check 뒤 empty DB/new root mutation |
+| Operator → backup secret input | argv/env/log/key bundle 유출, broad file ACL, TTY prompt와 oversized input | passphrase/private key는 bounded pipe 또는 dedicated file만 허용, POSIX mode/Windows owner+DACL/SID 검사, symlink/special/race 거부와 payload-free stable result code |
 | Artifact → install/run/update | 위조/unsigned release, key substitution/revocation 우회, trust-store rollback | artifact 밖 versioned public trust store, strict canonical parsers, unknown/revoked key와 unsigned fail-closed, digest/signature/full-tree verify; release CLI/packaged verifier |
 | Installer state → active code | in-place overwrite, path escape/reparse, unsafe ACL, concurrent/crashed pointer 전환 | signed-first verification, Phase 29 secret scan, external ACL adapter, side-by-side roots, same-directory atomic pointer+journal, exclusive lock, exact-root cleanup; installer fixture/unit |
 | DB schema → binary rollback | forward-only migration 뒤 incompatible binary 자동 downgrade | signed readable-schema metadata, conservative candidate latest-schema journal, incompatible rollback의 `operator_recovery_required`; installer fixture/ADR 0030 |
@@ -63,6 +75,8 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
   release full-tree SHA-256이 불일치를 거부한다. Exact canonical manifest bytes의 detached Ed25519 signature와
   external trust store가 manifest/artifact 동시 변조와 key substitution을 거부한다. Installer는 signed tree를
   먼저 검증하고 side-by-side copy를 다시 검증하며 pointer/journal record의 extra/non-canonical field를 거부한다.
+  Backup은 header+ciphertext digest+GCM tag canonical representation을 같은 trust primitive로 서명하며, authenticated
+  decryption 뒤에도 inner manifest와 current release provenance를 exact 비교한다.
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
   response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Signing private key와
   signature bytes는 signer 성공/실패 log에
@@ -71,12 +85,15 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 - Information disclosure: Verification은 domain-separated hash-only이고 delivery queue에는 target FK와 고정 상태만
   둔다. Raw token/fragment URL은 provider 호출 순간 외 DB/log/audit에 없으며 React bootstrap 전 URL에서 제거한다.
   History/RAG는 `(workspace_id, created_by_user_id)` private scope이고 renderer env, operational status, release scan
-  진단에 secret 값이나 payload를 넣지 않는다. Archived Workspace 목록은 owner에게만 보이며 cursor를 account에
+  진단에 secret 값이나 payload를 넣지 않는다. Backup passphrase/private key는 argv/env/manifest/log에 없고 tenant
+  path/content는 encrypted inner archive에만 있다. Archived Workspace 목록은 owner에게만 보이며 cursor를 account에
   암호화해 묶고 lifecycle 상태를 public DTO에 포함하지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
 - Denial of service: request/body/page/outbox/file/count/byte/time/provider-response bounds와 PostgreSQL 공유 limiter를
   사용한다. Verification resend는 account/address, consume은 address/token bucket을 공유한다. Local
   runtime 수와 reconciliation, release tree/state JSON/retained release 수를 제한한다. Live installer lock을 깨지
-  않고 stale dead-process lock만 recover한다. Edge DDoS/WAF는 운영자 책임이다.
+  않고 stale dead-process lock만 recover한다. Backup은 header/signature/record/count/path bounds, fixed scrypt cost와
+  signed uncompressed length를 사용하되 실제 대용량 backup의 disk/time capacity planning은 운영자 책임이다. Edge
+  DDoS/WAF도 운영자 책임이다.
 - Elevation of privilege: workspace role과 creator scope를 매 경계에서 다시 확인한다. Production application DB
   역할은 DB/schema owner와 broad role attribute/DDL을 가질 수 없고 migration 역할은 application과 달라야 한다.
   Restore는 admin/member 권한으로 승격되지 않으며 다른 tenant와 없는 Workspace를 같은 forbidden 경계로 처리한다.
@@ -84,21 +101,24 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 ## 불변식과 변경 규칙
 
 Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server 및 approval 경계는
-Phase 33 recovery 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
+Phase 34 backup 작업으로 완화되지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
 사유만 허용하며 stale entry도 실패한다. 새 데이터 흐름, credential, 외부 provider, filesystem root, DB 권한,
 release input, signing key boundary나 trust anchor가 생기면 이 문서와 ADR, 해당 executable validation/test를
 함께 갱신한다.
 
 ## 잔여 위험
 
-Production key ceremony/HSM과 custody, trust-store authenticated distribution, transparency/timestamp,
+Production key ceremony/HSM과 custody, backup passphrase escrow/recovery, trust-store authenticated distribution,
+transparency/timestamp,
 Authenticode, 실제 installer packaging binary와 process/service/registry/shortcut adapter, admin/system-wide install,
 SBOM/registry attestation, host hardening, PostgreSQL TLS/HA/WAL·backup
 retention, email provider의 mailbox/deliverability/body handling과 remote MCP/Web Search는 별도 통제다. Provider가
 요청을 받은 뒤 응답이 유실되면 retry rotation 때문에 먼저 전달된 링크가 무효화될 수 있다. Offline signing
 host나 현재 trusted private
-key가 장악되면 공격자는 유효한 artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고 해당 key의
-과거 artifact도 격리해야 한다. Self-service restore는 out-of-band로 사라진 application row/file을 증명하거나
+key가 장악되면 공격자는 유효한 release/backup artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고
+해당 key의 과거 artifact도 격리해야 한다. Backup encryption은 WAL/PITR, incremental/deduplication, retention
+scheduler, cryptographic erasure나 crash residue secure deletion을 제공하지 않는다. Passphrase와 모든 승인된
+recovery material을 잃으면 GCM payload를 복구할 수 없다. Self-service restore는 out-of-band로 사라진 application row/file을 증명하거나
 복구하지 않으며 backup/forensic recovery가 아니다. Local trust-store receipt는 낮은 version과 같은 version의 다른 digest를
 거부하지만 trust store 자체의 인증된 배포를 대신하지 않는다. ACL adapter가 손상되면 unsafe root를 승인할 수
 있으므로 packaging trust base에서 보호해야 한다. 현재 checkout의 `bin/codex.exe` 부재로 binary를
