@@ -15,9 +15,9 @@ registry/shortcut 변경과 packaging code removal은 adapter 경계이며 이 P
 최대 release 수와 외부 데이터 분류를 고정한다. JSON Schema와 executable exact-key parser가 함께 있으며
 state record도 `config/windows-installer-state.schema.json`의 pointer/transaction/lock/trust receipt 네 계약만
 허용한다. Release에는 signed tree의
-`resources/app/metadata/installer-compatibility.json`이 들어간다. 현재 metadata는 migration `0012`와
+`resources/app/metadata/installer-compatibility.json`이 들어간다. Phase 31 당시 metadata는 migration `0012`와
 forward-only, readable schema `12..12`를 선언하고 runtime bundle 단계에서 실제 migration ledger와 다시
-대조한다.
+대조했다. Phase 32의 forward-only migration `0013`은 ADR 0031에서 current/readable schema를 `13..13`으로 올린다.
 
 Candidate는 어떤 install-root mutation보다 먼저 Phase 30 external versioned trust-store verifier를 통과해야
 한다. 그 뒤 Phase 29 release-input secret scan, path/regular-file/reparse 검사와 외부 Windows ACL verifier가

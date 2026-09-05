@@ -1,6 +1,6 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 31, 2026-09-05
+- 기준: Phase 32, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
   tenant filesystem, build/vendor/release와 Windows installer state 경로
 - 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`,
@@ -8,8 +8,9 @@
 
 ## 자산과 공격자
 
-보호 자산은 Product session/CSRF proof, password hash와 token hash, provider/operations secret, private
-History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정, release/source provenance, offline signing
+보호 자산은 Product session/CSRF proof, password hash와 verification/invitation token hash, email delivery와
+provider/operations secret, private History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정,
+release/source provenance, offline signing
 private key, public trust-store 상태, active/last-known-good/rollback pointer와 installer journal이다. 공격자는
 인증되지 않은 네트워크 client, 다른 user/workspace의 인증 사용자, 악성 repository content, 변조된 dependency/
 vendor/runtime input, 과도한 DB 역할, 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
@@ -23,6 +24,8 @@ Browser/Electron renderer
   | Product HttpOnly session + exact Origin + CSRF
   v
 Product API -- application DB role --> PostgreSQL/pgvector
+  | HTTPS bearer webhook, transient fragment-only token
+  +-----------------------------------------------> Email provider
   ^                                      ^
   | session/membership revalidation      | separate migration role (deploy only)
 Local Server (127.0.0.1) ----------------+
@@ -36,6 +39,7 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 | Renderer → Product API | session 탈취, CSRF, secret bundle 유출 | HttpOnly/Secure cookie, exact Origin, HMAC double-submit CSRF, Vite env 제거; auth/security unit 및 full-stack tests |
 | Renderer → Local | loopback의 임의 client, stale membership | exact origin/bootstrap, 매 요청 DB authorization, WS bounded 재인가, loopback bind; local security/runtime tests |
 | Product/Local → DB | cross-tenant 조회, schema/ledger 변조, superuser 사용 | repository scope, production application role posture와 exact ledger read-only 검증; `privileges.ts`, `test/unit/product-db.test.ts` |
+| Product API → Email provider | bearer/recipient/token 유출, redirect/slow body, replay와 provider 장애 | opt-in HTTPS, server-only distinct bearer, redirect 거부, timeout/response bound, payload-free leased retry, attempt별 token rotation; email delivery unit/PostgreSQL tests |
 | Migration → DB | application credential로 DDL, cluster-wide 권한 | 별도 `PRODUCT_DB_MIGRATION_URL`, database-scoped owner이되 superuser/CREATEDB/CREATEROLE/replication/BYPASSRLS 거부; Compose init + migration CLI |
 | Local → filesystem | path traversal, tenant 공유/삭제 | UUID segment 재검증, immutable/runtime와 writable root 분리, `(user, workspace)` root, exact lifecycle deletion; storage/runtime/data-lifecycle tests |
 | Local → App Server | 비공식 state read, approval 우회, secret over-forward | 공식 stdio App Server만 사용, 공개 notification/snapshot, 선택 provider secret만 전달, approval server-request 보존; reproducibility/history tests |
@@ -50,18 +54,23 @@ official Codex App Server --> per-user/per-workspace CODEX_HOME
 
 ## Threat 처리
 
-- Spoofing: Product session은 hash-only DB record와 HttpOnly cookie로, operations API는 browser Origin을 거부하는
-  별도 bearer로 식별한다. Local bootstrap은 Product session과 active membership 없이 발급되지 않는다.
+- Spoofing: Product session은 hash-only DB record와 HttpOnly cookie로, operations API와 email provider는 서로 다른
+  server-only bearer로 식별한다. 미확인 email session은 verification status/resend/logout 외 권한을 얻지 못하며
+  Local bootstrap은 verified Product session과 active membership 없이 발급되지 않는다.
 - Tampering: migration checksum ledger, strict vendor manifest, package lock closure, Codex binary build metadata와
   release full-tree SHA-256이 불일치를 거부한다. Exact canonical manifest bytes의 detached Ed25519 signature와
   external trust store가 manifest/artifact 동시 변조와 key substitution을 거부한다. Installer는 signed tree를
   먼저 검증하고 side-by-side copy를 다시 검증하며 pointer/journal record의 extra/non-canonical field를 거부한다.
-- Repudiation: audit에는 bounded operation/ID/status만 남긴다. Prompt, response, email, token, URL, 경로와 provider/
-  DB 오류문은 일반 log에 남기지 않는다. Signing private key와 signature bytes는 signer 성공/실패 log에
+- Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
+  response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Signing private key와
+  signature bytes는 signer 성공/실패 log에
   출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다.
-- Information disclosure: History/RAG는 `(workspace_id, created_by_user_id)` private scope이며 renderer env, operational
-  status, release scan 진단에 secret 값이나 payload를 넣지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
-- Denial of service: request/body/page/outbox/file/count/byte/time bounds와 PostgreSQL 공유 limiter를 사용한다. Local
+- Information disclosure: Verification은 domain-separated hash-only이고 delivery queue에는 target FK와 고정 상태만
+  둔다. Raw token/fragment URL은 provider 호출 순간 외 DB/log/audit에 없으며 React bootstrap 전 URL에서 제거한다.
+  History/RAG는 `(workspace_id, created_by_user_id)` private scope이고 renderer env, operational status, release scan
+  진단에 secret 값이나 payload를 넣지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
+- Denial of service: request/body/page/outbox/file/count/byte/time/provider-response bounds와 PostgreSQL 공유 limiter를
+  사용한다. Verification resend는 account/address, consume은 address/token bucket을 공유한다. Local
   runtime 수와 reconciliation, release tree/state JSON/retained release 수를 제한한다. Live installer lock을 깨지
   않고 stale dead-process lock만 recover한다. Edge DDoS/WAF는 운영자 책임이다.
 - Elevation of privilege: workspace role과 creator scope를 매 경계에서 다시 확인한다. Production application DB
@@ -80,7 +89,9 @@ release input, signing key boundary나 trust anchor가 생기면 이 문서와 A
 Production key ceremony/HSM과 custody, trust-store authenticated distribution, transparency/timestamp,
 Authenticode, 실제 installer packaging binary와 process/service/registry/shortcut adapter, admin/system-wide install,
 SBOM/registry attestation, host hardening, PostgreSQL TLS/HA/WAL·backup
-retention, external provider와 remote MCP/Web Search는 별도 통제다. Offline signing host나 현재 trusted private
+retention, email provider의 mailbox/deliverability/body handling과 remote MCP/Web Search는 별도 통제다. Provider가
+요청을 받은 뒤 응답이 유실되면 retry rotation 때문에 먼저 전달된 링크가 무효화될 수 있다. Offline signing
+host나 현재 trusted private
 key가 장악되면 공격자는 유효한 artifact를 서명할 수 있으므로 즉시 store version을 올려 revoke하고 해당 key의
 과거 artifact도 격리해야 한다. Local trust-store receipt는 낮은 version과 같은 version의 다른 digest를
 거부하지만 trust store 자체의 인증된 배포를 대신하지 않는다. ACL adapter가 손상되면 unsafe root를 승인할 수

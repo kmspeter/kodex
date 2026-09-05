@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 7850571eafd66c570c256ace64b68bdbe82e20fd..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only f45f39bc3c142b9a22f769cf935e3714caec3a5d..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,13 +27,13 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | `main` |
-| 제품 기준 HEAD | `7850571eafd66c570c256ace64b68bdbe82e20fd` |
-| 제품 기준 commit | `fix: remove unused installer preflight result` (Phase 31 최종 코드 기준) |
-| 완료 범위 | Phase 1~31 |
-| 다음 핵심 기능 | 메인 통합 탭에서 지정; 이 전용 작업은 Phase 31에서 종료 |
+| 준비 branch | detached Phase 32 worktree; 메인 통합 탭이 `main` 반영 담당 |
+| 제품 기준 HEAD | `f45f39bc3c142b9a22f769cf935e3714caec3a5d` |
+| 제품 기준 commit | `fix: keep new accounts pending without a provider` (Phase 32 최종 코드 기준) |
+| 완료 범위 | Phase 1~32 |
+| 다음 핵심 기능 | 메인 통합 탭에서 Phase 32 targeted 재검증/통합; 이 전용 작업은 확장하지 않음 |
 
-Phase 1~30에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~32에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
@@ -41,9 +41,9 @@ throttling, workspace rename과 one-way soft archive, 공개 App Server paginati
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
 lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
-installer/updater/rollback code boundary까지 구현했다. 상세 계약은
+installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0030](adr/0030-windows-installer-updater-rollback.md)까지가 기준이다.
+[ADR 0031](adr/0031-email-verification-and-email-delivery.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -53,12 +53,16 @@ Electron / React renderer
   |                                      |                `-- tenant CODEX_HOME
   |                                      `-- durable redacted history outbox
   `-- separate product HTTP ----------> Product API ----> PostgreSQL + pgvector
+                                           `-- opt-in HTTPS bearer webhook --> Email provider
 ```
 
 - `apps/ui`는 browser-safe 계약만 소비한다. Product session은 HttpOnly cookie이며 CSRF, credential,
   provider key와 DB 연결 정보가 renderer payload, Web Storage, bundle 또는 log에 들어가면 안 된다.
 - `apps/api`는 별도 process/port에서 인증, workspace, Saved DB History, Knowledge API를 제공한다.
   Local Server bootstrap secret이나 Codex runtime을 공유하지 않는다.
+- 신규 가입은 항상 unverified이고 제한 session만 받는다. Verification raw token은 provider 호출 직전에만
+  생성하며 DB에는 domain-separated hash, delivery queue에는 payload-free target/status/lease만 둔다. Webhook이
+  꺼져 있으면 raw token 없이 job이 대기하므로 가입을 받기 전에 provider를 구성해야 한다.
 - Production Product API와 Local Server는 application DB 역할로 migration을 실행하지 않는다. 별도 migration
   job만 database-scoped owner 역할을 사용하며 broad cluster privilege나 동일 역할 구성은 startup 전에 거부한다.
 - `apps/local-server`는 매 요청에서 Product session과 active workspace membership을 다시 확인한다.
@@ -364,8 +368,9 @@ Phase 31의 원본 결정은 [ADR 0030](adr/0030-windows-installer-updater-rollb
   release 3개, current/LKG/rollback/journal/lock/trust receipt와 install root 밖 데이터 분류를 고정한다. State
   schema와 executable parser는 pointer/transaction/lock/receipt exact key와 canonical JSON만 허용한다.
 - `config/windows-release-compatibility.json`은 signed runtime tree 안
-  `resources/app/metadata/installer-compatibility.json`으로 들어가며 current migration `0012`, forward-only와
-  readable schema `12..12`를 선언한다. Runtime bundler가 실제 packaged migration ledger와 대조한다.
+  `resources/app/metadata/installer-compatibility.json`으로 들어간다. Phase 31 당시 current migration `0012`,
+  forward-only와 readable schema `12..12`를 선언했으며 Phase 32가 이를 `0013`/`13..13`으로 전진시켰다.
+  Runtime bundler가 실제 packaged migration ledger와 대조한다.
 - `plan`/`stage`는 Phase 30 external versioned trust-store Ed25519 verifier를 content gate의 첫 단계로 그대로
   호출하고 Phase 29 release-input secret scan을 이어서 재사용한다. Candidate/install root 안 trust store/ACL
   verifier, unsigned/tampered/unknown/revoked key, 낮은 trust-store version, 같은 version의 다른 digest, path escape,
@@ -413,11 +418,60 @@ tamper/unknown key/reparse 거부, incompatible schema rollback 차단, retentio
 사용자 지시에 따라 `npm run build`, runtime/release/installer artifact 생성, 실제 installer build/설치/삭제,
 registry/service/shortcut/process 조작, Docker, Electron/full-stack, Rust/MSVC 설치는 계속 실행하지 않았다.
 
+### Phase 32 — Email verification과 invitation email delivery
+
+Phase 32의 원본 결정은 [ADR 0031](adr/0031-email-verification-and-email-delivery.md), 운영 절차는
+[email delivery runbook](operations/email-delivery.md), 전체 외부 provider 경계는
+[threat model](security/threat-model.md)이다.
+
+- 새 `0013_email_verification_delivery.sql`만 추가했다. 기존 `email_verified_at IS NULL` user는 `created_at`으로
+  verified backfill하고, 이후 신규 가입은 user/credential/Personal Workspace/owner membership/제한 session과
+  payload-free verification delivery job을 한 transaction에서 생성한다. 미확인 session은 status/resend/logout 외
+  Product API와 Local runtime 권한이 없다.
+- Verification proof는 provider 호출 직전 CSPRNG 256-bit canonical base64url token을 만들고 DB에는 domain-separated
+  SHA-256만 저장한다. Resend는 이전 proof/job을 폐기하며 consume은 user lock 아래 single-use다. Invalid/expired/
+  revoked/reused는 같은 `410 verification_unavailable`이고 PostgreSQL 공유 account/address/token HMAC limiter를
+  lookup 전에 적용한다.
+- Browser link는 `/#email-verification=<token>`이고 React bootstrap 전에 history에서 제거한다. Pending UI는 email,
+  resend와 명시적 status refresh만 표시한다. Product DTO와 Vite environment에는 provider secret, raw token/URL을
+  넣지 않는다.
+- `AUTH_EMAIL_DELIVERY_ENABLED=true`일 때만 HTTPS webhook worker를 시작한다. Server-only bearer, redirect 거부,
+  timeout/response bound, `FOR UPDATE SKIP LOCKED` lease와 exponential retry를 사용한다. Durable job에는 target FK,
+  kind/status/attempt/fixed error/time만 있고 email/token/URL/payload/provider response가 없다. 설정이 없으면 raw
+  verification token 없이 job만 대기한다.
+- Workspace invitation은 provider 설정 시 생성 API에서 usable raw token 자체를 만들지 않고
+  `{invitation,deliveryStatus:"pending"}`만 반환한다. Worker가 provider 호출 직전 token/hash를 교체한다. 설정이
+  없으면 기존 hash-only one-time copy-link 계약을 유지한다. Retry마다 token을 회전해 모호한 이전 전달 링크를
+  무효화하고 terminal failure에서는 invitation/proof를 revoke한다.
+- Terminal verification/delivery row는 기존 coordinator에서 각각 기본 30일, bounded oldest-first,
+  `SKIP LOCKED`로 정리한다. Release compatibility와 packaged migration count는 forward-only schema `13..13`으로
+  맞췄다. 기존 migration 0001~0012, vendor/generated protocol, upstream source pin/manifest와 lockfile은 바꾸지 않았다.
+
+Feature commits는 `f247728`(핵심 lifecycle/delivery/API/UI/tests), `230fe1c`(release schema 13 정합),
+`f45f39b`(provider 없이도 신규 가입 pending 불변식)이다. 이 detached worktree의 Node `v20.19.4`에서 변경된/new
+`.mjs`의 `node --check`, package/config JSON parse, staged `git diff --check`와 `node scripts/security-validate.mjs`가
+통과했다. Feature staged security aggregate는 tracked 8,030 files, vendor 6,687 files, npm dependency 392,
+workspace 9, deployment contract 3, trust store version 2/key 0, `binaryPresent=false`였다. 첫 sandbox 실행은 내부
+`git` spawn이 EPERM이어서 동일 read-only command를 허용된 경계에서 재실행해 통과했다.
+README/ADR 0031/runbook/threat model/HANDOFF를 stage한 최종 security gate도 tracked 8,032 files와 나머지
+aggregate가 동일한 값으로 통과했다.
+
+이 worktree에는 `node_modules`가 없어 의존성을 설치/탐색하지 않았고 targeted Vitest, typecheck와 lint는 실행하지
+않았다. 사용자 지시에 따라 PostgreSQL/Docker harness, build, Electron/full-stack, 실제 email, Rust/MSVC도 실행하지
+않았다. 메인 통합 탭은 설치된 의존성과 허용된 환경에서 다음만 재검증해야 한다.
+
+- `vitest run test/unit/email-verification.test.ts test/unit/email-delivery.test.ts test/unit/email-verification-ui.test.tsx test/unit/workspace-management-ui.test.tsx`
+- targeted product-api/product-db/UI typecheck와 lint
+- `npm run test:email-verification-postgres`, `npm run test:retention-postgres`, `npm run test:abuse-rate-limit-postgres`는
+  disposable PostgreSQL을 실행해도 되는 별도 검증 환경에서만 수행
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
-   준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
-   Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
+1. **P1 — 메인 통합 탭에서 Phase 32를 재검증하고 반영한다.** 위 targeted Vitest/typecheck/lint를 실행하고,
+   별도 승인된 disposable PostgreSQL 환경이 있으면 fresh 0001~0013과 immutable 0001~0012 → 0013 harness를
+   실행한다. 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다.
+2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
+   `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
 ## 표준 실행과 검증
 
@@ -468,6 +522,7 @@ npm run test:workspace-invitations-postgres
 npm run test:auth-lifecycle-postgres
 npm run test:retention-postgres
 npm run test:abuse-rate-limit-postgres
+npm run test:email-verification-postgres
 npm run test:rag-postgres
 npm run test:desktop-full-stack
 npm run test:desktop-workspace-lifecycle
@@ -512,9 +567,11 @@ git status --short
   Windows service와 자동 배포 control plane을 제공하지 않는다. Phase 31 state machine의 process/registry/shortcut/
   ACL 판정은 packaging adapter가 필요하다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
-- Email verification, SMTP invitation delivery와 self-service workspace restore는 아직 없다. Permanent deletion은
-  online application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
-- Retention은 일부 terminal auth/invitation/password-reset/abuse row와 만료 export artifact의 bounded cleanup이다.
+- Email verification과 opt-in HTTPS invitation webhook은 있지만 SMTP client, template/bounce/complaint 처리,
+  reminder, provider delivery-status API와 self-service workspace restore는 없다. Permanent deletion은 online
+  application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
+- Retention은 terminal auth/invitation/password-reset/email-verification/email-delivery/abuse row와 만료 export
+  artifact의 bounded cleanup이다.
   Lifecycle tombstone에는 늦은 Local reconciliation용 UUID가 남고 자동 만료가 없다. PostgreSQL MVCC/autovacuum,
   WAL/replica/snapshot/backup, manual copy와 영구 disconnected device의 물리 삭제는 별도 운영 정책이 필요하다.
 - History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
