@@ -7,7 +7,6 @@ import { verifyVendorManifest } from '../vendor-manifest.mjs';
 
 const execFileAsync = promisify(execFile);
 const SHA256 = /^[a-f0-9]{64}$/u;
-const COMMIT = /^[a-f0-9]{40}$/u;
 const MAX_JSON_BYTES = 16 * 1024 * 1024;
 const MAX_TRACKED_FILES = 20_000;
 const MAX_RELEASE_FILES = 50_000;
