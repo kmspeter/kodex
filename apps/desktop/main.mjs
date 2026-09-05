@@ -29,9 +29,10 @@ const fullStackAcceptance = process.argv.includes('--full-stack-acceptance');
 const workspaceLifecycleAcceptance = process.argv.includes('--workspace-lifecycle-acceptance');
 const workspaceInvitationAcceptance = process.argv.includes('--workspace-invitation-acceptance');
 const passwordResetAcceptance = process.argv.includes('--password-reset-acceptance');
+const dataLifecycleAcceptance = process.argv.includes('--data-lifecycle-acceptance');
 const repositoryRagAcceptance = process.argv.includes('--repository-rag-acceptance');
 const desktopAcceptance = fullStackAcceptance || workspaceLifecycleAcceptance || workspaceInvitationAcceptance
-  || passwordResetAcceptance || repositoryRagAcceptance;
+  || passwordResetAcceptance || dataLifecycleAcceptance || repositoryRagAcceptance;
 const smoke = fakeSmoke || process.argv.includes('--smoke-real') || desktopAcceptance;
 const children = [];
 let mainWindow = null;
@@ -43,7 +44,7 @@ let acceptanceArtifactDirectory = null;
 
 const smokeTimeout = smoke ? globalThis.setTimeout(() => {
   void fatalShutdown(new Error(`Desktop smoke timed out while ${smokeStage}.`));
-}, repositoryRagAcceptance ? 270_000 : workspaceLifecycleAcceptance || workspaceInvitationAcceptance || passwordResetAcceptance
+}, repositoryRagAcceptance ? 270_000 : workspaceLifecycleAcceptance || workspaceInvitationAcceptance || passwordResetAcceptance || dataLifecycleAcceptance
   ? 210_000 : fullStackAcceptance ? 180_000 : 30_000) : null;
 
 if (desktopAcceptance) {
@@ -209,7 +210,7 @@ async function startServices() {
   const exited = children.find((child) => child.exitCode !== null || child.signalCode !== null);
   if (exited) throw new DesktopStartupError('CHILD_EARLY_EXIT', { serviceName: exited.kodexName });
   launchComplete = true;
-  return { localOrigin, productOrigin };
+  return { dataRoot, localOrigin, productOrigin };
 }
 
 function safeExternalUrl(value) {
@@ -281,7 +282,7 @@ async function launch() {
   if (smoke) process.stdout.write('Kodex desktop smoke: Electron ready.\n');
   await loadDesktopConfiguration();
   registerDesktopIpc();
-  const { localOrigin, productOrigin } = await startServices();
+  const { dataRoot, localOrigin, productOrigin } = await startServices();
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -400,6 +401,30 @@ async function launch() {
       targetWorkspaceName: process.env.KODEX_DESKTOP_ACCEPTANCE_TARGET_WORKSPACE_NAME,
     });
     process.stdout.write('Kodex desktop workspace lifecycle acceptance passed through renderer DOM interactions.\n');
+    if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
+    quitting = true;
+    launchComplete = false;
+    mainWindow.destroy();
+    mainWindow = null;
+    await stopServices();
+    app.quit();
+    return;
+  }
+
+  if (dataLifecycleAcceptance) {
+    smokeStage = 'running the data lifecycle renderer DOM acceptance scenario';
+    const { runDesktopDataLifecycleAcceptance } = await import('./data-lifecycle-acceptance-driver.mjs');
+    await runDesktopDataLifecycleAcceptance(mainWindow, {
+      artifactDirectory: acceptanceArtifactDirectory,
+      databaseUrl: process.env.DATABASE_URL,
+      dataRoot,
+      displayName: process.env.KODEX_DESKTOP_ACCEPTANCE_DISPLAY_NAME,
+      email: process.env.KODEX_DESKTOP_ACCEPTANCE_EMAIL,
+      localOrigin,
+      password: process.env.KODEX_DESKTOP_ACCEPTANCE_PASSWORD,
+      productOrigin,
+    });
+    process.stdout.write('Kodex desktop data lifecycle acceptance passed through renderer DOM interactions.\n');
     if (smokeTimeout) globalThis.clearTimeout(smokeTimeout);
     quitting = true;
     launchComplete = false;

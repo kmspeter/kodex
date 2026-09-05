@@ -1,5 +1,6 @@
 import type { ProductApiReadiness } from './server.js';
 import type { ProductRetentionMaintenance } from './retention-maintenance.js';
+import type { ProductDataLifecycleWorker } from './data-lifecycle-worker.js';
 
 export type OperationalAlertSeverity = 'critical' | 'warning';
 
@@ -19,6 +20,7 @@ export interface ProductOperationalStatus {
     status: 'down' | 'up';
   };
   generatedAt: string;
+  lifecycle: ReturnType<ProductDataLifecycleWorker['status']> | null;
   process: {
     status: 'running';
     uptimeSeconds: number;
@@ -36,6 +38,7 @@ export class ProductOperationalTelemetry {
     private readonly readiness: ProductApiReadiness,
     private readonly retention: ProductRetentionMaintenance | undefined,
     private readonly clock: () => number = Date.now,
+    private readonly lifecycle: Pick<ProductDataLifecycleWorker, 'status'> | undefined = undefined,
   ) {
     this.#startedAt = this.clock();
   }
@@ -54,6 +57,7 @@ export class ProductOperationalTelemetry {
     }
 
     const retention = this.retention?.status() ?? null;
+    const lifecycle = this.lifecycle?.status() ?? null;
     const alerts: OperationalAlert[] = [];
     if (databaseStatus === 'down') {
       alerts.push({
@@ -69,6 +73,13 @@ export class ProductOperationalTelemetry {
         since: retention.lastFailureAt,
       });
     }
+    if (lifecycle?.lastOutcome === 'failed' && lifecycle.lastFailureAt) {
+      alerts.push({
+        code: 'product_data_lifecycle_failed',
+        severity: 'warning',
+        since: lifecycle.lastFailureAt,
+      });
+    }
 
     return {
       alerts,
@@ -80,6 +91,7 @@ export class ProductOperationalTelemetry {
         status: databaseStatus,
       },
       generatedAt,
+      lifecycle,
       process: {
         status: 'running',
         uptimeSeconds: Math.max(0, Math.floor((now - this.#startedAt) / 1_000)),

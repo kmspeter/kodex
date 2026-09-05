@@ -76,7 +76,7 @@ beforeAll(async () => {
   }
   const applied = await database.migrate();
   expect(applied.map((migration) => migration.version)).toEqual(
-    mode === 'legacy-upgrade' ? [11] : Array.from({ length: 11 }, (_, index) => index + 1),
+    mode === 'legacy-upgrade' ? [11, 12] : Array.from({ length: 12 }, (_, index) => index + 1),
   );
 
   deliveryServer = createServer((request, response) => {

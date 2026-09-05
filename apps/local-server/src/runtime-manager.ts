@@ -1,6 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { lstat, readFile, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { canUseWorkspaceRuntime, isUuid } from '@kodex/product-contract';
 import type { HistoryEventSink, KnowledgeService, RagConfig } from '@kodex/product-db';
@@ -80,6 +81,16 @@ export interface RuntimeManagerOptions {
   runtimeOptions?: Omit<KodexRuntimeOptions, 'dataRoot' | 'localApiKey'>;
   sweepIntervalMs?: number;
   tenantRoot?: string;
+  tenantObserver?: (scope: Pick<RuntimeScope, 'userId' | 'workspaceId'>) => Promise<void>;
+}
+
+export type TenantCleanupResult = 'busy' | 'deleted' | 'missing' | 'partial';
+
+export class TenantCleanupSafetyError extends Error {
+  constructor() {
+    super('Tenant cleanup refused an unsafe filesystem shape.');
+    this.name = 'TenantCleanupSafetyError';
+  }
 }
 
 interface RuntimeEntry {
@@ -130,6 +141,7 @@ export class RuntimeManager {
   #tail: Promise<void> = Promise.resolve();
   #sweepTimer: NodeJS.Timeout;
   #createRuntime: (scope: RuntimeScope, dataRoot: string) => KodexRuntime | Promise<KodexRuntime>;
+  #tenantObserver: RuntimeManagerOptions['tenantObserver'];
 
   constructor(options: RuntimeManagerOptions) {
     this.repositoryRoot = path.resolve(options.repositoryRoot);
@@ -144,6 +156,7 @@ export class RuntimeManager {
     this.#historyLog = options.historyLog;
     this.#historyOptions = options.historyOptions;
     this.#historySink = options.historySink;
+    this.#tenantObserver = options.tenantObserver;
     this.#createRuntime = options.createRuntime ?? ((scope, dataRoot) => {
       const ragAugmenter = options.knowledgeService && options.ragConfig?.enabled
         ? new RagAugmenter(options.knowledgeService, {
@@ -180,6 +193,7 @@ export class RuntimeManager {
     const key = this.#key(scope);
     const entry = await this.#serialize(async () => {
       if (this.#closed) throw new Error('Runtime manager is closed.');
+      await this.#tenantObserver?.({ userId: scope.userId, workspaceId: scope.workspaceId });
       const existing = this.#entries.get(key);
       if (existing) {
         existing.leases += 1;
@@ -310,6 +324,43 @@ export class RuntimeManager {
         .sort((left, right) => left.lastUsedAt - right.lastUsedAt);
       for (const entry of candidates) await this.#evict(entry);
       return candidates.length;
+    });
+  }
+
+  async cleanupTenantData(
+    scope: Pick<RuntimeScope, 'userId' | 'workspaceId'>,
+    maximumEntries = 10_000,
+  ): Promise<TenantCleanupResult> {
+    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1 || maximumEntries > 100_000) {
+      throw new Error('Tenant cleanup entry bound is invalid.');
+    }
+    return this.#serialize(async () => {
+      const key = this.#key(scope);
+      const entry = this.#entries.get(key);
+      if (entry?.leases) return 'busy';
+      if (entry) await this.#evict(entry);
+      const root = this.dataRootFor(scope);
+      const rootMetadata = await lstat(root).catch((error: unknown) => {
+        if (filesystemErrorCode(error) === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (!rootMetadata) return 'missing';
+      if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new TenantCleanupSafetyError();
+      await assertRealTenantPath(this.tenantRoot, root, scope);
+      if (await liveInstanceLock(root)) return 'busy';
+      const budget = { remaining: maximumEntries };
+      const complete = await removeDirectoryContents(root, budget, 0);
+      if (!complete) return 'partial';
+      try {
+        await rmdir(root);
+      } catch (error) {
+        if (filesystemErrorCode(error) === 'ENOENT') return 'missing';
+        if (['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(filesystemErrorCode(error) ?? '')) return 'busy';
+        throw error;
+      }
+      await removeEmptyParent(path.dirname(root));
+      await removeEmptyParent(path.dirname(path.dirname(root)));
+      return 'deleted';
     });
   }
 
@@ -449,4 +500,94 @@ export class RuntimeManager {
     this.#tail = run.then(() => undefined, () => undefined);
     return run;
   }
+}
+
+function filesystemErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : undefined;
+}
+
+function sameFilesystemPath(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
+    : path.resolve(left) === path.resolve(right);
+}
+
+async function assertRealTenantPath(
+  tenantRoot: string,
+  root: string,
+  scope: Pick<RuntimeScope, 'userId' | 'workspaceId'>,
+): Promise<void> {
+  const tenantMetadata = await lstat(tenantRoot);
+  if (!tenantMetadata.isDirectory() || tenantMetadata.isSymbolicLink()) throw new TenantCleanupSafetyError();
+  const realTenantRoot = await realpath(tenantRoot);
+  const realRoot = await realpath(root);
+  const expected = path.join(realTenantRoot, 'users', scope.userId, 'workspaces', scope.workspaceId);
+  if (!sameFilesystemPath(realRoot, expected)) throw new TenantCleanupSafetyError();
+}
+
+async function liveInstanceLock(root: string): Promise<boolean> {
+  const lockPath = path.join(root, 'instance.lock');
+  const metadata = await lstat(lockPath).catch((error: unknown) => {
+    if (filesystemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!metadata) return false;
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 4_096) {
+    throw new TenantCleanupSafetyError();
+  }
+  let pid: number | undefined;
+  try {
+    const parsed = JSON.parse(await readFile(lockPath, 'utf8')) as { pid?: unknown };
+    if (typeof parsed.pid === 'number' && Number.isSafeInteger(parsed.pid) && parsed.pid > 0) pid = parsed.pid;
+  } catch {
+    throw new TenantCleanupSafetyError();
+  }
+  if (!pid) throw new TenantCleanupSafetyError();
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (filesystemErrorCode(error) === 'EPERM') return true;
+  }
+  const stale = `${lockPath}.stale.lifecycle`;
+  await rename(lockPath, stale).catch((error: unknown) => {
+    if (filesystemErrorCode(error) !== 'ENOENT') throw error;
+  });
+  return false;
+}
+
+async function removeDirectoryContents(
+  directory: string,
+  budget: { remaining: number },
+  depth: number,
+): Promise<boolean> {
+  if (depth > 64) throw new TenantCleanupSafetyError();
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (budget.remaining <= 0) return false;
+    budget.remaining -= 1;
+    const absolute = path.join(directory, entry.name);
+    const metadata = await lstat(absolute).catch((error: unknown) => {
+      if (filesystemErrorCode(error) === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!metadata) continue;
+    if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+      if (!await removeDirectoryContents(absolute, budget, depth + 1)) return false;
+      await rmdir(absolute).catch((error: unknown) => {
+        if (!['ENOENT', 'ENOTEMPTY'].includes(filesystemErrorCode(error) ?? '')) throw error;
+      });
+    } else {
+      await unlink(absolute).catch((error: unknown) => {
+        if (filesystemErrorCode(error) !== 'ENOENT') throw error;
+      });
+    }
+  }
+  return true;
+}
+
+async function removeEmptyParent(directory: string): Promise<void> {
+  await rmdir(directory).catch((error: unknown) => {
+    if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(filesystemErrorCode(error) ?? '')) throw error;
+  });
 }

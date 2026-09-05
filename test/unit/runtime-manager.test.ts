@@ -171,6 +171,31 @@ describe('tenant RuntimeManager', () => {
     }
   });
 
+  it('rechecks the lifecycle observer before leasing an already-created runtime', async () => {
+    const repositoryRoot = await root();
+    let blocked = false;
+    const observer = vi.fn(async () => {
+      if (blocked) throw new Error('tenant deletion pending');
+    });
+    const manager = new RuntimeManager({
+      repositoryRoot,
+      dataRoot: path.join(repositoryRoot, 'data'),
+      tenantRoot: path.join(repositoryRoot, 'data', 'tenants'),
+      tenantObserver: observer,
+      runtimeOptions: { startAppServer: false },
+    });
+    try {
+      const first = await manager.acquire(scope(userA, workspaceA));
+      first.release();
+      blocked = true;
+      await expect(manager.acquire(scope(userA, workspaceA))).rejects.toThrow('tenant deletion pending');
+      expect(observer).toHaveBeenCalledTimes(2);
+      expect(manager.inspect()).toHaveLength(1);
+    } finally {
+      await manager.close();
+    }
+  });
+
   it('respects active leases, evicts least-recent idle runtimes at capacity, and stops idle runtimes', async () => {
     const repositoryRoot = await root();
     let now = 1_000;

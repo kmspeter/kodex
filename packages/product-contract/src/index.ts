@@ -6,6 +6,8 @@ export const PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS = 100;
 export const PRODUCT_WORKSPACE_NAME_MAX_UTF8_BYTES = 400;
 /** HTML maxLength counts UTF-16 code units; a Unicode code point can require two. */
 export const PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS = PRODUCT_WORKSPACE_NAME_MAX_CHARACTERS * 2;
+export const PRODUCT_ACCOUNT_DELETE_CONFIRMATION = 'DELETE MY ACCOUNT';
+export const PRODUCT_WORKSPACE_DELETE_CONFIRMATION = 'DELETE WORKSPACE';
 
 /** Browser-safe workspace-name predicate shared by Product API and UI boundaries. */
 export function isValidProductWorkspaceName(value: unknown): value is string {
@@ -125,6 +127,24 @@ export interface ProductSessionDto {
 
 export interface ProductSessionsDto {
   sessions: ProductSessionDto[];
+}
+
+export const productDataLifecycleJobKinds = ['user_export', 'account_delete', 'workspace_delete'] as const;
+export type ProductDataLifecycleJobKind = (typeof productDataLifecycleJobKinds)[number];
+export const productDataLifecycleJobStatuses = [
+  'pending', 'running', 'waiting_local', 'blocked_legal_hold', 'completed', 'failed',
+] as const;
+export type ProductDataLifecycleJobStatus = (typeof productDataLifecycleJobStatuses)[number];
+
+export interface ProductDataLifecycleJobDto {
+  attemptCount: number;
+  completedAt: string | null;
+  createdAt: string;
+  id: string;
+  kind: ProductDataLifecycleJobKind;
+  lastErrorCode: string | null;
+  status: ProductDataLifecycleJobStatus;
+  updatedAt: string;
 }
 
 export const PRODUCT_HISTORY_DEFAULT_LIMIT = 25;
@@ -264,6 +284,33 @@ export function parseProductSessions(value: unknown): ProductSessionsDto {
     throw new Error('Invalid current product session response.');
   }
   return { sessions };
+}
+
+export function parseProductDataLifecycleJob(value: unknown): ProductDataLifecycleJobDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, [
+      'attemptCount', 'completedAt', 'createdAt', 'id', 'kind', 'lastErrorCode', 'status', 'updatedAt',
+    ])
+    || !isUuid(value.id)
+    || typeof value.kind !== 'string'
+    || !productDataLifecycleJobKinds.includes(value.kind as ProductDataLifecycleJobKind)
+    || typeof value.status !== 'string'
+    || !productDataLifecycleJobStatuses.includes(value.status as ProductDataLifecycleJobStatus)
+    || !Number.isSafeInteger(value.attemptCount)
+    || Number(value.attemptCount) < 0
+    || Number(value.attemptCount) > 1_000_000
+    || (value.lastErrorCode !== null && (typeof value.lastErrorCode !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/u.test(value.lastErrorCode)))
+    || !workspaceDate(value.createdAt)
+    || !workspaceDate(value.updatedAt)
+    || (value.completedAt !== null && !workspaceDate(value.completedAt))
+    || Date.parse(String(value.updatedAt)) < Date.parse(String(value.createdAt))
+    || (value.completedAt !== null && Date.parse(value.completedAt as string) < Date.parse(String(value.createdAt)))
+    || (['completed', 'failed'].includes(value.status as string) !== (value.completedAt !== null))
+  ) {
+    throw new Error('Invalid product data lifecycle job response.');
+  }
+  return value as unknown as ProductDataLifecycleJobDto;
 }
 
 function workspaceEmail(value: unknown): value is string {

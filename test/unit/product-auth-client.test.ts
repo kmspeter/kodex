@@ -623,4 +623,68 @@ describe('product auth browser contract', () => {
       false,
     )).toBe('https://app.example.test');
   });
+
+  it('binds export and permanent deletion calls to fixed paths, CSRF, and strict job DTOs', async () => {
+    const workspaceId = '20000000-0000-4000-8000-000000000001';
+    const pendingJob = {
+      attemptCount: 0,
+      completedAt: null,
+      createdAt: '2026-09-05T00:00:00.000Z',
+      id: '40000000-0000-4000-8000-000000000001',
+      kind: 'user_export',
+      lastErrorCode: null,
+      status: 'pending',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(authBody()))
+      .mockResolvedValueOnce(jsonResponse(pendingJob, 202))
+      .mockResolvedValueOnce(jsonResponse(pendingJob))
+      .mockResolvedValueOnce(jsonResponse({ formatVersion: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ ...pendingJob, kind: 'workspace_delete' }, 202))
+      .mockResolvedValueOnce(jsonResponse({ ...pendingJob, kind: 'account_delete' }, 202));
+    const client = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: fetchMock, pageUrl: 'http://127.0.0.1:5173/',
+    });
+    const invalidated = vi.fn();
+    client.onUnauthenticated(invalidated);
+    await client.me();
+    await expect(client.requestDataExport('current password')).resolves.toMatchObject({ kind: 'user_export' });
+    await client.dataLifecycleJob(pendingJob.id);
+    await expect(client.downloadDataExport(pendingJob.id)).resolves.toBeInstanceOf(Blob);
+    await client.deleteWorkspace(workspaceId, 'current password', 'Personal Workspace', 'DELETE WORKSPACE');
+    await client.deleteAccount('current password', 'DELETE MY ACCOUNT');
+    expect(invalidated).toHaveBeenCalledOnce();
+
+    expect(fetchMock.mock.calls.slice(1).map(([url, init]) => [String(url), init.method])).toEqual([
+      ['http://127.0.0.1:47832/api/data-exports', 'POST'],
+      [`http://127.0.0.1:47832/api/data-lifecycle/jobs/${pendingJob.id}`, 'GET'],
+      [`http://127.0.0.1:47832/api/data-exports/${pendingJob.id}/download`, 'GET'],
+      [`http://127.0.0.1:47832/api/workspaces/${workspaceId}/permanent-deletion`, 'POST'],
+      ['http://127.0.0.1:47832/api/auth/account', 'DELETE'],
+    ]);
+    for (const [, init] of fetchMock.mock.calls.filter(([, request]) => ['POST', 'DELETE'].includes(request.method))) {
+      expect(new Headers(init.headers).get('X-CSRF-Token')).toBe(csrfToken);
+    }
+    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
+      confirmation: 'DELETE WORKSPACE',
+      confirmationName: 'Personal Workspace',
+      currentPassword: 'current password',
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      confirmation: 'DELETE MY ACCOUNT',
+      currentPassword: 'current password',
+    });
+
+    const malformed = new ProductAuthClient({
+      apiBase: 'http://127.0.0.1:47832', development: true,
+      fetch: vi.fn()
+        .mockResolvedValueOnce(jsonResponse(authBody()))
+        .mockResolvedValueOnce(jsonResponse({ ...pendingJob, leaseOwner: 'secret' }, 202)),
+      pageUrl: 'http://127.0.0.1:5173/',
+    });
+    await malformed.me();
+    await expect(malformed.requestDataExport('current password')).rejects.toMatchObject({ kind: 'invalid-response' });
+  });
 });

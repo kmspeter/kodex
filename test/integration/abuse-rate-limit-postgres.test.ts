@@ -62,12 +62,12 @@ describe(`real PostgreSQL product abuse limiter (${mode})`, () => {
     await database?.close();
   });
 
-  it('applies migrations 0010-0011 on fresh and immutable 0001-0009 ledgers with enforced checks', async () => {
+  it('applies migrations 0010-0012 on fresh and immutable 0001-0009 ledgers with enforced checks', async () => {
     expect(migratedVersions).toEqual(mode === 'legacy-upgrade'
-      ? [10, 11]
-      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      ? [10, 11, 12]
+      : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     const columns = await database.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = 'product_abuse_rate_limits'

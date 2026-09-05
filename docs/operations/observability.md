@@ -38,6 +38,8 @@ failure와 동일시하지 않는다.
 | `product_database_unavailable` | PostgreSQL service/TLS/pool/network, 공개 ready 503 | credential을 출력하지 않고 DB 복구 후 ready/status 연속 성공 확인 |
 | `local_database_unavailable` | Local process에서 같은 DB 접근과 pool 상태 | 실행 중 agent를 강제 중단하지 말고 DB 복구 후 outbox drain 확인 |
 | `product_retention_failed` | DB availability, lock/statement failure, 다음 sweep | 임의 bulk delete 금지; 원인을 고친 뒤 bounded sweep 성공 확인 |
+| `product_data_lifecycle_failed` | Product worker/DB와 failed export/deletion aggregate | payload/ID를 로그에 넣지 말고 [data lifecycle runbook](data-lifecycle.md)으로 원인 분류·승인된 재시도 |
+| `local_data_lifecycle_failed` | exact tenant root의 unsafe shape/권한과 Local worker | 광범위 삭제 금지; Local 중지·exact root 점검·승인된 job 재시도 |
 | `runtime_capacity_saturated` | active runtime/lease와 장시간 열린 client | 정상 작업을 우선 보존하고 idle eviction 또는 명시적 capacity 조정 |
 | `codex_app_server_unavailable` | pinned binary 존재/integrity와 child lifecycle | vendor pin을 바꾸지 말고 release verification 후 해당 runtime 재시작 |
 | `codex_provider_credentials_missing` | tenant provider 설정과 server-only key 주입 | key를 UI/log/status에 복사하지 않고 정상 secret 경계로 재주입 |
@@ -58,10 +60,11 @@ failure와 동일시하지 않는다.
 npm run test:observability
 npm run test:history-postgres
 npm run test:retention-postgres
+npm run test:data-lifecycle-postgres
 npm run test:tenant-auth
 ```
 
 Incident 기록에는 release version/commit, component, fixed alert code, aggregate count와 시각만 남긴다. 응답 전문에
 예상 밖 key가 생기면 수집을 중지하고 secret scan을 수행한다. DB URL, stack/error message, tenant root, email,
 workspace/thread ID와 outbox record body는 ticket에 첨부하지 않는다. PostgreSQL row와 local spool의 복구/보존은
-offline backup runbook을 따르며 이 endpoint는 삭제나 repair action을 제공하지 않는다.
+offline backup runbook을 따른다. Status endpoint 자체는 삭제나 repair action을 제공하지 않는다.

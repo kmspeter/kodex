@@ -3,6 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PRODUCT_WORKSPACE_DELETE_CONFIRMATION } from '@kodex/product-contract';
 import type { ProductAuthClient, ProductAuthContext } from '../../apps/ui/src/auth/product-auth';
 import { WorkspaceManagementDialog } from '../../apps/ui/src/components/WorkspaceManagementDialog';
 
@@ -510,5 +511,77 @@ describe('workspace management dialog', () => {
     await act(async () => { resolveFirst({ members }); await flush(); });
     expect(container.textContent).toContain('Other');
     expect(container.textContent).not.toContain('member@example.com');
+  });
+
+  it('requires owner password, exact workspace name, and exact permanent-deletion phrase', async () => {
+    const deletion = deferred<{
+      attemptCount: number; completedAt: null; createdAt: string; id: string;
+      kind: 'workspace_delete'; lastErrorCode: null; status: 'pending'; updatedAt: string;
+    }>();
+    const deleteWorkspace = vi.fn(() => deletion.promise);
+    const refreshed = { ...base, workspaces: [] };
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      deleteWorkspace,
+      me: vi.fn().mockResolvedValue(refreshed),
+    } as unknown as ProductAuthClient;
+    const onArchived = vi.fn();
+    const onRefresh = vi.fn();
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog
+        account={base}
+        activeWorkspace={base.workspaces[0]}
+        client={client}
+        onArchived={onArchived}
+        onClose={vi.fn()}
+        onRefresh={onRefresh}
+      />);
+      await flush();
+    });
+    expect(container.textContent).toContain('Active runtime lease 또는 legal hold');
+    expect(container.textContent).toContain('secure erasure가 아닙니다');
+    const passwordInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 영구 삭제 현재 비밀번호"]')!;
+    const nameInput = container.querySelector<HTMLInputElement>('[aria-label="영구 삭제할 Workspace 이름 확인"]')!;
+    const confirmationInput = container.querySelector<HTMLInputElement>('[aria-label="Workspace 영구 삭제 확인"]')!;
+    const submit = confirmationInput.closest('form')!.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    await act(async () => {
+      setInput(passwordInput, 'current password');
+      setInput(nameInput, 'platform');
+      setInput(confirmationInput, PRODUCT_WORKSPACE_DELETE_CONFIRMATION);
+    });
+    expect(submit.disabled).toBe(true);
+    await act(async () => { setInput(nameInput, 'Platform'); });
+    expect(submit.disabled).toBe(false);
+    await act(async () => {
+      confirmationInput.closest('form')!.requestSubmit();
+      await flush();
+    });
+    expect(deleteWorkspace).toHaveBeenCalledWith(
+      workspaceId,
+      'current password',
+      'Platform',
+      PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+    );
+    expect(passwordInput.value).toBe('');
+    expect(nameInput.value).toBe('');
+    expect(confirmationInput.value).toBe('');
+    expect(submit.disabled).toBe(true);
+
+    await act(async () => {
+      deletion.resolve({
+        attemptCount: 0,
+        completedAt: null,
+        createdAt: '2026-09-05T00:00:00.000Z',
+        id: '40000000-0000-4000-8000-000000000001',
+        kind: 'workspace_delete',
+        lastErrorCode: null,
+        status: 'pending',
+        updatedAt: '2026-09-05T00:00:00.000Z',
+      });
+      await flush();
+    });
+    expect(onArchived).toHaveBeenCalledWith(ownerId, workspaceId);
+    expect(onRefresh).toHaveBeenCalledWith(refreshed);
   });
 });

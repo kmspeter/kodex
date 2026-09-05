@@ -6,6 +6,7 @@ import {
   PostgresAbuseRateLimiter,
   PostgresAuthRepository,
   PostgresHistoryRepository,
+  PostgresDataLifecycleRepository,
   PostgresLoginRateLimiter,
   PostgresPasswordResetRepository,
   PostgresRetentionRepository,
@@ -14,6 +15,7 @@ import {
   createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
   PasswordResetService,
+  DataLifecycleService,
 } from '@kodex/product-db';
 import { operationsBearerTokenFromEnv } from '@kodex/shared';
 import dotenv from 'dotenv';
@@ -34,6 +36,11 @@ import {
   WebhookPasswordResetDelivery,
 } from './password-reset-delivery.js';
 import { ProductOperationalTelemetry } from './operational-status.js';
+import {
+  ProductDataLifecycleWorker,
+  productDataLifecycleConfigFromEnv,
+  type ProductDataLifecycleLogEvent,
+} from './data-lifecycle-worker.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -45,11 +52,18 @@ if (process.env.KODEX_DISABLE_ENV_FILE !== '1') {
 let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
 let server: ProductApiServer | undefined;
 let retentionMaintenance: ProductRetentionMaintenance | undefined;
+let dataLifecycleWorker: ProductDataLifecycleWorker | undefined;
 let stopping = false;
 
 function logRetentionMaintenance(event: RetentionMaintenanceLogEvent): void {
   const output = `${JSON.stringify(event)}\n`;
   if (event.outcome === 'failed') process.stderr.write(output);
+  else process.stdout.write(output);
+}
+
+function logDataLifecycle(event: ProductDataLifecycleLogEvent): void {
+  const output = `${JSON.stringify(event)}\n`;
+  if (event.outcome === 'failed' || event.outcome === 'retry') process.stderr.write(output);
   else process.stdout.write(output);
 }
 
@@ -59,6 +73,7 @@ async function stop(exitCode = 0): Promise<void> {
   }
   stopping = true;
   try {
+    await dataLifecycleWorker?.stop().catch(() => undefined);
     await retentionMaintenance?.stop().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await database?.close().catch(() => undefined);
@@ -74,6 +89,7 @@ try {
   const config = productApiConfigFromEnv();
   const release = await loadProductReleaseIdentity(repositoryRoot);
   const retentionConfig = productRetentionMaintenanceConfigFromEnv();
+  const dataLifecycleConfig = productDataLifecycleConfigFromEnv();
   const passwordResetConfig = passwordResetDeliveryConfigFromEnv();
   const operationsToken = operationsBearerTokenFromEnv(
     process.env.PRODUCT_OPERATIONS_BEARER_TOKEN,
@@ -83,6 +99,8 @@ try {
   await database.migrate();
   const repository = new PostgresAuthRepository(database);
   const passwordHasher = new Argon2idPasswordHasher();
+  const lifecycleRepository = new PostgresDataLifecycleRepository(database);
+  const lifecycleService = new DataLifecycleService(lifecycleRepository, passwordHasher);
   if (!config.abuseRateLimitPolicies) throw new ProductApiConfigurationError('Abuse rate limit policies are required');
   const abuseRateLimiter = new PostgresAbuseRateLimiter(
     database,
@@ -128,7 +146,17 @@ try {
     },
     { log: logRetentionMaintenance },
   );
-  const operationalTelemetry = new ProductOperationalTelemetry(readiness, retentionMaintenance);
+  dataLifecycleWorker = new ProductDataLifecycleWorker(
+    lifecycleRepository,
+    dataLifecycleConfig,
+    logDataLifecycle,
+  );
+  const operationalTelemetry = new ProductOperationalTelemetry(
+    readiness,
+    retentionMaintenance,
+    Date.now,
+    dataLifecycleWorker,
+  );
   server = new ProductApiServer(
     auth,
     config,
@@ -146,10 +174,21 @@ try {
     operationsToken ? {
       token: operationsToken,
       snapshot: () => operationalTelemetry.snapshot(),
+      createLegalHold: (target, reasonCode) => lifecycleRepository.createLegalHold(target, reasonCode),
+      releaseLegalHold: (holdId) => lifecycleRepository.releaseLegalHold(holdId),
+      retryLifecycleJob: (jobId) => lifecycleRepository.retryLifecycleJob(jobId),
     } : undefined,
+    {
+      requestUserExport: (userId, sessionId, value) => lifecycleService.requestUserExport(userId, sessionId, value),
+      requestAccountDeletion: (userId, sessionId, value) => lifecycleService.requestAccountDeletion(userId, sessionId, value),
+      requestWorkspaceDeletion: (userId, sessionId, workspaceId, value) => lifecycleService.requestWorkspaceDeletion(userId, sessionId, workspaceId, value),
+      getJobForUser: (userId, jobId) => lifecycleRepository.getJobForUser(userId, jobId),
+      getExportForUser: (userId, jobId) => lifecycleRepository.getExportForUser(userId, jobId),
+    },
   );
   const port = await server.listen();
   retentionMaintenance.start();
+  dataLifecycleWorker.start();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

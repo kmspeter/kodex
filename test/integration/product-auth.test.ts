@@ -113,8 +113,8 @@ describe('PostgreSQL product authentication API', () => {
         throw new Error('Auth integration could not establish the 0001-0005 upgrade fixture');
       }
       const upgraded = await database.migrate();
-      if (upgraded.map((migration) => migration.version).join(',') !== '6,7,8,9,10,11') {
-        throw new Error('Auth integration did not apply migrations 0006-0011 during upgrade');
+      if (upgraded.map((migration) => migration.version).join(',') !== '6,7,8,9,10,11,12') {
+        throw new Error('Auth integration did not apply migrations 0006-0012 during upgrade');
       }
     } else {
       await database.migrate();

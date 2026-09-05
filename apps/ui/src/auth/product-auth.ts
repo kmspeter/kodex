@@ -2,6 +2,7 @@ import {
   canUseWorkspaceRuntime,
   isUuid,
   parseProductCreatedWorkspaceInvitation,
+  parseProductDataLifecycleJob,
   parseProductHistoryThreadDetail,
   parseProductHistoryThreadPage,
   parseProductSessions,
@@ -19,6 +20,7 @@ import {
   PRODUCT_WORKSPACE_QUERY_PARAM,
   workspaceRoles,
   type ProductAuthContextDto,
+  type ProductDataLifecycleJobDto,
   type ProductHistoryThreadDetailDto,
   type ProductHistoryThreadPageDto,
   type ProductSessionDto,
@@ -44,6 +46,7 @@ export type ProductWorkspaceInvitationPreview = ProductWorkspaceInvitationPrevie
 export type CreatedProductWorkspaceInvitation = ProductCreatedWorkspaceInvitationDto;
 export type ProductAuthContext = ProductAuthContextDto;
 export type ProductSession = ProductSessionDto;
+export type ProductDataLifecycleJob = ProductDataLifecycleJobDto;
 
 export interface ProductRuntimeWorkspaceSelection {
   userId: string;
@@ -460,6 +463,41 @@ export class ProductAuthClient {
     this.#invalidateSession();
   }
 
+  async requestDataExport(currentPassword: string): Promise<ProductDataLifecycleJob> {
+    const response = await this.#authMutation('/api/data-exports', 'POST', { currentPassword });
+    if (response.status !== 202) {
+      throw new ProductAuthError('invalid-response', 'The data export request status was invalid.', response.status);
+    }
+    return this.#parseLifecycleJob(response);
+  }
+
+  async dataLifecycleJob(jobId: string, options: { signal?: AbortSignal } = {}): Promise<ProductDataLifecycleJob> {
+    const response = await this.#request(`/api/data-lifecycle/jobs/${this.#uuid(jobId)}`, {
+      method: 'GET',
+      signal: options.signal,
+    });
+    return this.#parseLifecycleJob(response);
+  }
+
+  async downloadDataExport(jobId: string): Promise<Blob> {
+    const response = await this.#request(`/api/data-exports/${this.#uuid(jobId)}/download`, { method: 'GET' });
+    const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      throw new ProductAuthError('invalid-response', 'The data export download was not JSON.', response.status);
+    }
+    return response.blob();
+  }
+
+  async deleteAccount(currentPassword: string, confirmation: string): Promise<ProductDataLifecycleJob> {
+    const response = await this.#authMutation('/api/auth/account', 'DELETE', { currentPassword, confirmation });
+    if (response.status !== 202) {
+      throw new ProductAuthError('invalid-response', 'The account deletion request status was invalid.', response.status);
+    }
+    const result = await this.#parseLifecycleJob(response);
+    this.#invalidateSession();
+    return result;
+  }
+
   async createWorkspace(name: string): Promise<ProductWorkspace> {
     const response = await this.#workspaceMutation('/api/workspaces', 'POST', { name });
     if (response.status !== 201) throw new ProductAuthError('invalid-response', 'The workspace create response was invalid.', response.status);
@@ -495,6 +533,23 @@ export class ProductAuthClient {
     if (response.status !== 204) {
       throw new ProductAuthError('invalid-response', 'The workspace archive response was invalid.', response.status);
     }
+  }
+
+  async deleteWorkspace(
+    workspaceId: string,
+    currentPassword: string,
+    confirmationName: string,
+    confirmation: string,
+  ): Promise<ProductDataLifecycleJob> {
+    const response = await this.#workspaceMutation(
+      this.#workspacePath(workspaceId, '/permanent-deletion'),
+      'POST',
+      { currentPassword, confirmationName, confirmation },
+    );
+    if (response.status !== 202) {
+      throw new ProductAuthError('invalid-response', 'The workspace deletion request status was invalid.', response.status);
+    }
+    return this.#parseLifecycleJob(response);
   }
 
   async workspaceMembers(
@@ -746,6 +801,14 @@ export class ProductAuthClient {
       return parseProductWorkspaceMember(await this.#json(response));
     } catch {
       throw new ProductAuthError('invalid-response', 'The workspace API returned an invalid member.');
+    }
+  }
+
+  async #parseLifecycleJob(response: Response): Promise<ProductDataLifecycleJob> {
+    try {
+      return parseProductDataLifecycleJob(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The data lifecycle API returned an invalid job.');
     }
   }
 

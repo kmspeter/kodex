@@ -3,6 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PRODUCT_ACCOUNT_DELETE_CONFIRMATION } from '@kodex/product-contract';
 import type { ProductAuthClient, ProductSession } from '../../apps/ui/src/auth/product-auth';
 import { SecurityDialog } from '../../apps/ui/src/components/SecurityDialog';
 
@@ -119,5 +120,76 @@ describe('account security dialog', () => {
       await flush();
     });
     expect(client.logoutAll).toHaveBeenCalledOnce();
+  });
+
+  it('exports bounded JSON and requires credentials plus the exact account deletion phrase', async () => {
+    const completedJob = {
+      attemptCount: 1,
+      completedAt: '2026-09-05T00:00:01.000Z',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      id: '40000000-0000-4000-8000-000000000001',
+      kind: 'user_export' as const,
+      lastErrorCode: null,
+      status: 'completed' as const,
+      updatedAt: '2026-09-05T00:00:01.000Z',
+    };
+    const requestDataExport = vi.fn().mockResolvedValue(completedJob);
+    const downloadDataExport = vi.fn().mockResolvedValue(new Blob(['{}'], { type: 'application/json' }));
+    const deleteAccount = vi.fn().mockResolvedValue({ ...completedJob, kind: 'account_delete' });
+    const client = {
+      sessions: vi.fn().mockResolvedValue([current]),
+      requestDataExport,
+      downloadDataExport,
+      deleteAccount,
+    } as unknown as ProductAuthClient;
+    const createObjectUrl = vi.fn(() => 'blob:export');
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    await act(async () => {
+      root.render(<SecurityDialog client={client} onClose={vi.fn()} />);
+      await flush();
+    });
+    expect(container.textContent).toContain('embedding vector는 제외합니다');
+    expect(container.textContent).toContain('secure erasure가 아닙니다');
+
+    const exportInput = container.querySelector<HTMLInputElement>('[aria-label="내보내기 현재 비밀번호"]')!;
+    await act(async () => { setInput(exportInput, 'current password'); });
+    await act(async () => {
+      exportInput.closest('form')!.requestSubmit();
+      await flush();
+    });
+    expect(requestDataExport).toHaveBeenCalledWith('current password');
+    expect(exportInput.value).toBe('');
+    expect(container.textContent).toContain('내보내기 상태: completed');
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('다운로드'))?.click();
+      await flush();
+    });
+    expect(downloadDataExport).toHaveBeenCalledWith(completedJob.id);
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:export');
+
+    const passwordInput = container.querySelector<HTMLInputElement>('[aria-label="계정 삭제 현재 비밀번호"]')!;
+    const confirmationInput = container.querySelector<HTMLInputElement>('[aria-label="계정 삭제 확인"]')!;
+    const deleteButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('계정 영구 삭제 요청'))!;
+    await act(async () => {
+      setInput(passwordInput, 'current password');
+      setInput(confirmationInput, 'DELETE ACCOUNT');
+    });
+    expect(deleteButton.disabled).toBe(true);
+    await act(async () => { setInput(confirmationInput, PRODUCT_ACCOUNT_DELETE_CONFIRMATION); });
+    expect(deleteButton.disabled).toBe(false);
+    await act(async () => {
+      confirmationInput.closest('form')!.requestSubmit();
+      await flush();
+    });
+    expect(deleteAccount).toHaveBeenCalledWith('current password', PRODUCT_ACCOUNT_DELETE_CONFIRMATION);
+    expect(passwordInput.value).toBe('');
+    expect(confirmationInput.value).toBe('');
   });
 });

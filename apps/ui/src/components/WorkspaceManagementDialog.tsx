@@ -4,6 +4,7 @@ import {
   isValidProductWorkspaceName,
   PRODUCT_WORKSPACE_PAGE_DEFAULT_LIMIT,
   PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS,
+  PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
   workspaceInvitationRoles,
   workspaceRoles,
   type WorkspaceInvitationRole,
@@ -48,6 +49,11 @@ export function WorkspaceManagementDialog(props: {
   const [archiveConfirmation, setArchiveConfirmation] = useState('');
   const [archiveError, setArchiveError] = useState('');
   const [archivePending, setArchivePending] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteName, setDeleteName] = useState('');
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deletePending, setDeletePending] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceInvitationRole>('member');
@@ -65,7 +71,7 @@ export function WorkspaceManagementDialog(props: {
   const activeName = active?.name ?? '';
   const accountUserId = props.account.user.id;
   const canManage = active?.role === 'owner' || active?.role === 'admin';
-  const dialogBusy = Boolean(pending) || renamePending || archivePending;
+  const dialogBusy = Boolean(pending) || renamePending || archivePending || deletePending;
   const createValid = isValidProductWorkspaceName(name);
   const renameValid = isValidProductWorkspaceName(renameName);
 
@@ -330,6 +336,48 @@ export function WorkspaceManagementDialog(props: {
     }
   }
 
+  async function permanentlyDelete(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (
+      !active
+      || active.role !== 'owner'
+      || deletePending
+      || archivePending
+      || renamePending
+      || deleteName !== active.name
+      || deleteConfirmation !== PRODUCT_WORKSPACE_DELETE_CONFIRMATION
+      || !deletePassword
+    ) return;
+    const scope = scopeRef.current;
+    const workspaceId = active.id;
+    const userId = accountUserId;
+    const currentPassword = deletePassword;
+    setDeletePassword('');
+    setDeleteName('');
+    setDeleteConfirmation('');
+    setDeletePending(true);
+    setDeleteError('');
+    let requested = false;
+    try {
+      await props.client.deleteWorkspace(
+        workspaceId,
+        currentPassword,
+        active.name,
+        PRODUCT_WORKSPACE_DELETE_CONFIRMATION,
+      );
+      requested = true;
+      if (!mountedRef.current || scopeRef.current !== scope || props.account.user.id !== userId || activeId !== workspaceId) return;
+      props.onArchived?.(userId, workspaceId);
+      await revalidate({ expectedUserId: userId, scope });
+    } catch (nextError) {
+      if (!requested && mountedRef.current && scopeRef.current === scope) {
+        setDeleteError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      if (mountedRef.current && scopeRef.current === scope) setDeletePending(false);
+    }
+  }
+
   async function invite(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!active || pending) return;
@@ -462,6 +510,11 @@ export function WorkspaceManagementDialog(props: {
         <p className="workspace-archive-note">이 단계의 보관은 한 방향이며 self-service 복원 기능이 없습니다. 계속하려면 현재 이름 <strong>{active.name}</strong>을 정확히 입력하세요.</p>
         <form className="workspace-inline-form workspace-archive-form" onSubmit={(event) => void archive(event)}><label>현재 workspace 이름 확인<input aria-label="보관할 workspace 이름 확인" required maxLength={PRODUCT_WORKSPACE_NAME_MAX_UTF16_CODE_UNITS} autoComplete="off" value={archiveConfirmation} disabled={archivePending || renamePending} onChange={(event) => setArchiveConfirmation(event.target.value)} /></label><button className="danger-action" type="submit" disabled={archivePending || renamePending || archiveConfirmation !== active.name}>{archivePending ? <LoaderCircle className="spin" size={13} /> : <Archive size={13} />} 워크스페이스 보관</button></form>
         {archiveError && <div className="workspace-management-error" role="alert"><span>{archiveError}</span></div>}
+      </section>}
+      {active?.role === 'owner' && <section className="workspace-management-section workspace-danger-section" aria-labelledby="delete-workspace-title"><div className="dialog-intro"><div className="dialog-icon"><Trash2 size={20} /></div><div><h3 id="delete-workspace-title">Workspace 영구 삭제</h3><p>새 접근을 즉시 차단하고 durable worker가 이 Workspace의 History, RAG, audit, membership과 연결된 Local tenant root를 삭제합니다. Active runtime lease 또는 legal hold가 있으면 안전하게 대기합니다.</p></div></div>
+        <p className="workspace-archive-note">Online DB와 연결된 Local 설치 범위의 삭제이며 secure erasure가 아닙니다. Backup, WAL, replica, snapshot, 수동 복사본과 영구 offline 장치는 별도 보존 정책이 적용됩니다. 늦게 연결되는 Local 설치를 정리하기 위한 payload-free lifecycle UUID tombstone은 남습니다.</p>
+        <form className="security-password-form" onSubmit={(event) => void permanentlyDelete(event)}><label>현재 비밀번호<input aria-label="Workspace 영구 삭제 현재 비밀번호" type="password" autoComplete="current-password" value={deletePassword} disabled={dialogBusy} onChange={(event) => setDeletePassword(event.target.value)} /></label><label>현재 Workspace 이름<input aria-label="영구 삭제할 Workspace 이름 확인" autoComplete="off" value={deleteName} disabled={dialogBusy} onChange={(event) => setDeleteName(event.target.value)} /></label><label><code>{PRODUCT_WORKSPACE_DELETE_CONFIRMATION}</code> 입력<input aria-label="Workspace 영구 삭제 확인" autoComplete="off" value={deleteConfirmation} disabled={dialogBusy} onChange={(event) => setDeleteConfirmation(event.target.value)} /></label><button className="danger-action" type="submit" disabled={dialogBusy || !deletePassword || deleteName !== active.name || deleteConfirmation !== PRODUCT_WORKSPACE_DELETE_CONFIRMATION}>{deletePending ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} 영구 삭제 요청</button></form>
+        {deleteError && <div className="workspace-management-error" role="alert"><span>{deleteError}</span></div>}
       </section>}
       {!active && <p className="workspace-permission-note">현재 실행 가능한 workspace가 없습니다. 새 workspace를 생성하면 owner로 바로 시작할 수 있습니다.</p>}
     </div>

@@ -251,7 +251,7 @@ describe('real pgvector private RAG integration', () => {
     }
   });
 
-  it('installs the default-model HNSW expression index and records migration 0005 once', async () => {
+  it('installs the default-model HNSW expression index and records every migration once', async () => {
     const versionsUnderTest = await database.query<{ pgvector: string; postgres: string }>(`
       SELECT extversion AS pgvector,
              current_setting('server_version_num') AS postgres
@@ -275,7 +275,7 @@ describe('real pgvector private RAG integration', () => {
     const versions = await database.query<{ count: string; max: string }>(`
       SELECT count(*)::text AS count, max(version)::text AS max FROM schema_migrations
     `);
-    expect(versions.rows[0]).toEqual({ count: '5', max: '5' });
+    expect(versions.rows[0]).toEqual({ count: '12', max: '12' });
     await expect(database.migrate()).resolves.toEqual([]);
   });
 

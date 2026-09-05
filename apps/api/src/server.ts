@@ -14,6 +14,7 @@ import {
   workspaceInvitationRoles,
   workspaceRoles,
   type ProductAuthResponseDto,
+  type ProductDataLifecycleJobDto,
   type ProductSessionDto,
   type ProductHistoryPreviewDto,
   type ProductHistoryThreadDetailDto,
@@ -35,6 +36,9 @@ import type {
   RagConfig,
   RetrievalResult,
   WorkspaceApplication,
+  DataExportArtifact,
+  DataLifecycleJob,
+  LegalHold,
 } from '@kodex/product-db';
 import {
   AuthServiceError,
@@ -48,6 +52,7 @@ import {
   WorkspaceInvitationError,
   WorkspaceCursorError,
   WorkspaceOperationError,
+  DataLifecycleError,
 } from '@kodex/product-db';
 import type { AbuseRateLimiter } from '@kodex/product-db';
 import { verifyOperationsBearer } from '@kodex/shared';
@@ -93,8 +98,27 @@ export interface PasswordResetApplication {
 }
 
 export interface ProductOperationsEndpoint {
+  createLegalHold?(
+    target: { targetType: 'user'; targetUserId: string } | { targetType: 'workspace'; targetWorkspaceId: string },
+    reasonCode: string,
+  ): Promise<LegalHold>;
+  releaseLegalHold?(holdId: string): Promise<boolean>;
+  retryLifecycleJob?(jobId: string): Promise<boolean>;
   snapshot(): Promise<unknown>;
   token: string;
+}
+
+export interface DataLifecycleApplication {
+  getExportForUser(userId: string, jobId: string): Promise<DataExportArtifact | undefined>;
+  getJobForUser(userId: string, jobId: string): Promise<DataLifecycleJob | undefined>;
+  requestAccountDeletion(userId: string, currentSessionId: string, value: unknown): Promise<DataLifecycleJob>;
+  requestUserExport(userId: string, currentSessionId: string, value: unknown): Promise<DataLifecycleJob>;
+  requestWorkspaceDeletion(
+    userId: string,
+    currentSessionId: string,
+    workspaceId: string,
+    value: unknown,
+  ): Promise<DataLifecycleJob>;
 }
 
 class HttpError extends Error {
@@ -327,6 +351,22 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     json(response, status, { ok: false, error: { code, message } });
     return;
   }
+  if (error instanceof DataLifecycleError) {
+    const responses = {
+      confirmation_mismatch: [409, 'deletion_confirmation_mismatch', 'Deletion confirmation did not match.'],
+      credential_rejected: [403, 'credential_rejected', 'The current password was not accepted.'],
+      export_limit: [409, 'export_limit', 'The export exceeds the configured bounded limit.'],
+      forbidden: [403, 'lifecycle_forbidden', 'Data lifecycle access is not permitted.'],
+      invalid: [400, 'invalid_lifecycle_request', 'The data lifecycle request is invalid.'],
+      legal_hold: [423, 'legal_hold', 'A legal hold prevents deletion.'],
+      not_found: [404, 'not_found', 'The data lifecycle target was not found.'],
+      owned_workspace_conflict: [409, 'owned_workspace_conflict', 'Transfer or separately delete workspaces that still have other members.'],
+      scope_conflict: [409, 'scope_conflict', 'The stored data scope requires operator repair before deletion.'],
+    } as const;
+    const [status, code, message] = responses[error.code];
+    json(response, status, { ok: false, error: { code, message } });
+    return;
+  }
   process.stderr.write('Product API request failed without exposing internal details.\n');
   json(response, 500, {
     ok: false,
@@ -349,6 +389,7 @@ export class ProductApiServer {
     private readonly release?: ProductReleaseIdentity,
     private readonly passwordReset?: PasswordResetApplication,
     private readonly operations?: ProductOperationsEndpoint,
+    private readonly lifecycle?: DataLifecycleApplication,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -437,6 +478,41 @@ export class ProductApiServer {
           return;
         }
         json(response, 200, await this.operations.snapshot());
+        return;
+      }
+      if (url.pathname === '/api/operations/legal-holds' && request.method === 'POST') {
+        if (!this.operations?.createLegalHold) throw new HttpError(404, 'not_found', 'Not found.');
+        this.#verifyOperationsRequest(request, response);
+        requireJson(request);
+        const input = validateLegalHold(await readJsonBody(request, this.config.maxBodyBytes));
+        const created = await this.operations.createLegalHold(input.target, input.reasonCode);
+        json(response, 201, {
+          id: created.id,
+          targetType: created.targetType,
+          reasonCode: created.reasonCode,
+          createdAt: created.createdAt.toISOString(),
+        });
+        return;
+      }
+      const legalHoldMatch = /^\/api\/operations\/legal-holds\/([^/]+)$/u.exec(url.pathname);
+      if (legalHoldMatch && request.method === 'DELETE') {
+        if (!this.operations?.releaseLegalHold) throw new HttpError(404, 'not_found', 'Not found.');
+        this.#verifyOperationsRequest(request, response);
+        if (!await this.operations.releaseLegalHold(decodeUuidPath(legalHoldMatch[1]))) {
+          throw new HttpError(404, 'not_found', 'Not found.');
+        }
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const lifecycleRetryMatch = /^\/api\/operations\/data-lifecycle\/jobs\/([^/]+)\/retry$/u.exec(url.pathname);
+      if (lifecycleRetryMatch && request.method === 'POST') {
+        if (!this.operations?.retryLifecycleJob) throw new HttpError(404, 'not_found', 'Not found.');
+        this.#verifyOperationsRequest(request, response);
+        if (!await this.operations.retryLifecycleJob(decodeUuidPath(lifecycleRetryMatch[1]))) {
+          throw new HttpError(404, 'not_found', 'Not found.');
+        }
+        json(response, 202, { ok: true });
         return;
       }
       if (url.pathname === '/api/version' && request.method === 'GET') {
@@ -594,6 +670,68 @@ export class ProductApiServer {
         response.end();
         return;
       }
+      if (url.pathname === '/api/data-exports' && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        requireJson(request);
+        const lifecycle = this.#requireLifecycle();
+        json(response, 202, publicLifecycleJob(await lifecycle.requestUserExport(
+          context.user.id,
+          context.sessionId,
+          await readJsonBody(request, this.config.maxBodyBytes),
+        )));
+        return;
+      }
+      if (url.pathname === '/api/auth/account' && request.method === 'DELETE') {
+        const { context } = await this.#workspaceMutationContext(request);
+        requireJson(request);
+        const lifecycle = this.#requireLifecycle();
+        const requested = await lifecycle.requestAccountDeletion(
+          context.user.id,
+          context.sessionId,
+          await readJsonBody(request, this.config.maxBodyBytes),
+        );
+        response.setHeader('Set-Cookie', clearSessionCookies(this.config.secureCookies));
+        json(response, 202, publicLifecycleJob(requested));
+        return;
+      }
+      if (url.pathname === '/api/data-lifecycle/policy' && request.method === 'GET') {
+        await this.#authenticatedContext(request);
+        json(response, 200, {
+          contentRetention: 'until_deletion_request',
+          onlineDeletionScope: 'application_database_and_connected_local_tenants',
+          excludedPhysicalCopies: [
+            'backup', 'wal', 'replica', 'snapshot', 'disconnected_device', 'manual_copy',
+            'payload_free_lifecycle_tombstone',
+          ],
+          secureErasure: false,
+        });
+        return;
+      }
+      const lifecycleJobMatch = /^\/api\/data-lifecycle\/jobs\/([^/]+)$/u.exec(url.pathname);
+      if (lifecycleJobMatch && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        const found = await this.#requireLifecycle().getJobForUser(
+          context.user.id,
+          decodeUuidPath(lifecycleJobMatch[1]),
+        );
+        if (!found) throw new HttpError(404, 'not_found', 'Not found.');
+        json(response, 200, publicLifecycleJob(found));
+        return;
+      }
+      const exportDownloadMatch = /^\/api\/data-exports\/([^/]+)\/download$/u.exec(url.pathname);
+      if (exportDownloadMatch && request.method === 'GET') {
+        const context = await this.#authenticatedContext(request);
+        const exportArtifact = await this.#requireLifecycle().getExportForUser(
+          context.user.id,
+          decodeUuidPath(exportDownloadMatch[1]),
+        );
+        if (!exportArtifact) throw new HttpError(404, 'not_found', 'Not found.');
+        response.statusCode = 200;
+        response.setHeader('Content-Type', 'application/json; charset=utf-8');
+        response.setHeader('Content-Disposition', 'attachment; filename="kodex-user-export.json"');
+        response.end(JSON.stringify(exportArtifact.document));
+        return;
+      }
       if (url.pathname === '/api/invitations/preview' && request.method === 'POST') {
         verifyOrigin(request, this.config.allowedOrigins);
         requireJson(request);
@@ -646,6 +784,19 @@ export class ProductApiServer {
         await this.#requireWorkspaces().archiveWorkspace(context.user.id, workspaceId, input.confirmationName);
         response.statusCode = 204;
         response.end();
+        return;
+      }
+      const workspaceDeletionMatch = /^\/api\/workspaces\/([^/]+)\/permanent-deletion$/u.exec(url.pathname);
+      if (workspaceDeletionMatch && request.method === 'POST') {
+        const { context } = await this.#workspaceMutationContext(request);
+        requireJson(request);
+        const workspaceId = decodeUuidPath(workspaceDeletionMatch[1]);
+        json(response, 202, publicLifecycleJob(await this.#requireLifecycle().requestWorkspaceDeletion(
+          context.user.id,
+          context.sessionId,
+          workspaceId,
+          await readJsonBody(request, this.config.maxBodyBytes),
+        )));
         return;
       }
       const workspaceInvitationsMatch = /^\/api\/workspaces\/([^/]+)\/invitations$/u.exec(url.pathname);
@@ -821,6 +972,22 @@ export class ProductApiServer {
     return this.workspaces;
   }
 
+  #requireLifecycle(): DataLifecycleApplication {
+    if (!this.lifecycle) throw new HttpError(503, 'lifecycle_unavailable', 'Data lifecycle service is temporarily unavailable.');
+    return this.lifecycle;
+  }
+
+  #verifyOperationsRequest(request: IncomingMessage, response: ServerResponse): void {
+    if (
+      !this.operations
+      || request.headers.origin
+      || !verifyOperationsBearer(request.headers.authorization, this.operations.token)
+    ) {
+      response.setHeader('WWW-Authenticate', 'Bearer');
+      throw new HttpError(401, 'operations_unauthorized', 'Operations authentication is required.');
+    }
+  }
+
   async #consumeAbuseLimit(
     action: 'invitation_accept' | 'invitation_preview',
     subjects: Parameters<AbuseRateLimiter['consume']>[1],
@@ -906,6 +1073,43 @@ export class ProductApiServer {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function publicLifecycleJob(value: DataLifecycleJob): ProductDataLifecycleJobDto {
+  return {
+    id: value.id,
+    kind: value.kind,
+    status: value.status,
+    attemptCount: value.attemptCount,
+    lastErrorCode: value.lastErrorCode,
+    createdAt: value.createdAt.toISOString(),
+    updatedAt: value.updatedAt.toISOString(),
+    completedAt: value.completedAt?.toISOString() ?? null,
+  };
+}
+
+function validateLegalHold(value: unknown): {
+  reasonCode: string;
+  target: { targetType: 'user'; targetUserId: string } | { targetType: 'workspace'; targetWorkspaceId: string };
+} {
+  if (!isRecord(value) || typeof value.reasonCode !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/u.test(value.reasonCode)) {
+    throw new HttpError(400, 'invalid_legal_hold', 'The legal hold request is invalid.');
+  }
+  if (
+    exactKeys(value, ['reasonCode', 'targetType', 'userId'])
+    && value.targetType === 'user'
+    && isUuid(value.userId)
+  ) {
+    return { reasonCode: value.reasonCode, target: { targetType: 'user', targetUserId: value.userId } };
+  }
+  if (
+    exactKeys(value, ['reasonCode', 'targetType', 'workspaceId'])
+    && value.targetType === 'workspace'
+    && isUuid(value.workspaceId)
+  ) {
+    return { reasonCode: value.reasonCode, target: { targetType: 'workspace', targetWorkspaceId: value.workspaceId } };
+  }
+  throw new HttpError(400, 'invalid_legal_hold', 'The legal hold request is invalid.');
 }
 
 const HISTORY_CHILD_LIMIT = 250;

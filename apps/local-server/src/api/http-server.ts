@@ -27,6 +27,7 @@ import {
 } from './validation.js';
 import { RepositoryIndexError, type RepositoryIndexer } from '../rag/repository-indexer.js';
 import type { LocalSecurityMetricEvent } from '../operational-status.js';
+import { TenantDeletionPendingError } from '../local-lifecycle-worker.js';
 
 export interface LocalOperationsEndpoint {
   snapshot(): Promise<unknown>;
@@ -151,7 +152,12 @@ function publicError(error: unknown): { code: string; message: string; status: n
   if (error instanceof RepositoryIndexError) {
     return { code: error.code, message: error.publicMessage, status: error.status };
   }
-  if (error instanceof ProductAuthorizationError || error instanceof LocalSecurityError || error instanceof RuntimeCapacityError) {
+  if (
+    error instanceof ProductAuthorizationError
+    || error instanceof LocalSecurityError
+    || error instanceof RuntimeCapacityError
+    || error instanceof TenantDeletionPendingError
+  ) {
     return { code: error.code, message: error.message, status: error.status };
   }
   return { code: 'request_rejected', message: 'The local request could not be completed.', status: 400 };

@@ -92,7 +92,7 @@ describe('product database migration SQL', () => {
     const applied = await migrateProductDatabase(pool);
     const statements = query.mock.calls.map(([text]) => text);
 
-    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(applied.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(statements[0]).toBe('BEGIN');
     expect(statements).toContain('SET LOCAL search_path TO public, pg_catalog');
     expect(statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(true);
@@ -102,7 +102,7 @@ describe('product database migration SQL', () => {
 
   it('contains the phase-one tenant, history, audit, and RAG schema', async () => {
     const migrations = await loadMigrations();
-    expect(migrations).toHaveLength(11);
+    expect(migrations).toHaveLength(12);
     expect(migrations[0].version).toBe(1);
     expect(migrations[0].checksum).toMatch(/^[a-f0-9]{64}$/);
 
@@ -183,11 +183,11 @@ describe('product database migration SQL', () => {
     expect(annSql).toContain('embedding_dimensions = 1536');
     expect(annSql).not.toMatch(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS/iu);
 
-    const lifecycleSql = migrations[5].sql;
+    const authLifecycleSql = migrations[5].sql;
     expect(migrations[5].version).toBe(6);
-    expect(lifecycleSql).toContain('CREATE TABLE auth_login_rate_limits (');
-    expect(lifecycleSql).toContain('octet_length(bucket_hash) = 32');
-    expect(lifecycleSql).not.toMatch(/\b(email|password|ip_address|user_agent|session_token)\s+(?:text|inet)/iu);
+    expect(authLifecycleSql).toContain('CREATE TABLE auth_login_rate_limits (');
+    expect(authLifecycleSql).toContain('octet_length(bucket_hash) = 32');
+    expect(authLifecycleSql).not.toMatch(/\b(email|password|ip_address|user_agent|session_token)\s+(?:text|inet)/iu);
 
     const invitationSql = migrations[6].sql;
     expect(migrations[6].version).toBe(7);
@@ -224,6 +224,11 @@ describe('product database migration SQL', () => {
     expect(passwordResetSql).toContain('token_hash bytea NOT NULL UNIQUE');
     expect(passwordResetSql).toContain('password_reset_requests_pending_user_uq');
     expect(passwordResetSql).toContain('password_reset_requests_retention_terminal_idx');
+    const dataLifecycleSql = migrations[11].sql;
+    expect(dataLifecycleSql).toContain('CREATE TABLE data_lifecycle_jobs');
+    expect(dataLifecycleSql).toContain('CREATE TABLE data_legal_holds');
+    expect(dataLifecycleSql).toContain('CREATE TABLE data_lifecycle_local_targets');
+    expect(dataLifecycleSql).toContain('data_lifecycle_jobs_claim_idx');
     expect(passwordResetSql).toContain("'password_reset_request'");
     expect(passwordResetSql).toContain("'password_reset_complete'");
     expect(passwordResetSql).not.toMatch(/\b(raw_token|reset_url|email)\s+(?:text|bytea)/iu);

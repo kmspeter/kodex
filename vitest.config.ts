@@ -16,6 +16,7 @@ export default defineConfig({
       'test/integration/retention-postgres.test.ts',
       'test/integration/abuse-rate-limit-postgres.test.ts',
       'test/integration/password-reset-postgres.test.ts',
+      'test/integration/data-lifecycle-postgres.test.ts',
       'test/integration/workspace-membership-postgres.test.ts',
       'test/integration/workspace-invitation-postgres.test.ts',
       'test/acceptance/full-stack.test.ts',

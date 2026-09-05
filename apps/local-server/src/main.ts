@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import {
   PostgresAuthRepository,
   PostgresHistoryRepository,
+  PostgresDataLifecycleRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
   requireProductDatabaseFromEnv,
@@ -15,6 +16,13 @@ import { DatabaseProductAuthorizer } from './auth/product-authorization.js';
 import { RuntimeManager } from './runtime-manager.js';
 import { RepositoryIndexer } from './rag/repository-indexer.js';
 import { LocalOperationalTelemetry } from './operational-status.js';
+import {
+  discoverLocalTenantScopes,
+  createLifecycleTenantObserver,
+  loadLocalLifecycleInstallationId,
+  localLifecycleConfigFromEnv,
+  LocalLifecycleWorker,
+} from './local-lifecycle-worker.js';
 
 const repositoryRoot = process.env.KODEX_RUNTIME_ROOT
   ? path.resolve(process.env.KODEX_RUNTIME_ROOT)
@@ -48,12 +56,14 @@ let database: ReturnType<typeof requireProductDatabaseFromEnv> | undefined;
 let runtimeManager: RuntimeManager | undefined;
 let server: LocalHttpServer | undefined;
 let operationalTelemetry: LocalOperationalTelemetry | undefined;
+let lifecycleWorker: LocalLifecycleWorker | undefined;
 let stopping = false;
 
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) return;
   stopping = true;
   try {
+    await lifecycleWorker?.stop().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await runtimeManager?.close().catch(() => undefined);
     await database?.close().catch(() => undefined);
@@ -74,10 +84,13 @@ try {
   await database.migrate();
   const authorizer = new DatabaseProductAuthorizer(new PostgresAuthRepository(database));
   const history = new PostgresHistoryRepository(database);
+  const lifecycleRepository = new PostgresDataLifecycleRepository(database);
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   const configuredDataRoot = process.env.KODEX_DATA_ROOT
     ? path.resolve(process.env.KODEX_DATA_ROOT)
     : path.join(repositoryRoot, '.kodex-data');
+  const lifecycleConfig = localLifecycleConfigFromEnv();
+  const lifecycleTenantObserver: { current?: ReturnType<typeof createLifecycleTenantObserver> } = {};
   const reconciliationRetryInitialMs = positiveInteger(
     process.env.KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS, 5_000, 60 * 60_000,
     'KODEX_HISTORY_RECONCILIATION_RETRY_INITIAL_MS',
@@ -93,6 +106,10 @@ try {
     repositoryRoot,
     dataRoot: configuredDataRoot,
     tenantRoot: process.env.KODEX_TENANT_ROOT ? path.resolve(process.env.KODEX_TENANT_ROOT) : undefined,
+    tenantObserver: async (scope) => {
+      if (!lifecycleTenantObserver.current) throw new Error('Local lifecycle observer is not initialized.');
+      await lifecycleTenantObserver.current(scope);
+    },
     apiKey: process.env.OPENAI_API_KEY,
     localApiKey: process.env.KODEX_LOCAL_LLM_API_KEY,
     historySink: history,
@@ -157,9 +174,29 @@ try {
     idleTimeoutMs: positiveInteger(process.env.KODEX_RUNTIME_IDLE_MS, 15 * 60_000, 24 * 60 * 60_000, 'KODEX_RUNTIME_IDLE_MS'),
     sweepIntervalMs: positiveInteger(process.env.KODEX_RUNTIME_SWEEP_MS, 60_000, 60 * 60_000, 'KODEX_RUNTIME_SWEEP_MS'),
   });
+  const installationId = await loadLocalLifecycleInstallationId(runtimeManager.dataRoot);
+  lifecycleTenantObserver.current = createLifecycleTenantObserver(lifecycleRepository, installationId);
+  await lifecycleRepository.registerLocalTenants(
+    installationId,
+    await discoverLocalTenantScopes(runtimeManager.tenantRoot),
+    true,
+  );
+  lifecycleWorker = new LocalLifecycleWorker(
+    lifecycleRepository,
+    runtimeManager,
+    installationId,
+    lifecycleConfig,
+    (event) => {
+      const output = `${JSON.stringify(event)}\n`;
+      if (event.outcome === 'failed' || event.outcome === 'retry') process.stderr.write(output);
+      else process.stdout.write(output);
+    },
+  );
   operationalTelemetry = new LocalOperationalTelemetry(
     runtimeManager,
     async () => { await database!.query('SELECT 1'); },
+    Date.now,
+    lifecycleWorker,
   );
   server = new LocalHttpServer(runtimeManager, authorizer, {
     host,
@@ -188,6 +225,7 @@ try {
     },
   });
   const actualPort = await server.listen();
+  lifecycleWorker.start();
   process.stdout.write(`Kodex Local Server: http://${host}:${actualPort}\n`);
   process.stdout.write(`Kodex tenant root: ${runtimeManager.tenantRoot}\n`);
   process.stdout.write(`Kodex runtime policy: max=${runtimeManager.maxActiveRuntimes}, idleMs=${runtimeManager.idleTimeoutMs}\n`);

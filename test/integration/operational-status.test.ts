@@ -70,7 +70,18 @@ function runtimeStatus(): RuntimeManagerOperationalStatus {
 describe('authenticated payload-free operational status', () => {
   it('keeps Product API failures behind bearer auth and removes injected diagnostics', async () => {
     const readiness = { check: vi.fn(async () => { throw new Error(sensitive); }) };
-    const telemetry = new ProductOperationalTelemetry(readiness, undefined, () => Date.parse('2026-09-04T00:00:00.000Z'));
+    const telemetry = new ProductOperationalTelemetry(
+      readiness,
+      undefined,
+      () => Date.parse('2026-09-04T00:00:00.000Z'),
+      { status: () => ({
+        enabled: true,
+        lastFailureAt: '2026-09-03T23:59:00.000Z',
+        lastOutcome: 'failed' as const,
+        processedJobs: 0,
+        running: false,
+      }) },
+    );
     const auth = {
       authenticate: vi.fn(),
       login: vi.fn(),
@@ -101,9 +112,13 @@ describe('authenticated payload-free operational status', () => {
       const text = await response.text();
       expect(response.status).toBe(200);
       expect(JSON.parse(text)).toMatchObject({
-        alerts: [{ code: 'product_database_unavailable', severity: 'critical' }],
+        alerts: expect.arrayContaining([
+          expect.objectContaining({ code: 'product_database_unavailable', severity: 'critical' }),
+          expect.objectContaining({ code: 'product_data_lifecycle_failed', severity: 'warning' }),
+        ]),
         component: 'product-api',
         database: { consecutiveFailures: 1, status: 'down' },
+        lifecycle: { lastOutcome: 'failed' },
         status: 'degraded',
       });
       expect(text).not.toContain(sensitive);
@@ -128,6 +143,13 @@ describe('authenticated payload-free operational status', () => {
       { operationalStatus: runtimeStatus },
       async () => { if (databaseUnavailable) throw new Error(sensitive); },
       () => now,
+      { status: () => ({
+        enabled: true,
+        lastFailureAt: '2026-09-04T00:59:00.000Z',
+        lastOutcome: 'failed' as const,
+        processedTargets: 0,
+        running: false,
+      }) },
     );
     telemetry.recordHistory({
       kind: 'history_reconciliation_failed',
@@ -187,6 +209,7 @@ describe('authenticated payload-free operational status', () => {
         'history_outbox_database_unavailable',
         'history_reconciliation_failed',
         'authorization_revalidation_unavailable',
+        'local_data_lifecycle_failed',
       ]));
       expect(text).not.toContain(sensitive);
       expect(text).not.toContain(secret);

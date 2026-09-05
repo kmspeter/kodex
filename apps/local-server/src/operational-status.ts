@@ -1,5 +1,6 @@
 import type { HistoryRecorderLogEvent } from './history/recorder.js';
 import type { RuntimeManager, RuntimeManagerOperationalStatus } from './runtime-manager.js';
+import type { LocalLifecycleWorker } from './local-lifecycle-worker.js';
 
 export interface LocalOperationalAlert {
   code: string;
@@ -47,6 +48,7 @@ export interface LocalOperationalStatus {
     status: 'down' | 'up';
   };
   generatedAt: string;
+  lifecycle: ReturnType<LocalLifecycleWorker['status']> | null;
   process: {
     status: 'running';
     uptimeSeconds: number;
@@ -86,6 +88,7 @@ export class LocalOperationalTelemetry {
     private readonly runtimeManager: Pick<RuntimeManager, 'operationalStatus'>,
     private readonly databaseCheck: () => Promise<void>,
     private readonly clock: () => number = Date.now,
+    private readonly lifecycle: Pick<LocalLifecycleWorker, 'status'> | undefined = undefined,
   ) {
     this.#startedAt = this.clock();
   }
@@ -128,6 +131,7 @@ export class LocalOperationalTelemetry {
     }
 
     const runtimes = this.runtimeManager.operationalStatus();
+    const lifecycle = this.lifecycle?.status() ?? null;
     const candidates: AlertCandidate[] = [];
     if (databaseStatus === 'down') {
       candidates.push({ code: 'local_database_unavailable', severity: 'critical' });
@@ -163,6 +167,9 @@ export class LocalOperationalTelemetry {
     ) {
       candidates.push({ code: 'authorization_revalidation_unavailable', severity: 'critical' });
     }
+    if (lifecycle?.lastOutcome === 'failed') {
+      candidates.push({ code: 'local_data_lifecycle_failed', severity: 'warning' });
+    }
 
     const activeCodes = new Set(candidates.map((candidate) => candidate.code));
     for (const code of this.#alertSince.keys()) {
@@ -190,6 +197,7 @@ export class LocalOperationalTelemetry {
         status: databaseStatus,
       },
       generatedAt,
+      lifecycle,
       process: {
         status: 'running',
         uptimeSeconds: Math.max(0, Math.floor((now - this.#startedAt) / 1_000)),

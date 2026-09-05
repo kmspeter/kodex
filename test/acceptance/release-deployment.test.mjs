@@ -146,7 +146,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
     vendorManifestSha256: await sha256File(path.join(appRoot, 'metadata', 'VENDOR_SOURCE_SHA256.json')),
   });
   const manifest = await verifyReleaseArtifact(releaseRoot);
-  expect(manifest.database.migrations.at(-1)?.version).toBe(11);
+  expect(manifest.database.migrations.at(-1)?.version).toBe(12);
   await runPackagedVerifier();
 
   const firstPort = await unusedLoopbackPort();
@@ -155,7 +155,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   const version = await fetch(`http://127.0.0.1:${firstPort}/api/version`);
   expect(await version.json()).toEqual({ version: application.version, commit: releaseCommit });
   const ledger = await database.query('SELECT count(*)::integer AS count, max(version)::integer AS latest FROM schema_migrations');
-  expect(ledger.rows[0]).toEqual({ count: 11, latest: 11 });
+  expect(ledger.rows[0]).toEqual({ count: 12, latest: 12 });
   await stopRuntimeChildren([first]);
 
   await database.query(

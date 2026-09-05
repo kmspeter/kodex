@@ -195,3 +195,30 @@ export {
   type WorkspacePageOptions,
   type WorkspaceRecord,
 } from './workspace-types.js';
+export {
+  PostgresDataLifecycleRepository,
+} from './data-lifecycle-repository.js';
+export {
+  ACCOUNT_DELETE_CONFIRMATION,
+  DataLifecycleService,
+  WORKSPACE_DELETE_CONFIRMATION,
+  type DataLifecycleRequestRepository,
+} from './data-lifecycle-service.js';
+export {
+  DataLifecycleError,
+  dataLifecycleJobKinds,
+  dataLifecycleJobStatuses,
+  type CredentialConfirmation,
+  type DataExportArtifact,
+  type DataLifecycleErrorCode,
+  type DataLifecycleJob,
+  type DataLifecycleJobKind,
+  type DataLifecycleJobStatus,
+  type DataLifecycleWorkerConfig,
+  type LegalHold,
+  type LocalLifecycleTarget,
+  type LocalLifecycleCleanupResult,
+  type LocalLifecycleExecutionResult,
+  type LocalTenantScope,
+} from './data-lifecycle-types.js';
+export { buildBoundedUserExport } from './data-export.js';
