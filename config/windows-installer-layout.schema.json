@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/windows-installer-layout.schema.json",
+  "title": "Kodex Windows installer layout",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "scope",
+    "platform",
+    "arch",
+    "directories",
+    "files",
+    "retention",
+    "externalData",
+    "adapters"
+  ],
+  "properties": {
+    "format": { "const": "kodex-windows-installer-layout" },
+    "formatVersion": { "const": 1 },
+    "scope": { "const": "per-user" },
+    "platform": { "const": "win32" },
+    "arch": { "const": "x64" },
+    "directories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releases", "state"],
+      "properties": {
+        "releases": { "const": "releases" },
+        "state": { "const": ".installer-state" }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "journal", "lastKnownGood", "lock", "rollbackCandidate", "trustStoreReceipt"],
+      "properties": {
+        "current": { "const": "current.json" },
+        "journal": { "const": "transaction.json" },
+        "lastKnownGood": { "const": "last-known-good.json" },
+        "lock": { "const": "installer.lock" },
+        "rollbackCandidate": { "const": "rollback-candidate.json" },
+        "trustStoreReceipt": { "const": "trust-store-receipt.json" }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximumReleases"],
+      "properties": { "maximumReleases": { "type": "integer", "minimum": 3, "maximum": 10 } }
+    },
+    "externalData": {
+      "const": ["tenant-data", "codex-home", "postgresql-data", "operator-backups", "kodex-env"]
+    },
+    "adapters": {
+      "const": ["windows-acl-verifier", "process-lifecycle", "service-manager", "registry", "shortcuts", "packaging-code-removal"]
+    }
+  }
+}

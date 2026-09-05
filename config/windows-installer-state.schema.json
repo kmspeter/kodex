@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/windows-installer-state.schema.json",
+  "title": "Kodex Windows installer state records",
+  "$defs": {
+    "releaseId": {
+      "type": "string",
+      "pattern": "^Kodex-(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?-windows-x64-[a-f0-9]{12}$"
+    },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 64 },
+    "pointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "formatVersion", "generation", "releaseId", "updatedAt"],
+      "properties": {
+        "format": { "const": "kodex-windows-release-pointer" },
+        "formatVersion": { "const": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "releaseId": { "$ref": "#/$defs/releaseId" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format", "formatVersion", "id", "operation", "phase", "fromReleaseId", "toReleaseId",
+        "databaseSchemaVersion", "automaticRollbackAllowed", "createdAt", "updatedAt"
+      ],
+      "properties": {
+        "format": { "const": "kodex-windows-installer-transaction" },
+        "formatVersion": { "const": 1 },
+        "id": { "type": "string", "format": "uuid" },
+        "operation": { "enum": ["activate", "rollback"] },
+        "phase": { "enum": ["prepared", "awaiting-health", "confirming", "rolling-back"] },
+        "fromReleaseId": { "oneOf": [{ "$ref": "#/$defs/releaseId" }, { "type": "null" }] },
+        "toReleaseId": { "$ref": "#/$defs/releaseId" },
+        "databaseSchemaVersion": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "automaticRollbackAllowed": { "type": "boolean" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "formatVersion", "id", "pid", "createdAt"],
+      "properties": {
+        "format": { "const": "kodex-windows-installer-lock" },
+        "formatVersion": { "const": 1 },
+        "id": { "type": "string", "format": "uuid" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "createdAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "formatVersion", "storeVersion", "sha256", "updatedAt"],
+      "properties": {
+        "format": { "const": "kodex-windows-trust-store-receipt" },
+        "formatVersion": { "const": 1 },
+        "storeVersion": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/pointer" },
+    { "$ref": "#/$defs/transaction" },
+    { "$ref": "#/$defs/lock" },
+    { "$ref": "#/$defs/receipt" }
+  ]
+}

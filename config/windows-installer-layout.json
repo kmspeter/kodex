@@ -1,0 +1,37 @@
+{
+  "format": "kodex-windows-installer-layout",
+  "formatVersion": 1,
+  "scope": "per-user",
+  "platform": "win32",
+  "arch": "x64",
+  "directories": {
+    "releases": "releases",
+    "state": ".installer-state"
+  },
+  "files": {
+    "current": "current.json",
+    "journal": "transaction.json",
+    "lastKnownGood": "last-known-good.json",
+    "lock": "installer.lock",
+    "rollbackCandidate": "rollback-candidate.json",
+    "trustStoreReceipt": "trust-store-receipt.json"
+  },
+  "retention": {
+    "maximumReleases": 3
+  },
+  "externalData": [
+    "tenant-data",
+    "codex-home",
+    "postgresql-data",
+    "operator-backups",
+    "kodex-env"
+  ],
+  "adapters": [
+    "windows-acl-verifier",
+    "process-lifecycle",
+    "service-manager",
+    "registry",
+    "shortcuts",
+    "packaging-code-removal"
+  ]
+}

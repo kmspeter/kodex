@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/windows-release-compatibility.schema.json",
+  "title": "Kodex Windows release compatibility metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "database"],
+  "properties": {
+    "format": { "const": "kodex-windows-release-compatibility" },
+    "formatVersion": { "const": 1 },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["migrationStrategy", "latestSchemaVersion", "minimumReadableSchemaVersion", "maximumReadableSchemaVersion"],
+      "properties": {
+        "migrationStrategy": { "const": "forward-only" },
+        "latestSchemaVersion": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "minimumReadableSchemaVersion": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "maximumReadableSchemaVersion": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    }
+  }
+}

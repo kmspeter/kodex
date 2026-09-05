@@ -1,0 +1,10 @@
+{
+  "format": "kodex-windows-release-compatibility",
+  "formatVersion": 1,
+  "database": {
+    "migrationStrategy": "forward-only",
+    "latestSchemaVersion": 12,
+    "minimumReadableSchemaVersion": 12,
+    "maximumReadableSchemaVersion": 12
+  }
+}

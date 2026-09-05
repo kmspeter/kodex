@@ -77,10 +77,17 @@ await Promise.all([
   copy('scripts/kodex-backup.mjs', 'operations/kodex-backup.mjs'),
   copy('scripts/lib/offline-backup.mjs', 'operations/lib/offline-backup.mjs'),
   copy('scripts/kodex-release.mjs', 'operations/kodex-release.mjs'),
+  copy('scripts/kodex-installer.mjs', 'operations/kodex-installer.mjs'),
   copy('scripts/lib/release-artifact.mjs', 'operations/lib/release-artifact.mjs'),
   copy('scripts/lib/release-signature.mjs', 'operations/lib/release-signature.mjs'),
   copy('scripts/lib/security-validation.mjs', 'operations/lib/security-validation.mjs'),
+  copy('scripts/lib/windows-installer.mjs', 'operations/lib/windows-installer.mjs'),
   copy('scripts/vendor-manifest.mjs', 'operations/vendor-manifest.mjs'),
+  copy('config/windows-installer-layout.json', 'config/windows-installer-layout.json'),
+  copy('config/windows-installer-layout.schema.json', 'config/windows-installer-layout.schema.json'),
+  copy('config/windows-installer-state.schema.json', 'config/windows-installer-state.schema.json'),
+  copy('config/windows-release-compatibility.json', 'metadata/installer-compatibility.json'),
+  copy('config/windows-release-compatibility.schema.json', 'config/windows-release-compatibility.schema.json'),
   copy('apps/api/dist', 'product-api'),
   copy('apps/local-server/dist', 'server'),
   copy('apps/ui/dist', 'ui'),
@@ -137,8 +144,11 @@ for (const relative of [
   'operations/kodex-backup.mjs',
   'operations/lib/offline-backup.mjs',
   'operations/kodex-release.mjs',
+  'operations/kodex-installer.mjs',
   'operations/lib/release-artifact.mjs',
   'operations/lib/release-signature.mjs',
+  'operations/lib/windows-installer.mjs',
+  'metadata/installer-compatibility.json',
   'node_modules/@kodex/product-contract/dist/index.js',
   'node_modules/@kodex/product-db/dist/index.js',
   'node_modules/@kodex/product-db/migrations/0001_initial_product_schema.sql',
@@ -159,6 +169,17 @@ const migrationsModule = await import(pathToFileURL(path.join(appRoot, 'node_mod
 const migrations = await migrationsModule.loadMigrations();
 if (migrations.length !== 12 || path.resolve(migrationsModule.defaultMigrationsDirectory) !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')) {
   throw new Error('Bundled Product DB migrations did not resolve to the packaged migration directory.');
+}
+const installerCompatibility = JSON.parse(await readFile(path.join(appRoot, 'metadata', 'installer-compatibility.json'), 'utf8'));
+if (
+  installerCompatibility?.format !== 'kodex-windows-release-compatibility'
+  || installerCompatibility?.formatVersion !== 1
+  || installerCompatibility?.database?.migrationStrategy !== 'forward-only'
+  || installerCompatibility?.database?.latestSchemaVersion !== migrations.at(-1)?.version
+  || installerCompatibility?.database?.minimumReadableSchemaVersion > migrations.at(-1)?.version
+  || installerCompatibility?.database?.maximumReadableSchemaVersion < migrations.at(-1)?.version
+) {
+  throw new Error('Bundled installer compatibility metadata does not match the migration ledger.');
 }
 const verificationEnvironment = {
   ELECTRON_RUN_AS_NODE: '1',
