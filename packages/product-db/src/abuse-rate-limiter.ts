@@ -7,7 +7,9 @@ export type AbuseRateLimitAction =
   | 'invitation_preview'
   | 'invitation_accept'
   | 'password_reset_request'
-  | 'password_reset_complete';
+  | 'password_reset_complete'
+  | 'email_verification_resend'
+  | 'email_verification_complete';
 export type AbuseRateLimitSubjectKind = 'account' | 'address' | 'email' | 'token';
 
 export interface AbuseRateLimitPolicy {
@@ -66,6 +68,8 @@ const ACTION_SUBJECTS: Readonly<Record<AbuseRateLimitAction, readonly AbuseRateL
   invitation_accept: ['account', 'address', 'token'],
   password_reset_request: ['address', 'email'],
   password_reset_complete: ['address', 'token'],
+  email_verification_resend: ['account', 'address'],
+  email_verification_complete: ['address', 'token'],
 };
 
 function validatePolicy(action: AbuseRateLimitAction, policy: AbuseRateLimitPolicy): void {

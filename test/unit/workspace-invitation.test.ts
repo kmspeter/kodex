@@ -41,6 +41,8 @@ describe('workspace invitation browser boundary', () => {
 
   it('strictly separates the one-time create DTO from pending and preview DTOs', () => {
     expect(parseProductCreatedWorkspaceInvitation({ invitation, token })).toEqual({ invitation, token });
+    expect(parseProductCreatedWorkspaceInvitation({ invitation, deliveryStatus: 'pending' }))
+      .toEqual({ invitation, deliveryStatus: 'pending' });
     expect(parseProductWorkspaceInvitations({ invitations: [invitation] })).toEqual({ invitations: [invitation] });
     expect(parseProductWorkspaceInvitationPreview({
       expiresAt: invitation.expiresAt, role: 'member', targetEmailHint: 'm***@example.com', workspaceName: 'Platform',

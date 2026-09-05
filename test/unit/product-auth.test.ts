@@ -231,6 +231,8 @@ describe('product API configuration and cookies', () => {
         invitation_accept: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
         password_reset_request: { maxAttempts: 5, windowMs: 3_600_000, blockMs: 3_600_000 },
         password_reset_complete: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
+        email_verification_resend: { maxAttempts: 5, windowMs: 3_600_000, blockMs: 3_600_000 },
+        email_verification_complete: { maxAttempts: 5, windowMs: 900_000, blockMs: 900_000 },
       },
       workspaceInvitationPendingLimit: 100,
       workspaceInvitationTtlMs: 604_800_000,

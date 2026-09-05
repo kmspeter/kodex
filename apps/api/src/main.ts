@@ -9,12 +9,15 @@ import {
   PostgresDataLifecycleRepository,
   PostgresLoginRateLimiter,
   PostgresPasswordResetRepository,
+  PostgresEmailVerificationRepository,
+  PostgresEmailDeliveryRepository,
   PostgresRetentionRepository,
   PostgresWorkspaceRepository,
   ProductDatabaseConfigurationError,
   createKnowledgeRuntimeFromEnv,
   bootstrapProductDatabase,
   PasswordResetService,
+  EmailVerificationService,
   DataLifecycleService,
 } from '@kodex/product-db';
 import { operationsBearerTokenFromEnv } from '@kodex/shared';
@@ -36,6 +39,8 @@ import {
   WebhookPasswordResetDelivery,
 } from './password-reset-delivery.js';
 import { ProductOperationalTelemetry } from './operational-status.js';
+import { emailDeliveryConfigFromEnv, WebhookEmailDelivery } from './email-delivery.js';
+import { EmailDeliveryWorker, type EmailDeliveryLogEvent } from './email-delivery-worker.js';
 import {
   ProductDataLifecycleWorker,
   productDataLifecycleConfigFromEnv,
@@ -53,6 +58,7 @@ let database: Awaited<ReturnType<typeof bootstrapProductDatabase>> | undefined;
 let server: ProductApiServer | undefined;
 let retentionMaintenance: ProductRetentionMaintenance | undefined;
 let dataLifecycleWorker: ProductDataLifecycleWorker | undefined;
+let emailDeliveryWorker: EmailDeliveryWorker | undefined;
 let stopping = false;
 
 function logRetentionMaintenance(event: RetentionMaintenanceLogEvent): void {
@@ -67,12 +73,19 @@ function logDataLifecycle(event: ProductDataLifecycleLogEvent): void {
   else process.stdout.write(output);
 }
 
+function logEmailDelivery(event: EmailDeliveryLogEvent): void {
+  const output = `${JSON.stringify(event)}\n`;
+  if (event.outcome === 'failed' || event.outcome === 'retry') process.stderr.write(output);
+  else process.stdout.write(output);
+}
+
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) {
     return;
   }
   stopping = true;
   try {
+    await emailDeliveryWorker?.stop().catch(() => undefined);
     await dataLifecycleWorker?.stop().catch(() => undefined);
     await retentionMaintenance?.stop().catch(() => undefined);
     await server?.close().catch(() => undefined);
@@ -91,6 +104,7 @@ try {
   const retentionConfig = productRetentionMaintenanceConfigFromEnv();
   const dataLifecycleConfig = productDataLifecycleConfigFromEnv();
   const passwordResetConfig = passwordResetDeliveryConfigFromEnv();
+  const emailDeliveryConfig = emailDeliveryConfigFromEnv();
   const operationsToken = operationsBearerTokenFromEnv(
     process.env.PRODUCT_OPERATIONS_BEARER_TOKEN,
     'PRODUCT_OPERATIONS_BEARER_TOKEN',
@@ -115,6 +129,7 @@ try {
       windowMs: config.loginRateLimitWindowMs,
       blockMs: config.loginRateLimitBlockMs,
     }),
+    requireEmailVerification: Boolean(emailDeliveryConfig),
   });
   const knowledgeRuntime = createKnowledgeRuntimeFromEnv(database);
   const passwordReset = passwordResetConfig
@@ -124,6 +139,20 @@ try {
       new WebhookPasswordResetDelivery(passwordResetConfig),
       abuseRateLimiter,
       { ttlMs: passwordResetConfig.ttlMs },
+    )
+    : undefined;
+  const emailVerification = emailDeliveryConfig
+    ? new EmailVerificationService(
+      new PostgresEmailVerificationRepository(database),
+      abuseRateLimiter,
+    )
+    : undefined;
+  emailDeliveryWorker = emailDeliveryConfig
+    ? new EmailDeliveryWorker(
+      new PostgresEmailDeliveryRepository(database),
+      new WebhookEmailDelivery(emailDeliveryConfig),
+      emailDeliveryConfig,
+      logEmailDelivery,
     )
     : undefined;
   validateKnowledgeBodyCapacity(config, knowledgeRuntime.config);
@@ -164,6 +193,7 @@ try {
     readiness,
     new PostgresWorkspaceRepository(database, {
       cursorSecret: config.cookieSecret,
+      emailDeliveryEnabled: Boolean(emailDeliveryConfig),
       pendingLimit: config.workspaceInvitationPendingLimit ?? 100,
       ttlMs: config.workspaceInvitationTtlMs ?? 7 * 24 * 60 * 60 * 1_000,
     }),
@@ -184,10 +214,12 @@ try {
       getJobForUser: (userId, jobId) => lifecycleRepository.getJobForUser(userId, jobId),
       getExportForUser: (userId, jobId) => lifecycleRepository.getExportForUser(userId, jobId),
     },
+    emailVerification,
   );
   const port = await server.listen();
   retentionMaintenance.start();
   dataLifecycleWorker.start();
+  emailDeliveryWorker?.start();
   process.stdout.write(`Kodex Product API: http://${config.host}:${port}\n`);
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

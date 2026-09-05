@@ -96,6 +96,28 @@ describe('workspace management dialog', () => {
     expect(container.querySelector('[aria-label="새 workspace 초대 링크"]')).toBeNull();
   });
 
+  it('shows only delivery status when the server sends an invitation email', async () => {
+    const invitation = {
+      id: '40000000-0000-4000-8000-000000000001', workspaceId, targetEmail: 'member@example.com',
+      role: 'member' as const, createdByUserId: ownerId, createdAt: '2026-09-01T02:00:00.000Z', expiresAt: '2026-09-08T02:00:00.000Z',
+    };
+    const client = {
+      workspaceMembers: vi.fn().mockResolvedValue({ members }),
+      workspaceInvitations: vi.fn().mockResolvedValue({ invitations: [] }),
+      createWorkspaceInvitation: vi.fn().mockResolvedValue({ invitation, deliveryStatus: 'pending' }),
+    } as unknown as ProductAuthClient;
+    await act(async () => {
+      root.render(<WorkspaceManagementDialog account={base} activeWorkspace={base.workspaces[0]} client={client} onClose={vi.fn()} onRefresh={vi.fn()} />);
+      await flush();
+    });
+    const email = container.querySelector<HTMLInputElement>('input[type="email"]')!;
+    await act(async () => { setInput(email, 'member@example.com'); });
+    await act(async () => { container.querySelector<HTMLFormElement>('.member-add-form')!.requestSubmit(); await flush(); });
+    expect(container.textContent).toContain('초대 이메일이 전달 대기열에 등록되었습니다');
+    expect(container.querySelector('[aria-label="새 workspace 초대 링크"]')).toBeNull();
+    expect(container.textContent).not.toContain('#invite=');
+  });
+
   it('allows a 100-code-point astral name through create, rename, and archive confirmation', async () => {
     const astralBoundary = '😀'.repeat(100);
     const astralWorkspace = { ...base.workspaces[0], name: astralBoundary };

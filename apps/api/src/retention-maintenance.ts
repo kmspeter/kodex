@@ -9,6 +9,8 @@ export interface RetentionMaintenanceRuntimeConfig extends ProductRetentionMaint
 export interface RetentionMaintenanceCounts {
   abuseRateLimitsDeleted: number;
   batches: number;
+  emailDeliveriesDeleted: number;
+  emailVerificationsDeleted: number;
   invitationsDeleted: number;
   passwordResetsDeleted: number;
   rateLimitsDeleted: number;
@@ -56,6 +58,8 @@ function assertRuntimeConfig(config: RetentionMaintenanceRuntimeConfig): void {
     ['session retention', config.sessionRetentionMs],
     ['invitation retention', config.invitationRetentionMs],
     ['password reset retention', config.passwordResetRetentionMs],
+    ['email verification retention', config.emailVerificationRetentionMs],
+    ['email delivery retention', config.emailDeliveryRetentionMs],
     ['rate-limit stale age', config.rateLimitStaleMs],
     ['abuse rate-limit stale age', config.abuseRateLimitStaleMs],
   ] as const) {
@@ -74,6 +78,8 @@ function emptyCounts(): RetentionMaintenanceCounts {
   return {
     abuseRateLimitsDeleted: 0,
     batches: 0,
+    emailDeliveriesDeleted: 0,
+    emailVerificationsDeleted: 0,
     invitationsDeleted: 0,
     passwordResetsDeleted: 0,
     rateLimitsDeleted: 0,
@@ -160,6 +166,8 @@ export class ProductRetentionMaintenance {
       const sessionCutoff = new Date(referenceTime.getTime() - this.config.sessionRetentionMs);
       const invitationCutoff = new Date(referenceTime.getTime() - this.config.invitationRetentionMs);
       const passwordResetCutoff = new Date(referenceTime.getTime() - this.config.passwordResetRetentionMs);
+      const emailVerificationCutoff = new Date(referenceTime.getTime() - this.config.emailVerificationRetentionMs);
+      const emailDeliveryCutoff = new Date(referenceTime.getTime() - this.config.emailDeliveryRetentionMs);
       const rateLimitCutoff = new Date(referenceTime.getTime() - this.config.rateLimitStaleMs);
       const abuseRateLimitCutoff = new Date(referenceTime.getTime() - this.config.abuseRateLimitStaleMs);
 
@@ -186,6 +194,20 @@ export class ProductRetentionMaintenance {
         counts.passwordResetsDeleted += passwordResets;
         if (this.#stopped) break;
 
+        const emailVerifications = await this.repository.deleteTerminalEmailVerificationsBatch({
+          batchSize: this.config.batchSize,
+          cutoff: emailVerificationCutoff,
+        });
+        counts.emailVerificationsDeleted += emailVerifications;
+        if (this.#stopped) break;
+
+        const emailDeliveries = await this.repository.deleteTerminalEmailDeliveriesBatch({
+          batchSize: this.config.batchSize,
+          cutoff: emailDeliveryCutoff,
+        });
+        counts.emailDeliveriesDeleted += emailDeliveries;
+        if (this.#stopped) break;
+
         const rateLimits = await this.repository.deleteStaleLoginRateLimitsBatch({
           batchSize: this.config.batchSize,
           cutoff: rateLimitCutoff,
@@ -205,6 +227,8 @@ export class ProductRetentionMaintenance {
           sessions < this.config.batchSize
           && invitations < this.config.batchSize
           && passwordResets < this.config.batchSize
+          && emailVerifications < this.config.batchSize
+          && emailDeliveries < this.config.batchSize
           && rateLimits < this.config.batchSize
           && abuseRateLimits < this.config.batchSize
         ) break;
@@ -234,6 +258,8 @@ export class ProductRetentionMaintenance {
     this.#lastCounts = {
       abuseRateLimitsDeleted: event.abuseRateLimitsDeleted,
       batches: event.batches,
+      emailDeliveriesDeleted: event.emailDeliveriesDeleted,
+      emailVerificationsDeleted: event.emailVerificationsDeleted,
       invitationsDeleted: event.invitationsDeleted,
       passwordResetsDeleted: event.passwordResetsDeleted,
       rateLimitsDeleted: event.rateLimitsDeleted,

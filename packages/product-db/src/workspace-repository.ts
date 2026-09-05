@@ -62,6 +62,7 @@ const INVITATION_TOKEN_ATTEMPTS = 3;
 
 export interface WorkspaceInvitationOptions {
   cursorSecret: Buffer;
+  emailDeliveryEnabled?: boolean;
   pendingLimit?: number;
   ttlMs?: number;
 }
@@ -252,11 +253,13 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
   readonly #pendingInvitationLimit: number;
   readonly #invitationTtlMs: number;
   readonly #cursorCodec: WorkspaceCursorCodec;
+  readonly #emailDeliveryEnabled: boolean;
 
   constructor(private readonly database: ProductDatabase, options: WorkspaceInvitationOptions) {
     this.#cursorCodec = new WorkspaceCursorCodec(options.cursorSecret);
     this.#pendingInvitationLimit = options.pendingLimit ?? 100;
     this.#invitationTtlMs = options.ttlMs ?? 7 * 24 * 60 * 60 * 1_000;
+    this.#emailDeliveryEnabled = options.emailDeliveryEnabled ?? false;
     if (!Number.isSafeInteger(this.#pendingInvitationLimit) || this.#pendingInvitationLimit < 1 || this.#pendingInvitationLimit > 500) {
       throw new Error('Workspace invitation pending limit must be between 1 and 500.');
     }
@@ -424,8 +427,15 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
   ): Promise<CreatedWorkspaceInvitation> {
     const targetEmail = normalizeEmail(email);
     for (let attempt = 0; attempt < INVITATION_TOKEN_ATTEMPTS; attempt += 1) {
-      const token = randomBytes(WORKSPACE_INVITATION_TOKEN_BYTES).toString('base64url');
-      const tokenHash = hashWorkspaceInvitationToken(token);
+      // Delivery-enabled invitations do not mint a usable raw token here. The
+      // worker replaces this collision-resistant placeholder with the hash of
+      // the transient token immediately before calling the provider.
+      const token = this.#emailDeliveryEnabled
+        ? undefined
+        : randomBytes(WORKSPACE_INVITATION_TOKEN_BYTES).toString('base64url');
+      const tokenHash = token
+        ? hashWorkspaceInvitationToken(token)
+        : randomBytes(WORKSPACE_INVITATION_TOKEN_BYTES);
       try {
         return await this.database.transaction(async (client) => {
           await lockWorkspace(client, workspaceId);
@@ -465,8 +475,17 @@ export class PostgresWorkspaceRepository implements WorkspaceApplication {
             [workspaceId, targetEmail, role, actorUserId, tokenHash, this.#invitationTtlMs],
           );
           const created = invitation(result.rows[0]);
+          if (this.#emailDeliveryEnabled) {
+            await client.query(
+              `INSERT INTO email_delivery_jobs (kind, invitation_id)
+               VALUES ('workspace_invitation', $1)`,
+              [created.id],
+            );
+          }
           await audit(client, workspaceId, actorUserId, 'workspace.invitation_created', created.id, { role }, 'workspace_invitation');
-          return { invitation: created, token };
+          return this.#emailDeliveryEnabled
+            ? { invitation: created, deliveryStatus: 'pending' as const }
+            : { invitation: created, token: token! };
         });
       } catch (error) {
         if (postgresCode(error) === '23505' && attempt + 1 < INVITATION_TOKEN_ATTEMPTS) continue;

@@ -14,6 +14,8 @@ import {
   ProductAuthConfigurationError,
   ProductAuthError,
   type ProductAuthContext,
+  type ProductAuthEstablishment,
+  type ProductVerificationPending,
   type ProductWorkspaceInvitationPreview,
 } from './product-auth';
 
@@ -65,6 +67,7 @@ interface ProductAuthGateProps {
     updateContext: (context: ProductAuthContext) => void,
   ) => ReactNode;
   client?: ProductAuthClient;
+  initialEmailVerificationToken?: string | null;
   initialInvitationToken?: string | null;
   initialPasswordResetToken?: string | null;
 }
@@ -95,6 +98,7 @@ function AuthUnavailable(props: { message: string; onRetry: () => void }) {
 export function ProductAuthGate({
   children,
   client: providedClient,
+  initialEmailVerificationToken = null,
   initialInvitationToken = null,
   initialPasswordResetToken = null,
 }: ProductAuthGateProps) {
@@ -118,6 +122,8 @@ export function ProductAuthGate({
   const [invitationPreview, setInvitationPreview] = useState<InvitationPreviewState>({ status: 'checking' });
   const [invitationOutcome, setInvitationOutcome] = useState('');
   const [passwordResetToken, setPasswordResetToken] = useState(initialPasswordResetToken);
+  const [emailVerificationToken, setEmailVerificationToken] = useState(initialEmailVerificationToken);
+  const [verificationPending, setVerificationPending] = useState<ProductVerificationPending | null>(null);
   const authenticatedContext = state.status === 'authenticated' ? state.context : null;
 
   useEffect(() => {
@@ -319,6 +325,35 @@ export function ProductAuthGate({
     />;
   }
 
+  if (emailVerificationToken) {
+    return <EmailVerificationCompletion
+      client={client}
+      token={emailVerificationToken}
+      onComplete={() => {
+        setEmailVerificationToken(null);
+        setVerificationPending(null);
+        setState({ status: 'checking', message: '확인된 제품 세션을 불러오는 중…' });
+        setAttempt((value) => value + 1);
+      }}
+      onCancel={() => setEmailVerificationToken(null)}
+    />;
+  }
+
+  if (verificationPending) {
+    return <EmailVerificationPending
+      client={client}
+      pending={verificationPending}
+      onAuthenticated={(context) => {
+        setVerificationPending(null);
+        setState({ status: 'authenticated', context });
+      }}
+      onUseAnotherAccount={() => {
+        setVerificationPending(null);
+        void logout();
+      }}
+    />;
+  }
+
   if (invitationOutcome) {
     return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="invitation-outcome-title">
       <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
@@ -345,7 +380,13 @@ export function ProductAuthGate({
     return <AuthForm
       client={client}
       invitation={invitationToken && invitationPreview.status === 'ready' ? invitationPreview.value : undefined}
-      onAuthenticated={(context) => setState({ status: 'authenticated', context })}
+      onEstablished={(result) => {
+        if ('status' in result && result.status === 'verification_pending') {
+          setVerificationPending(result);
+        } else {
+          setState({ status: 'authenticated', context: result as ProductAuthContext });
+        }
+      }}
     />;
   }
   if (invitationToken && invitationPreview.status === 'ready') {
@@ -395,7 +436,8 @@ export function validateRegistrationPassword(value: string): string | null {
 export function AuthForm(props: {
   client: Pick<ProductAuthClient, 'login' | 'register'> & Partial<Pick<ProductAuthClient, 'requestPasswordReset'>>;
   invitation?: ProductWorkspaceInvitationPreview;
-  onAuthenticated: (context: ProductAuthContext) => void;
+  onAuthenticated?: (context: ProductAuthContext) => void;
+  onEstablished?: (result: ProductAuthEstablishment) => void;
 }) {
   const [mode, setMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
@@ -468,7 +510,13 @@ export function AuthForm(props: {
       if (mode === 'recover') {
         setNotice('계정이 존재하면 비밀번호 재설정 안내를 보냈습니다. 이메일을 확인하세요.');
       } else {
-        props.onAuthenticated(result as ProductAuthContext);
+        const established = result as ProductAuthEstablishment;
+        if ('status' in established && established.status === 'verification_pending') {
+          props.onEstablished?.(established);
+        } else {
+          props.onEstablished?.(established);
+          props.onAuthenticated?.(established as ProductAuthContext);
+        }
       }
     } catch (requestError) {
       if (requestError instanceof ProductAuthError && requestError.kind === 'unavailable') {
@@ -510,6 +558,100 @@ export function AuthForm(props: {
       {mode === 'recover' && <button className="auth-link-button" type="button" disabled={busy} onClick={() => changeMode('login')}>로그인으로 돌아가기</button>}
     </form>
     <p className="auth-security-note">세션은 브라우저의 HttpOnly 쿠키로만 관리되며 비밀번호를 기기에 저장하지 않습니다.</p>
+  </section></main>;
+}
+
+function EmailVerificationPending(props: {
+  client: Pick<ProductAuthClient, 'emailVerificationStatus' | 'me' | 'resendEmailVerification'>;
+  onAuthenticated: (context: ProductAuthContext) => void;
+  onUseAnotherAccount: () => void;
+  pending: ProductVerificationPending;
+}) {
+  const [busy, setBusy] = useState<'check' | 'resend' | ''>('');
+  const [message, setMessage] = useState('확인 링크를 보냈습니다. 이메일에서 링크를 연 뒤 상태를 확인하세요.');
+  const [error, setError] = useState('');
+
+  async function check(): Promise<void> {
+    if (busy) return;
+    setBusy('check');
+    setError('');
+    try {
+      const status = await props.client.emailVerificationStatus();
+      if (status.email !== props.pending.email) {
+        throw new ProductAuthError('invalid-response', 'The email verification status account did not match.');
+      }
+      if (status.status === 'verified') {
+        props.onAuthenticated(await props.client.me());
+      } else {
+        setMessage('아직 확인되지 않았습니다. 이메일 링크를 연 뒤 다시 확인하세요.');
+      }
+    } catch {
+      setError('확인 상태를 불러올 수 없습니다. 잠시 후 다시 시도하세요.');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function resend(): Promise<void> {
+    if (busy) return;
+    setBusy('resend');
+    setError('');
+    try {
+      await props.client.resendEmailVerification();
+      setMessage('확인 이메일을 다시 요청했습니다. 이전 링크는 더 이상 사용할 수 없습니다.');
+    } catch {
+      setError('확인 이메일을 다시 요청할 수 없습니다. 잠시 후 다시 시도하세요.');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="verification-pending-title" aria-busy={Boolean(busy)}>
+    <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+    <div className="auth-status-icon"><Mail size={20} /></div>
+    <h1 id="verification-pending-title">이메일 확인이 필요합니다</h1>
+    <p><strong>{props.pending.email}</strong></p>
+    <p className="auth-help" role="status">{message}</p>
+    {error && <p className="auth-error" role="alert">{error}</p>}
+    <button className="auth-submit" type="button" disabled={Boolean(busy)} onClick={() => void check()}>{busy === 'check' && <LoaderCircle className="spin" size={14} />} 확인 상태 확인</button>
+    <button className="auth-link-button" type="button" disabled={Boolean(busy)} onClick={() => void resend()}>{busy === 'resend' && <LoaderCircle className="spin" size={14} />} 확인 이메일 다시 보내기</button>
+    <button className="auth-link-button" type="button" disabled={Boolean(busy)} onClick={props.onUseAnotherAccount}>다른 계정 사용</button>
+  </section></main>;
+}
+
+function EmailVerificationCompletion(props: {
+  client: Pick<ProductAuthClient, 'completeEmailVerification'>;
+  onCancel: () => void;
+  onComplete: () => void;
+  token: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [complete, setComplete] = useState(false);
+  const [error, setError] = useState('');
+
+  async function verify(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await props.client.completeEmailVerification(props.token);
+      setComplete(true);
+    } catch {
+      setError('확인 링크가 유효하지 않거나 만료·취소·사용되었습니다. 새 확인 이메일을 요청하세요.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="auth-screen"><section className="auth-card recovery-card" aria-labelledby="email-verification-title" aria-busy={busy}>
+    <div className="auth-brand"><KodexMark /><span>Kodex</span></div>
+    <div className={`auth-status-icon${error ? ' is-error' : ''}`}><Mail size={20} /></div>
+    <h1 id="email-verification-title">{complete ? '이메일 확인 완료' : '이메일 주소 확인'}</h1>
+    <p>{complete ? '이메일 주소가 확인되었습니다. 같은 브라우저의 제한 세션 또는 비밀번호로 로그인할 수 있습니다.' : '이 링크를 한 번 사용해 가입 이메일의 소유권을 확인합니다.'}</p>
+    {error && <p className="auth-error" role="alert">{error}</p>}
+    {complete
+      ? <button className="auth-submit" type="button" onClick={props.onComplete}>계속</button>
+      : <><button className="auth-submit" type="button" disabled={busy} onClick={() => void verify()}>{busy && <LoaderCircle className="spin" size={14} />}{busy ? '확인 중…' : '이메일 확인'}</button><button className="auth-link-button" type="button" disabled={busy} onClick={props.onCancel}>취소</button></>}
   </section></main>;
 }
 

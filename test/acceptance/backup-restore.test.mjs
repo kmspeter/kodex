@@ -156,7 +156,7 @@ it('restores auth, workspace, History, RAG, and pending tenant outbox from a ver
     output: backupRoot,
     sslMode: 'disable',
   });
-  expect(created.manifest.database.migrations.at(-1)?.version).toBe(12);
+  expect(created.manifest.database.migrations.at(-1)?.version).toBe(13);
   expect(created.manifest.tenantData.fileCount).toBe(2);
   expect((await verifyOfflineBackup(backupRoot)).database.sha256).toBe(created.manifest.database.sha256);
 

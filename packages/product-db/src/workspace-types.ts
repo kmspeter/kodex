@@ -42,10 +42,13 @@ export interface WorkspacePageOptions {
   limit: number;
 }
 
-export interface CreatedWorkspaceInvitation {
+export type CreatedWorkspaceInvitation = {
   invitation: WorkspaceInvitation;
   token: string;
-}
+} | {
+  deliveryStatus: 'pending';
+  invitation: WorkspaceInvitation;
+};
 
 export interface WorkspaceInvitationPreview {
   expiresAt: Date;

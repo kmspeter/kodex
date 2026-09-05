@@ -1,5 +1,7 @@
 export interface ProductApiConfig {
   abuseRateLimitPolicies?: {
+    email_verification_complete: { blockMs: number; maxAttempts: number; windowMs: number };
+    email_verification_resend: { blockMs: number; maxAttempts: number; windowMs: number };
     invitation_accept: { blockMs: number; maxAttempts: number; windowMs: number };
     invitation_preview: { blockMs: number; maxAttempts: number; windowMs: number };
     password_reset_complete: { blockMs: number; maxAttempts: number; windowMs: number };
@@ -23,6 +25,8 @@ export interface ProductApiConfig {
 
 export interface ProductRetentionMaintenanceConfig {
   batchSize: number;
+  emailDeliveryRetentionMs: number;
+  emailVerificationRetentionMs: number;
   enabled: boolean;
   intervalMs: number;
   invitationRetentionMs: number;
@@ -303,6 +307,52 @@ export function productApiConfigFromEnv(
           86_400,
         ) * 1_000,
       },
+      email_verification_resend: {
+        maxAttempts: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_ATTEMPTS,
+          'AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_WINDOW_SECONDS',
+          3_600,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_EMAIL_VERIFICATION_RESEND_RATE_LIMIT_BLOCK_SECONDS',
+          3_600,
+          30,
+          86_400,
+        ) * 1_000,
+      },
+      email_verification_complete: {
+        maxAttempts: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_ATTEMPTS,
+          'AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_ATTEMPTS',
+          5,
+          2,
+          100,
+        ),
+        windowMs: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_WINDOW_SECONDS,
+          'AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_WINDOW_SECONDS',
+          900,
+          60,
+          86_400,
+        ) * 1_000,
+        blockMs: boundedInteger(
+          env.AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_BLOCK_SECONDS,
+          'AUTH_EMAIL_VERIFICATION_COMPLETE_RATE_LIMIT_BLOCK_SECONDS',
+          900,
+          30,
+          86_400,
+        ) * 1_000,
+      },
     },
     loginRateLimitMaxAttempts: boundedInteger(
       env.AUTH_LOGIN_RATE_LIMIT_ATTEMPTS,
@@ -395,6 +445,20 @@ export function productRetentionMaintenanceConfigFromEnv(
     passwordResetRetentionMs: boundedInteger(
       env.PRODUCT_RETENTION_PASSWORD_RESET_DAYS,
       'PRODUCT_RETENTION_PASSWORD_RESET_DAYS',
+      30,
+      1,
+      3_650,
+    ) * 24 * 60 * 60 * 1_000,
+    emailVerificationRetentionMs: boundedInteger(
+      env.PRODUCT_RETENTION_EMAIL_VERIFICATION_DAYS,
+      'PRODUCT_RETENTION_EMAIL_VERIFICATION_DAYS',
+      30,
+      1,
+      3_650,
+    ) * 24 * 60 * 60 * 1_000,
+    emailDeliveryRetentionMs: boundedInteger(
+      env.PRODUCT_RETENTION_EMAIL_DELIVERY_DAYS,
+      'PRODUCT_RETENTION_EMAIL_DELIVERY_DAYS',
       30,
       1,
       3_650,

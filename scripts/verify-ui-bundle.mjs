@@ -31,6 +31,8 @@ async function files(root) {
 const source = (await Promise.all((await files(distRoot)).map((filename) => readFile(filename, 'utf8')))).join('\n');
 for (const forbidden of [
   'AUTH_COOKIE_SECRET',
+  'AUTH_EMAIL_DELIVERY_BEARER_TOKEN',
+  'AUTH_PASSWORD_RESET_DELIVERY_BEARER_TOKEN',
   'DATABASE_URL',
   'PRODUCT_DB_PASSWORD',
   'kodex_product_session',

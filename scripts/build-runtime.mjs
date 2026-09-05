@@ -161,13 +161,14 @@ for (const relative of [
   'node_modules/@kodex/product-db/migrations/0010_product_abuse_rate_limits.sql',
   'node_modules/@kodex/product-db/migrations/0011_password_reset_recovery.sql',
   'node_modules/@kodex/product-db/migrations/0012_operational_data_lifecycle.sql',
+  'node_modules/@kodex/product-db/migrations/0013_email_verification_delivery.sql',
   'node_modules/argon2/prebuilds/win32-x64/argon2.glibc.node',
 ]) await required(path.relative(root, path.join(appRoot, relative)));
 
 await import(pathToFileURL(path.join(appRoot, 'product-api', 'server.js')).href);
 const migrationsModule = await import(pathToFileURL(path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'dist', 'migrations.js')).href);
 const migrations = await migrationsModule.loadMigrations();
-if (migrations.length !== 12 || path.resolve(migrationsModule.defaultMigrationsDirectory) !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')) {
+if (migrations.length !== 13 || path.resolve(migrationsModule.defaultMigrationsDirectory) !== path.join(appRoot, 'node_modules', '@kodex', 'product-db', 'migrations')) {
   throw new Error('Bundled Product DB migrations did not resolve to the packaged migration directory.');
 }
 const installerCompatibility = JSON.parse(await readFile(path.join(appRoot, 'metadata', 'installer-compatibility.json'), 'utf8'));

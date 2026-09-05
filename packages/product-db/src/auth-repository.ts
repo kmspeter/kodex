@@ -16,6 +16,7 @@ export interface RegisterAccountInput {
   displayName: string | null;
   email: string;
   passwordHash: string;
+  requireEmailVerification?: boolean;
   sessionExpiresAt: Date;
   sessionTokenHash: Buffer;
   workspaceName: string;
@@ -23,6 +24,7 @@ export interface RegisterAccountInput {
 }
 
 export interface LoginCredential {
+  emailVerified?: boolean;
   passwordHash: string;
   user: AuthUser;
 }
@@ -107,6 +109,7 @@ interface SessionContextRow extends UserRow {
 }
 
 interface CredentialRow extends UserRow {
+  email_verified_at: Date | null;
   password_hash: string;
 }
 
@@ -171,10 +174,10 @@ export class PostgresAuthRepository implements AuthRepository {
     try {
       return await this.database.transaction(async (client) => {
         const userResult = await client.query<UserRow>(
-          `INSERT INTO users (email, display_name)
-           VALUES ($1, $2)
+          `INSERT INTO users (email, display_name, email_verified_at)
+           VALUES ($1, $2, CASE WHEN $3::boolean THEN NULL ELSE now() END)
            RETURNING id, email, display_name, created_at`,
-          [input.email, input.displayName],
+          [input.email, input.displayName, Boolean(input.requireEmailVerification)],
         );
         const user = userFromRow(userResult.rows[0]);
 
@@ -205,6 +208,14 @@ export class PostgresAuthRepository implements AuthRepository {
           [user.id, input.sessionTokenHash, input.sessionExpiresAt],
         );
 
+        if (input.requireEmailVerification) {
+          await client.query(
+            `INSERT INTO email_delivery_jobs (kind, user_id)
+             VALUES ('email_verification', $1)`,
+            [user.id],
+          );
+        }
+
         return {
           defaultWorkspace,
           context: {
@@ -225,7 +236,7 @@ export class PostgresAuthRepository implements AuthRepository {
 
   async findLoginCredential(email: string): Promise<LoginCredential | undefined> {
     const result = await this.database.query<CredentialRow>(
-      `SELECT u.id, u.email, u.display_name, u.created_at, c.password_hash
+      `SELECT u.id, u.email, u.display_name, u.created_at, u.email_verified_at, c.password_hash
        FROM users u
        JOIN password_credentials c ON c.user_id = u.id
        WHERE u.email = $1
@@ -235,7 +246,11 @@ export class PostgresAuthRepository implements AuthRepository {
       [email],
     );
     const row = result.rows[0];
-    return row ? { user: userFromRow(row), passwordHash: row.password_hash } : undefined;
+    return row ? {
+      user: userFromRow(row),
+      passwordHash: row.password_hash,
+      emailVerified: row.email_verified_at !== null,
+    } : undefined;
   }
 
   async changePassword(input: ChangePasswordInput): Promise<number> {
@@ -313,7 +328,7 @@ export class PostgresAuthRepository implements AuthRepository {
         [input.userId, input.tokenHash, input.expiresAt],
       );
     });
-    const context = await this.findAuthContext(input.tokenHash);
+    const context = await this.#findAuthContext(input.tokenHash, false);
     if (!context) {
       throw new Error(`New session ${sessionResult.rows[0].id} could not be read`);
     }
@@ -321,6 +336,10 @@ export class PostgresAuthRepository implements AuthRepository {
   }
 
   async findAuthContext(tokenHash: Buffer): Promise<AuthContext | undefined> {
+    return this.#findAuthContext(tokenHash, true);
+  }
+
+  async #findAuthContext(tokenHash: Buffer, requireVerified: boolean): Promise<AuthContext | undefined> {
     const result = await this.database.query<SessionContextRow>(
       `SELECT
          s.id AS session_id,
@@ -344,8 +363,9 @@ export class PostgresAuthRepository implements AuthRepository {
          AND s.expires_at > now()
          AND u.status = 'active'
          AND u.deleted_at IS NULL
+         AND ($2::boolean = false OR u.email_verified_at IS NOT NULL)
        ORDER BY w.created_at, w.id`,
-      [tokenHash],
+      [tokenHash, requireVerified],
     );
     const context = contextFromRows(result.rows);
     if (context) {

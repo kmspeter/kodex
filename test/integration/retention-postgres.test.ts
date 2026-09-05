@@ -70,10 +70,10 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     await database?.close();
   });
 
-  it('applies immutable migrations through 0012 for fresh and 0001-0008 upgrade databases', async () => {
-    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9, 10, 11, 12] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  it('applies immutable migrations through 0013 for fresh and 0001-0008 upgrade databases', async () => {
+    expect(migratedVersions).toEqual(mode === 'legacy-upgrade' ? [9, 10, 11, 12, 13] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(ledger.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     const indexes = await database.query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
        WHERE schemaname = 'public' AND indexname LIKE '%_retention_terminal_idx'
@@ -81,6 +81,8 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     );
     expect(indexes.rows.map((row) => row.indexname)).toEqual([
       'auth_sessions_retention_terminal_idx',
+      'email_delivery_jobs_retention_terminal_idx',
+      'email_verification_requests_retention_terminal_idx',
       'password_reset_requests_retention_terminal_idx',
       'workspace_invitations_retention_terminal_idx',
     ]);
@@ -141,6 +143,26 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
        ($5, $6, $11, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', NULL, '2026-09-03T11:00:00.000Z')`,
       [...resetIds, userId, ...[120, 121, 122, 123, 124].map(hashByte)],
     );
+    const verificationIds = Array.from({ length: 4 }, () => randomUUID());
+    await database.query(
+      `INSERT INTO email_verification_requests
+         (id, user_id, token_hash, created_at, expires_at, consumed_at, revoked_at) VALUES
+       ($1, $5, $6, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-08-04T11:59:59.999Z', NULL),
+       ($2, $5, $7, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', NULL, '2026-08-04T11:59:59.999Z'),
+       ($3, $5, $8, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', '2026-08-04T12:00:00.000Z', NULL),
+       ($4, $5, $9, '2026-01-01T00:00:00Z', '2026-09-10T00:00:00Z', NULL, NULL)`,
+      [...verificationIds, userId, ...[130, 131, 132, 133].map(hashByte)],
+    );
+    const deliveryIds = Array.from({ length: 4 }, () => randomUUID());
+    await database.query(
+      `INSERT INTO email_delivery_jobs
+         (id, kind, user_id, status, attempt_count, created_at, updated_at, completed_at) VALUES
+       ($1, 'email_verification', $5, 'delivered', 1, '2026-01-01T00:00:00Z', '2026-08-04T11:59:59.999Z', '2026-08-04T11:59:59.999Z'),
+       ($2, 'email_verification', $5, 'failed', 4, '2026-01-01T00:00:00Z', '2026-08-04T12:00:00.000Z', '2026-08-04T12:00:00.000Z'),
+       ($3, 'email_verification', $5, 'cancelled', 0, '2026-01-01T00:00:00Z', '2026-09-03T11:00:00.000Z', '2026-09-03T11:00:00.000Z'),
+       ($4, 'email_verification', $5, 'pending', 0, '2026-09-03T11:00:00.000Z', '2026-09-03T11:00:00.000Z', NULL)`,
+      [...deliveryIds, userId],
+    );
     await database.query(
       `INSERT INTO audit_logs (workspace_id, actor_user_id, action)
        VALUES ($1, $2, 'retention.boundary_fixture')`,
@@ -150,6 +172,8 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     await expect(repository.deleteTerminalSessionsBatch({ batchSize: 100, cutoff })).resolves.toBe(2);
     await expect(repository.deleteTerminalInvitationsBatch({ batchSize: 100, cutoff })).resolves.toBe(3);
     await expect(repository.deleteTerminalPasswordResetsBatch({ batchSize: 100, cutoff })).resolves.toBe(3);
+    await expect(repository.deleteTerminalEmailVerificationsBatch({ batchSize: 100, cutoff })).resolves.toBe(2);
+    await expect(repository.deleteTerminalEmailDeliveriesBatch({ batchSize: 100, cutoff })).resolves.toBe(1);
     await expect(repository.deleteStaleLoginRateLimitsBatch({
       batchSize: 100,
       cutoff,
@@ -168,6 +192,14 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
       'SELECT id FROM password_reset_requests WHERE user_id = $1 ORDER BY id', [userId],
     );
     expect(resets.rows.map((row) => row.id).sort()).toEqual(resetIds.slice(3).sort());
+    const verifications = await database.query<{ id: string }>(
+      'SELECT id FROM email_verification_requests WHERE user_id = $1 ORDER BY id', [userId],
+    );
+    expect(verifications.rows.map((row) => row.id).sort()).toEqual(verificationIds.slice(2).sort());
+    const deliveries = await database.query<{ id: string }>(
+      'SELECT id FROM email_delivery_jobs WHERE user_id = $1 ORDER BY id', [userId],
+    );
+    expect(deliveries.rows.map((row) => row.id).sort()).toEqual(deliveryIds.slice(1).sort());
     expect((await database.query('SELECT 1 FROM users WHERE id = $1', [userId])).rowCount).toBe(1);
     expect((await database.query(
       `SELECT 1 FROM audit_logs WHERE workspace_id = $1 AND action = 'retention.boundary_fixture'`,
@@ -176,6 +208,8 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
     await expect(repository.deleteTerminalSessionsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
     await expect(repository.deleteTerminalInvitationsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
     await expect(repository.deleteTerminalPasswordResetsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
+    await expect(repository.deleteTerminalEmailVerificationsBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
+    await expect(repository.deleteTerminalEmailDeliveriesBatch({ batchSize: 100, cutoff })).resolves.toBe(0);
     await expect(repository.deleteStaleLoginRateLimitsBatch({ batchSize: 100, cutoff, referenceTime })).resolves.toBe(0);
   });
 
@@ -264,10 +298,34 @@ describe(`real PostgreSQL terminal row retention (${mode})`, () => {
          LIMIT 10 FOR UPDATE SKIP LOCKED`,
         [cutoff],
       );
-      return [sessions.rows[0]['QUERY PLAN'], invitations.rows[0]['QUERY PLAN'], resets.rows[0]['QUERY PLAN']];
+      const verifications = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT id FROM email_verification_requests
+         WHERE COALESCE(consumed_at, revoked_at, expires_at) < $1
+         ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id
+         LIMIT 10 FOR UPDATE SKIP LOCKED`,
+        [cutoff],
+      );
+      const deliveries = await client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT id FROM email_delivery_jobs
+         WHERE completed_at < $1 AND status IN ('delivered', 'failed', 'cancelled')
+         ORDER BY completed_at, id
+         LIMIT 10 FOR UPDATE SKIP LOCKED`,
+        [cutoff],
+      );
+      return [
+        sessions.rows[0]['QUERY PLAN'],
+        invitations.rows[0]['QUERY PLAN'],
+        resets.rows[0]['QUERY PLAN'],
+        verifications.rows[0]['QUERY PLAN'],
+        deliveries.rows[0]['QUERY PLAN'],
+      ];
     });
     expect(JSON.stringify(plans[0])).toContain('auth_sessions_retention_terminal_idx');
     expect(JSON.stringify(plans[1])).toContain('workspace_invitations_retention_terminal_idx');
     expect(JSON.stringify(plans[2])).toContain('password_reset_requests_retention_terminal_idx');
+    expect(JSON.stringify(plans[3])).toContain('email_verification_requests_retention_terminal_idx');
+    expect(JSON.stringify(plans[4])).toContain('email_delivery_jobs_retention_terminal_idx');
   });
 });

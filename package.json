@@ -49,6 +49,7 @@
     "test:installer-unit": "vitest run test/unit/windows-installer.test.ts",
     "test:release-deployment": "node scripts/test-release-deployment.mjs",
     "test:password-reset-postgres": "node scripts/test-password-reset-postgres.mjs",
+    "test:email-verification-postgres": "node scripts/test-email-verification-postgres.mjs",
     "test:data-lifecycle-postgres": "node scripts/test-data-lifecycle-postgres.mjs",
     "test:observability": "npm run build && vitest run test/integration/operational-status.test.ts",
     "test:rag-postgres": "node scripts/test-rag-postgres.mjs",

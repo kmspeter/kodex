@@ -140,18 +140,18 @@ describe(`real PostgreSQL workspace invitation lifecycle (${mode})`, () => {
     return { id: body.invitation.id, token: body.token };
   }
 
-  it('applies fresh and immutable legacy upgrade paths through migration 0012', async () => {
+  it('applies fresh and immutable legacy upgrade paths through migration 0013', async () => {
     expect(migratedVersions).toEqual(
       mode === 'upgrade'
-        ? [7, 8, 9, 10, 11, 12]
+        ? [7, 8, 9, 10, 11, 12, 13]
         : mode === 'phase17-upgrade'
-          ? [8, 9, 10, 11, 12]
+          ? [8, 9, 10, 11, 12, 13]
           : mode === 'phase19-upgrade'
-            ? [9, 10, 11, 12]
-            : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            ? [9, 10, 11, 12, 13]
+            : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
     );
     const ledger = await database.query<{ version: string }>('SELECT version FROM schema_migrations ORDER BY version');
-    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(ledger.rows.map((entry) => Number(entry.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   });
 
   it('enforces permissions, limits, hash-only storage, IDOR protection, and one-time atomic acceptance', async () => {

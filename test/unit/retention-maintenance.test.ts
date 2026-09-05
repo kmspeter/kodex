@@ -17,6 +17,8 @@ function runtimeConfig(overrides: Partial<RetentionMaintenanceRuntimeConfig> = {
     abuseRateLimitStaleMs: 40_000,
     batchSize: 5,
     enabled: true,
+    emailDeliveryRetentionMs: 27_000,
+    emailVerificationRetentionMs: 26_000,
     intervalMs: 60_000,
     invitationRetentionMs: 20_000,
     maxBatches: 2,
@@ -29,6 +31,8 @@ function runtimeConfig(overrides: Partial<RetentionMaintenanceRuntimeConfig> = {
 
 function fakeRepository(overrides: Partial<RetentionRepository> = {}): RetentionRepository {
   return {
+    deleteTerminalEmailDeliveriesBatch: vi.fn(async () => 0),
+    deleteTerminalEmailVerificationsBatch: vi.fn(async () => 0),
     deleteStaleAbuseRateLimitsBatch: vi.fn(async () => 0),
     deleteStaleLoginRateLimitsBatch: vi.fn(async () => 0),
     deleteTerminalInvitationsBatch: vi.fn(async () => 0),
@@ -42,6 +46,8 @@ describe('retention maintenance configuration', () => {
   it('has documented bounded defaults and parses every explicit setting', () => {
     expect(productRetentionMaintenanceConfigFromEnv({})).toEqual({
       batchSize: 100,
+      emailDeliveryRetentionMs: 2_592_000_000,
+      emailVerificationRetentionMs: 2_592_000_000,
       enabled: true,
       intervalMs: 3_600_000,
       invitationRetentionMs: 2_592_000_000,
@@ -57,8 +63,12 @@ describe('retention maintenance configuration', () => {
       PRODUCT_RETENTION_SESSION_DAYS: '3650',
       PRODUCT_RETENTION_INVITATION_DAYS: '2',
       PRODUCT_RETENTION_PASSWORD_RESET_DAYS: '3',
+      PRODUCT_RETENTION_EMAIL_VERIFICATION_DAYS: '4',
+      PRODUCT_RETENTION_EMAIL_DELIVERY_DAYS: '5',
     })).toEqual({
       batchSize: 1,
+      emailDeliveryRetentionMs: 432_000_000,
+      emailVerificationRetentionMs: 345_600_000,
       enabled: false,
       intervalMs: 60_000,
       invitationRetentionMs: 172_800_000,
@@ -78,6 +88,8 @@ describe('retention maintenance configuration', () => {
     ['PRODUCT_RETENTION_SESSION_DAYS', '0'],
     ['PRODUCT_RETENTION_INVITATION_DAYS', '3651'],
     ['PRODUCT_RETENTION_PASSWORD_RESET_DAYS', '0'],
+    ['PRODUCT_RETENTION_EMAIL_VERIFICATION_DAYS', '0'],
+    ['PRODUCT_RETENTION_EMAIL_DELIVERY_DAYS', '3651'],
   ])('rejects invalid %s before startup', (name, value) => {
     expect(() => productRetentionMaintenanceConfigFromEnv({ [name]: value }))
       .toThrow(ProductApiConfigurationError);
@@ -117,6 +129,14 @@ describe('product retention coordinator', () => {
       batchSize: 5,
       cutoff: new Date('2026-09-03T11:59:35.000Z'),
     });
+    expect(repository.deleteTerminalEmailVerificationsBatch).toHaveBeenCalledWith({
+      batchSize: 5,
+      cutoff: new Date('2026-09-03T11:59:34.000Z'),
+    });
+    expect(repository.deleteTerminalEmailDeliveriesBatch).toHaveBeenCalledWith({
+      batchSize: 5,
+      cutoff: new Date('2026-09-03T11:59:33.000Z'),
+    });
     expect(repository.deleteStaleAbuseRateLimitsBatch).toHaveBeenCalledWith({
       batchSize: 5,
       cutoff: new Date('2026-09-03T11:59:20.000Z'),
@@ -126,6 +146,8 @@ describe('product retention coordinator', () => {
       abuseRateLimitsDeleted: 1,
       batches: 1,
       category: 'product_retention_maintenance',
+      emailDeliveriesDeleted: 0,
+      emailVerificationsDeleted: 0,
       invitationsDeleted: 3,
       outcome: 'complete',
       passwordResetsDeleted: 0,
@@ -139,6 +161,8 @@ describe('product retention coordinator', () => {
       lastCounts: {
         abuseRateLimitsDeleted: 1,
         batches: 1,
+        emailDeliveriesDeleted: 0,
+        emailVerificationsDeleted: 0,
         invitationsDeleted: 3,
         passwordResetsDeleted: 0,
         rateLimitsDeleted: 4,
@@ -190,6 +214,8 @@ describe('product retention coordinator', () => {
       abuseRateLimitsDeleted: 0,
       batches: 1,
       category: 'product_retention_maintenance',
+      emailDeliveriesDeleted: 0,
+      emailVerificationsDeleted: 0,
       errorClass: 'Error',
       invitationsDeleted: 0,
       outcome: 'failed',

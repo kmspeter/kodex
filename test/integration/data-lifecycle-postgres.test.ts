@@ -75,7 +75,7 @@ beforeAll(async () => {
   }
   const applied = await database.migrate();
   expect(applied.map((entry) => entry.version)).toEqual(
-    mode === 'legacy-upgrade' ? [12] : Array.from({ length: 12 }, (_, index) => index + 1),
+    mode === 'legacy-upgrade' ? [12, 13] : Array.from({ length: 13 }, (_, index) => index + 1),
   );
   const hasher = new Argon2idPasswordHasher();
   auth = await AuthService.create(new PostgresAuthRepository(database), hasher, {

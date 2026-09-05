@@ -10,6 +10,8 @@ export interface RateLimitRetentionBatchInput extends RetentionBatchInput {
 }
 
 export interface RetentionRepository {
+  deleteTerminalEmailDeliveriesBatch(input: RetentionBatchInput): Promise<number>;
+  deleteTerminalEmailVerificationsBatch(input: RetentionBatchInput): Promise<number>;
   deleteStaleAbuseRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
   deleteStaleLoginRateLimitsBatch(input: RateLimitRetentionBatchInput): Promise<number>;
   deleteTerminalPasswordResetsBatch(input: RetentionBatchInput): Promise<number>;
@@ -90,6 +92,44 @@ export class PostgresRetentionRepository implements RetentionRepository {
        DELETE FROM password_reset_requests AS reset
        USING candidates
        WHERE reset.id = candidates.id`,
+      [input.cutoff, input.batchSize],
+    );
+    return deletedRows(result.rowCount);
+  }
+
+  async deleteTerminalEmailVerificationsBatch(input: RetentionBatchInput): Promise<number> {
+    validateBatch(input);
+    const result = await this.database.query(
+      `WITH candidates AS (
+         SELECT id
+         FROM email_verification_requests
+         WHERE COALESCE(consumed_at, revoked_at, expires_at) < $1
+         ORDER BY COALESCE(consumed_at, revoked_at, expires_at), id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM email_verification_requests AS verification
+       USING candidates
+       WHERE verification.id = candidates.id`,
+      [input.cutoff, input.batchSize],
+    );
+    return deletedRows(result.rowCount);
+  }
+
+  async deleteTerminalEmailDeliveriesBatch(input: RetentionBatchInput): Promise<number> {
+    validateBatch(input);
+    const result = await this.database.query(
+      `WITH candidates AS (
+         SELECT id
+         FROM email_delivery_jobs
+         WHERE completed_at < $1 AND status IN ('delivered', 'failed', 'cancelled')
+         ORDER BY completed_at, id
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM email_delivery_jobs AS delivery
+       USING candidates
+       WHERE delivery.id = candidates.id`,
       [input.cutoff, input.batchSize],
     );
     return deletedRows(result.rowCount);

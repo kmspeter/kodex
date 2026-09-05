@@ -35,6 +35,7 @@ const deliveries: Array<Record<string, unknown>> = [];
 
 const policies: AbuseRateLimitPolicies = Object.fromEntries([
   'register', 'invitation_preview', 'invitation_accept', 'password_reset_request', 'password_reset_complete',
+  'email_verification_resend', 'email_verification_complete',
 ].map((action) => [action, { maxAttempts: 100, windowMs: 60_000, blockMs: 30_000 }])) as AbuseRateLimitPolicies;
 
 function jsonPost(pathname: string, body: unknown): Promise<Response> {
@@ -76,7 +77,7 @@ beforeAll(async () => {
   }
   const applied = await database.migrate();
   expect(applied.map((migration) => migration.version)).toEqual(
-    mode === 'legacy-upgrade' ? [11, 12] : Array.from({ length: 12 }, (_, index) => index + 1),
+    mode === 'legacy-upgrade' ? [11, 12, 13] : Array.from({ length: 13 }, (_, index) => index + 1),
   );
 
   deliveryServer = createServer((request, response) => {

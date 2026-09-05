@@ -58,6 +58,7 @@ export function WorkspaceManagementDialog(props: {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<WorkspaceInvitationRole>('member');
   const [createdLink, setCreatedLink] = useState('');
+  const [deliveryNotice, setDeliveryNotice] = useState('');
   const [copyStatus, setCopyStatus] = useState<'copied' | 'manual' | ''>('');
   const closeRef = useRef<HTMLButtonElement>(null);
   const linkRef = useRef<HTMLInputElement>(null);
@@ -173,6 +174,7 @@ export function WorkspaceManagementDialog(props: {
     mountedRef.current = true;
     closeRef.current?.focus();
     setCreatedLink('');
+    setDeliveryNotice('');
     setCopyStatus('');
     setActionError('');
     setRenameName(activeName);
@@ -383,9 +385,15 @@ export function WorkspaceManagementDialog(props: {
     if (!active || pending) return;
     setPending('invite');
     setActionError('');
+    setDeliveryNotice('');
     try {
       const created = await props.client.createWorkspaceInvitation(active.id, email.trim(), role);
-      setCreatedLink(createInvitationShareLink(window.location.origin, created.token));
+      if ('token' in created) {
+        setCreatedLink(createInvitationShareLink(window.location.origin, created.token));
+      } else {
+        setCreatedLink('');
+        setDeliveryNotice('초대 이메일이 전달 대기열에 등록되었습니다. 링크나 토큰은 이 화면에 노출되지 않습니다.');
+      }
       setCopyStatus('');
       setEmail('');
       await reloadFirstPages(active.id, canManage);
@@ -485,6 +493,7 @@ export function WorkspaceManagementDialog(props: {
         {!canManage && <p className="workspace-permission-note">현재 {active.role} 역할은 멤버 목록을 볼 수 있지만 관리할 수 없습니다. Owner 또는 admin 권한이 필요합니다.</p>}
         {canManage && <><form className="workspace-inline-form member-add-form" onSubmit={(event) => void invite(event)}><label>초대할 email<input type="email" required maxLength={320} value={email} disabled={Boolean(pending)} onChange={(event) => setEmail(event.target.value)} placeholder="member@example.com" /></label><label>역할<select aria-label="초대할 역할" value={role} disabled={Boolean(pending)} onChange={(event) => setRole(event.target.value as WorkspaceInvitationRole)}>{workspaceInvitationRoles.filter((entry) => active.role === 'owner' || entry === 'member' || entry === 'viewer').map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select></label><button className="primary-action" type="submit" disabled={Boolean(pending) || !email.trim()}>{pending === 'invite' ? <LoaderCircle className="spin" size={13} /> : <Mail size={13} />} 초대 링크 생성</button></form>
           {createdLink && <div className="invitation-created" role="status"><div><strong>이 링크는 지금 한 번만 표시됩니다.</strong><span>외부 이메일은 발송하지 않습니다. 안전한 채널로 직접 전달하세요.</span></div><div className="invitation-copy-row"><input ref={linkRef} aria-label="새 workspace 초대 링크" readOnly value={createdLink} onFocus={(event) => event.currentTarget.select()} /><button className="secondary-action" type="button" onClick={() => void copyLink()}>{copyStatus === 'copied' ? <Check size={12} /> : <Copy size={12} />}{copyStatus === 'copied' ? '복사됨' : '복사'}</button><button className="icon-button" type="button" aria-label="초대 링크 닫기" onClick={() => { setCreatedLink(''); setCopyStatus(''); }}><X size={12} /></button></div>{copyStatus === 'manual' && <span className="invitation-copy-fallback" role="alert">클립보드 접근이 거부되었습니다. 선택된 링크를 직접 복사하세요.</span>}</div>}
+          {deliveryNotice && <p className="auth-help" role="status">{deliveryNotice}</p>}
           <h4 className="workspace-subheading">대기 중인 초대</h4>
           <div className="workspace-invitation-list" aria-live="polite">
             {invitationsInitialLoading && <p className="dialog-empty"><LoaderCircle className="spin" size={13} /> 초대를 불러오는 중…</p>}

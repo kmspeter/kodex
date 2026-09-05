@@ -173,7 +173,7 @@ it('installs, migrates before listen, reports exact version, and recovers from a
   }, null, 2)}\n`, 'utf8');
   await signReleaseArtifact({ directory: releaseRoot, keyFile: privateKeyPath, keyId });
   const verifiedRelease = await verifyReleaseArtifact(releaseRoot, { trustStorePath });
-  expect(verifiedRelease.manifest.database.migrations.at(-1)?.version).toBe(12);
+  expect(verifiedRelease.manifest.database.migrations.at(-1)?.version).toBe(13);
   await runPackagedVerifier(trustStorePath);
 
   const firstPort = await unusedLoopbackPort();

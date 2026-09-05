@@ -42,6 +42,7 @@ import type {
 } from '@kodex/product-db';
 import {
   AuthServiceError,
+  EmailVerificationServiceError,
   normalizeDirectAddress,
   ProductAbuseRateLimitError,
   HistoryCursorError,
@@ -95,6 +96,12 @@ export interface ProductApiReadiness {
 export interface PasswordResetApplication {
   complete(value: unknown, request: { directAddress: string }): Promise<number>;
   request(value: unknown, request: { directAddress: string }): Promise<{ deliveryFailed: boolean }>;
+}
+
+export interface EmailVerificationApplication {
+  complete(value: unknown, request: { directAddress: string }): Promise<void>;
+  resend(sessionToken: string | undefined, request: { directAddress: string }): Promise<void>;
+  status(sessionToken: string | undefined): Promise<{ email: string; status: 'pending' | 'verified' }>;
 }
 
 export interface ProductOperationsEndpoint {
@@ -295,6 +302,20 @@ function errorResponse(response: ServerResponse, error: unknown): void {
     }
     return;
   }
+  if (error instanceof EmailVerificationServiceError) {
+    if (error.code === 'verification_unavailable') {
+      json(response, 410, {
+        ok: false,
+        error: { code: 'verification_unavailable', message: 'The email verification is invalid or no longer available.' },
+      });
+    } else {
+      json(response, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: 'The email verification request is invalid.' },
+      });
+    }
+    return;
+  }
   if (error instanceof HistoryCursorError) {
     json(response, 400, {
       ok: false,
@@ -390,6 +411,7 @@ export class ProductApiServer {
     private readonly passwordReset?: PasswordResetApplication,
     private readonly operations?: ProductOperationsEndpoint,
     private readonly lifecycle?: DataLifecycleApplication,
+    private readonly emailVerification?: EmailVerificationApplication,
   ) {
     this.#allowedHosts = new Set(config.allowedHosts);
     this.http = createServer((request, response) => {
@@ -532,6 +554,14 @@ export class ProductApiServer {
           this.config.cookieSecret,
           this.config.secureCookies,
         ));
+        if (result.verificationPending) {
+          json(response, 202, {
+            csrfToken: createCsrfToken(result.token, this.config.cookieSecret),
+            email: result.context.user.email,
+            status: 'verification_pending',
+          });
+          return;
+        }
         json(response, 201, authResponse(
           result,
           createCsrfToken(result.token, this.config.cookieSecret),
@@ -551,6 +581,14 @@ export class ProductApiServer {
           this.config.cookieSecret,
           this.config.secureCookies,
         ));
+        if (result.verificationPending) {
+          json(response, 202, {
+            csrfToken: createCsrfToken(result.token, this.config.cookieSecret),
+            email: result.context.user.email,
+            status: 'verification_pending',
+          });
+          return;
+        }
         json(response, 200, authResponse(
           result,
           createCsrfToken(result.token, this.config.cookieSecret),
@@ -591,6 +629,44 @@ export class ProductApiServer {
           context,
           createCsrfToken(sessionToken, this.config.cookieSecret),
         ));
+        return;
+      }
+      if (url.pathname === '/api/auth/email-verification/status' && request.method === 'GET') {
+        if (!this.emailVerification) {
+          throw new HttpError(503, 'auth_unavailable', 'Email verification is temporarily unavailable.');
+        }
+        const token = parseCookies(request.headers.cookie).get(sessionCookieName);
+        json(response, 200, await this.emailVerification.status(token));
+        return;
+      }
+      if (url.pathname === '/api/auth/email-verification/resend' && request.method === 'POST') {
+        if (!this.emailVerification) {
+          throw new HttpError(503, 'auth_unavailable', 'Email verification is temporarily unavailable.');
+        }
+        const token = this.#verificationMutationToken(request);
+        requireJson(request);
+        const value = await readJsonBody(request, this.config.maxBodyBytes);
+        if (!isRecord(value) || Object.keys(value).length !== 0) {
+          throw new HttpError(400, 'invalid_request', 'Email verification request is invalid.');
+        }
+        await this.emailVerification.resend(token, {
+          directAddress: request.socket.remoteAddress ?? 'unavailable',
+        });
+        json(response, 202, { ok: true });
+        return;
+      }
+      if (url.pathname === '/api/auth/email-verification/complete' && request.method === 'POST') {
+        verifyOrigin(request, this.config.allowedOrigins);
+        requireJson(request);
+        if (!this.emailVerification) {
+          throw new HttpError(503, 'auth_unavailable', 'Email verification is temporarily unavailable.');
+        }
+        await this.emailVerification.complete(
+          await readJsonBody(request, this.config.maxBodyBytes),
+          { directAddress: request.socket.remoteAddress ?? 'unavailable' },
+        );
+        response.statusCode = 204;
+        response.end();
         return;
       }
       if (url.pathname === '/api/auth/password-reset/request' && request.method === 'POST') {
@@ -823,7 +899,9 @@ export class ProductApiServer {
         const created = await this.#requireWorkspaces().createInvitation(
           context.user.id, workspaceId, input.email, input.role,
         );
-        json(response, 201, { invitation: publicWorkspaceInvitation(created.invitation), token: created.token });
+        json(response, 201, 'token' in created
+          ? { invitation: publicWorkspaceInvitation(created.invitation), token: created.token }
+          : { invitation: publicWorkspaceInvitation(created.invitation), deliveryStatus: created.deliveryStatus });
         return;
       }
       const workspaceInvitationMatch = /^\/api\/workspaces\/([^/]+)\/invitations\/([^/]+)$/u.exec(url.pathname);
@@ -1014,6 +1092,19 @@ export class ProductApiServer {
       || !verifyCsrfToken(token, cookies.get(csrfCookieName), csrfHeader, this.config.cookieSecret)
     ) throw new HttpError(403, 'csrf_failed', 'CSRF validation failed.');
     return { context: await this.auth.authenticate(token), token };
+  }
+
+  #verificationMutationToken(request: IncomingMessage): string {
+    verifyOrigin(request, this.config.allowedOrigins);
+    const cookies = parseCookies(request.headers.cookie);
+    const token = cookies.get(sessionCookieName);
+    const csrfHeader = request.headers['x-csrf-token'];
+    if (
+      !token
+      || typeof csrfHeader !== 'string'
+      || !verifyCsrfToken(token, cookies.get(csrfCookieName), csrfHeader, this.config.cookieSecret)
+    ) throw new HttpError(403, 'csrf_failed', 'CSRF validation failed.');
+    return token;
   }
 
   #requireKnowledge(): KnowledgeApplication {

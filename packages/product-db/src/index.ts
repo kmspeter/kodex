@@ -108,6 +108,25 @@ export {
   type PasswordResetDelivery,
   type PasswordResetServiceOptions,
 } from './password-reset-service.js';
+export {
+  PostgresEmailVerificationRepository,
+  EmailVerificationUnavailableError,
+  hashEmailVerificationToken,
+  type EmailVerificationRepository,
+  type EmailVerificationSession,
+} from './email-verification-repository.js';
+export {
+  EmailVerificationService,
+  EmailVerificationServiceError,
+  type EmailVerificationStatus,
+} from './email-verification-service.js';
+export {
+  PostgresEmailDeliveryRepository,
+  type EmailDeliveryJob,
+  type EmailDeliveryKind,
+  type EmailDeliveryRepository,
+  type PreparedEmailDelivery,
+} from './email-delivery-repository.js';
 export { PostgresHistoryRepository } from './history-repository.js';
 export {
   HistoryCursorError,

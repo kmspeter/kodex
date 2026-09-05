@@ -35,6 +35,7 @@ export interface AuthSessionResult {
   context: AuthContext;
   defaultWorkspace?: WorkspaceMembership;
   token: string;
+  verificationPending?: true;
 }
 
 export interface AuthServiceOptions {
@@ -43,6 +44,7 @@ export interface AuthServiceOptions {
   dummyPasswordHash?: string;
   loginRateLimiter: LoginRateLimiter;
   loginRateLimitSecret: Buffer;
+  requireEmailVerification?: boolean;
   randomToken?: () => Buffer;
   sessionTtlMs?: number;
 }
@@ -177,6 +179,7 @@ export class AuthService {
   readonly #loginRateLimiter: LoginRateLimiter;
   readonly #loginRateLimitSecret: Buffer;
   readonly #randomToken: () => Buffer;
+  readonly #requireEmailVerification: boolean;
   readonly #sessionTtlMs: number;
 
   private constructor(
@@ -190,6 +193,7 @@ export class AuthService {
     this.#loginRateLimiter = options.loginRateLimiter;
     this.#loginRateLimitSecret = options.loginRateLimitSecret;
     this.#randomToken = options.randomToken;
+    this.#requireEmailVerification = options.requireEmailVerification;
     this.#sessionTtlMs = options.sessionTtlMs;
   }
 
@@ -211,6 +215,7 @@ export class AuthService {
       loginRateLimiter: options.loginRateLimiter,
       loginRateLimitSecret: Buffer.from(options.loginRateLimitSecret),
       randomToken,
+      requireEmailVerification: options.requireEmailVerification ?? false,
       sessionTtlMs: options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS,
     });
   }
@@ -244,11 +249,13 @@ export class AuthService {
         workspaceSlug: `personal-${randomUUID()}`,
         sessionTokenHash: tokenHash,
         sessionExpiresAt: expiresAt,
+        requireEmailVerification: this.#requireEmailVerification,
       });
       return {
         token,
         context: record.context,
         defaultWorkspace: record.defaultWorkspace,
+        ...(this.#requireEmailVerification ? { verificationPending: true as const } : {}),
       };
     } catch (error) {
       if (error instanceof RegistrationConflictError) {
@@ -316,7 +323,11 @@ export class AuthService {
         nextHash,
       );
     }
-    return { token, context };
+    return {
+      token,
+      context,
+      ...(credential.emailVerified === false ? { verificationPending: true as const } : {}),
+    };
   }
 
   async authenticate(token: string | undefined): Promise<AuthContext> {

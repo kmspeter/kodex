@@ -50,6 +50,7 @@ describe('repository reproducibility and secret isolation', () => {
       DATABASE_URL: 'postgresql://private',
       AUTH_COOKIE_SECRET: 'cookie-secret',
       AUTH_PASSWORD_RESET_DELIVERY_BEARER_TOKEN: 'recovery-delivery-secret',
+      AUTH_EMAIL_DELIVERY_BEARER_TOKEN: 'email-delivery-secret',
       KODEX_OPERATIONS_BEARER_TOKEN: 'local-operations-secret',
       PRODUCT_OPERATIONS_BEARER_TOKEN: 'product-operations-secret',
       PRODUCT_DB_PASSWORD: 'database-secret',
@@ -67,6 +68,7 @@ describe('repository reproducibility and secret isolation', () => {
     expect(ui.DATABASE_URL).toBeUndefined();
     expect(ui.AUTH_COOKIE_SECRET).toBeUndefined();
     expect(ui.AUTH_PASSWORD_RESET_DELIVERY_BEARER_TOKEN).toBeUndefined();
+    expect(ui.AUTH_EMAIL_DELIVERY_BEARER_TOKEN).toBeUndefined();
     expect(ui.KODEX_OPERATIONS_BEARER_TOKEN).toBeUndefined();
     expect(ui.PRODUCT_OPERATIONS_BEARER_TOKEN).toBeUndefined();
     expect(ui.PRODUCT_DB_PASSWORD).toBeUndefined();

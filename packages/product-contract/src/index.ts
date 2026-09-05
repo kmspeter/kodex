@@ -92,10 +92,13 @@ export interface ProductWorkspaceInvitationsDto {
   nextCursor?: string;
 }
 
-export interface ProductCreatedWorkspaceInvitationDto {
+export type ProductCreatedWorkspaceInvitationDto = {
   invitation: ProductWorkspaceInvitationDto;
   token: string;
-}
+} | {
+  deliveryStatus: 'pending';
+  invitation: ProductWorkspaceInvitationDto;
+};
 
 export interface ProductWorkspaceInvitationPreviewDto {
   expiresAt: string;
@@ -113,6 +116,17 @@ export interface ProductAuthContextDto {
 
 export interface ProductAuthResponseDto extends ProductAuthContextDto {
   csrfToken: string;
+}
+
+export interface ProductVerificationPendingDto {
+  csrfToken: string;
+  email: string;
+  status: 'verification_pending';
+}
+
+export interface ProductEmailVerificationStatusDto {
+  email: string;
+  status: 'pending' | 'verified';
 }
 
 export interface ProductSessionDto {
@@ -413,11 +427,40 @@ export function parseProductWorkspaceInvitations(value: unknown): ProductWorkspa
 export function parseProductCreatedWorkspaceInvitation(value: unknown): ProductCreatedWorkspaceInvitationDto {
   if (
     !workspaceRecord(value)
-    || !exactWorkspaceKeys(value, ['invitation', 'token'])
-    || typeof value.token !== 'string'
-    || !/^[A-Za-z0-9_-]{43}$/u.test(value.token)
+    || !(
+      (exactWorkspaceKeys(value, ['invitation', 'token'])
+        && typeof value.token === 'string'
+        && /^[A-Za-z0-9_-]{43}$/u.test(value.token))
+      || (exactWorkspaceKeys(value, ['deliveryStatus', 'invitation'])
+        && value.deliveryStatus === 'pending')
+    )
   ) throw new Error('Invalid created workspace invitation response.');
-  return { invitation: parseProductWorkspaceInvitation(value.invitation), token: value.token };
+  const invitation = parseProductWorkspaceInvitation(value.invitation);
+  return Object.hasOwn(value, 'token')
+    ? { invitation, token: value.token as string }
+    : { invitation, deliveryStatus: 'pending' };
+}
+
+export function parseProductVerificationPending(value: unknown): ProductVerificationPendingDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['csrfToken', 'email', 'status'])
+    || value.status !== 'verification_pending'
+    || typeof value.csrfToken !== 'string'
+    || !/^[A-Za-z0-9_-]{43}$/u.test(value.csrfToken)
+    || !workspaceEmail(value.email)
+  ) throw new Error('Invalid email verification pending response.');
+  return value as unknown as ProductVerificationPendingDto;
+}
+
+export function parseProductEmailVerificationStatus(value: unknown): ProductEmailVerificationStatusDto {
+  if (
+    !workspaceRecord(value)
+    || !exactWorkspaceKeys(value, ['email', 'status'])
+    || !workspaceEmail(value.email)
+    || !['pending', 'verified'].includes(String(value.status))
+  ) throw new Error('Invalid email verification status response.');
+  return value as unknown as ProductEmailVerificationStatusDto;
 }
 
 export function parseProductWorkspaceInvitationPreview(value: unknown): ProductWorkspaceInvitationPreviewDto {

@@ -2,6 +2,7 @@ import {
   canUseWorkspaceRuntime,
   isUuid,
   parseProductCreatedWorkspaceInvitation,
+  parseProductEmailVerificationStatus,
   parseProductDataLifecycleJob,
   parseProductHistoryThreadDetail,
   parseProductHistoryThreadPage,
@@ -11,6 +12,7 @@ import {
   parseProductWorkspaceInvitations,
   parseProductWorkspaceMember,
   parseProductWorkspaceMembers,
+  parseProductVerificationPending,
   PRODUCT_HISTORY_DEFAULT_LIMIT,
   PRODUCT_HISTORY_MAX_LIMIT,
   PRODUCT_WORKSPACE_CURSOR_MAX_CHARACTERS,
@@ -25,6 +27,7 @@ import {
   type ProductHistoryThreadPageDto,
   type ProductSessionDto,
   type ProductCreatedWorkspaceInvitationDto,
+  type ProductEmailVerificationStatusDto,
   type ProductUserDto,
   type ProductWorkspaceMemberDto,
   type ProductWorkspaceMembersDto,
@@ -32,6 +35,7 @@ import {
   type ProductWorkspaceInvitationsDto,
   type ProductWorkspaceInvitationPreviewDto,
   type ProductWorkspaceDto,
+  type ProductVerificationPendingDto,
   type WorkspaceRole,
   type WorkspaceInvitationRole,
 } from '@kodex/product-contract';
@@ -44,7 +48,10 @@ export type ProductWorkspaceInvitation = ProductWorkspaceInvitationDto;
 export type ProductWorkspaceInvitationPage = ProductWorkspaceInvitationsDto;
 export type ProductWorkspaceInvitationPreview = ProductWorkspaceInvitationPreviewDto;
 export type CreatedProductWorkspaceInvitation = ProductCreatedWorkspaceInvitationDto;
+export type ProductEmailVerificationStatus = ProductEmailVerificationStatusDto;
+export type ProductVerificationPending = ProductVerificationPendingDto;
 export type ProductAuthContext = ProductAuthContextDto;
+export type ProductAuthEstablishment = ProductAuthContext | ProductVerificationPending;
 export type ProductSession = ProductSessionDto;
 export type ProductDataLifecycleJob = ProductDataLifecycleJobDto;
 
@@ -351,7 +358,7 @@ export class ProductAuthClient {
     return parsed.context;
   }
 
-  async login(input: { email: string; password: string }): Promise<ProductAuthContext> {
+  async login(input: { email: string; password: string }): Promise<ProductAuthEstablishment> {
     return this.#establish('/api/auth/login', 200, input);
   }
 
@@ -359,7 +366,7 @@ export class ProductAuthClient {
     displayName?: string;
     email: string;
     password: string;
-  }): Promise<ProductAuthContext> {
+  }): Promise<ProductAuthEstablishment> {
     return this.#establish('/api/auth/register', 201, input);
   }
 
@@ -381,6 +388,40 @@ export class ProductAuthClient {
       || (body as { ok?: unknown }).ok !== true
     ) {
       throw new ProductAuthError('invalid-response', 'The password reset request response was invalid.');
+    }
+  }
+
+  async emailVerificationStatus(): Promise<ProductEmailVerificationStatus> {
+    const response = await this.#request('/api/auth/email-verification/status', { method: 'GET' });
+    try {
+      return parseProductEmailVerificationStatus(await this.#json(response));
+    } catch {
+      throw new ProductAuthError('invalid-response', 'The email verification status response was invalid.');
+    }
+  }
+
+  async resendEmailVerification(): Promise<void> {
+    const response = await this.#authMutation('/api/auth/email-verification/resend', 'POST', {});
+    if (response.status !== 202) {
+      throw new ProductAuthError('invalid-response', 'The email verification resend response was invalid.', response.status);
+    }
+    const body = await this.#json(response);
+    if (!isRecord(body) || !hasExactKeys(body, ['ok']) || body.ok !== true) {
+      throw new ProductAuthError('invalid-response', 'The email verification resend response was invalid.');
+    }
+  }
+
+  async completeEmailVerification(token: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{42}[AQgw]$/u.test(token)) {
+      throw new ProductAuthError('rejected', 'Email verification token is invalid.');
+    }
+    const response = await this.#request('/api/auth/email-verification/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (response.status !== 204) {
+      throw new ProductAuthError('invalid-response', 'The email verification completion response was invalid.', response.status);
     }
   }
 
@@ -847,13 +888,26 @@ export class ProductAuthClient {
     pathname: string,
     expectedStatus: number,
     input: Record<string, unknown>,
-  ): Promise<ProductAuthContext> {
+  ): Promise<ProductAuthEstablishment> {
     const generation = this.#sessionGeneration;
     const response = await this.#request(pathname, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
+    if (response.status === 202) {
+      let pending: ProductVerificationPending;
+      try {
+        pending = parseProductVerificationPending(await this.#json(response));
+      } catch (error) {
+        if (error instanceof ProductAuthError) throw error;
+        throw new ProductAuthError('invalid-response', 'The email verification pending response was invalid.');
+      }
+      if (generation !== this.#sessionGeneration) throw abortError();
+      this.clearMemory();
+      this.#csrfToken = pending.csrfToken;
+      return pending;
+    }
     if (response.status !== expectedStatus) {
       throw new ProductAuthError('invalid-response', 'The authentication response status was invalid.', response.status);
     }
