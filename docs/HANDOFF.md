@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 3e12455f200288bc9ab98a37afd3fa39f16de677..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only 6094654687462b0f5d4a84f77e8f76a22dec3340..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `3e12455f200288bc9ab98a37afd3fa39f16de677` |
-| 제품 기준 commit | `fix: isolate compose database privileges` (Phase 29 기능 기준) |
+| 제품 기준 HEAD | `6094654687462b0f5d4a84f77e8f76a22dec3340` |
+| 제품 기준 commit | `fix: remove unused security validator constant` (Phase 29 기능 기준) |
 | 완료 범위 | Phase 1~29 |
 | 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 29에서 종료 |
 
@@ -293,23 +293,24 @@ Phase 29의 원본 결정은 [ADR 0028](adr/0028-integrated-security-boundaries.
   `package-lock.json`, 현재 `bin/codex-build.json`은 수정하지 않았다.
 
 Phase 29 기능은 commit `87abf7d121a5cce1b9239c8a2c07b5261a20310b`, Compose profile 보정은 commit
-`3e12455f200288bc9ab98a37afd3fa39f16de677`이다. 2026-09-05에 최종 제품 commit의 동일 content 대상으로
+`3e12455f200288bc9ab98a37afd3fa39f16de677`, lint 보정은 commit
+`6094654687462b0f5d4a84f77e8f76a22dec3340`이다. 2026-09-05에 최종 제품 commit의 동일 content 대상으로
 `npm run security:validate`가 통과했다. 결과는 tracked 7,996 files, vendor 6,687 files, npm dependency 392,
 workspace 9, deployment contract 3이며 `binaryPresent=false`를 명시했다. `scripts/lib/security-validation.mjs`,
 `scripts/security-validate.mjs`, `scripts/build-runtime.mjs`, `scripts/kodex-release.mjs`의 `node --check`와
-`git diff --check`도 통과했다. 이 shell의 Node는 project 최소 버전보다 낮은 `v20.19.4`였으므로 메인 환경의
-Node 22.13+에서 같은 gate를 다시 실행해야 한다.
+`git diff --check`도 통과했다.
 
-이 worktree에는 `node_modules`가 없어 `npm run test:security`는 `vitest` executable 부재로 시작 전에 실패했다.
-같은 이유로 typecheck와 lint는 실행하지 않았다. 사용자 지시에 따라 `npm run build`, `codex:build`, runtime/
-release/installer 생성, Docker/Electron/full-stack, Rust/MSVC 설치는 실행하지 않았다. `bin/codex.exe`가 없으므로
-binary-required runtime/release provenance gate도 실행하지 않았으며 누락을 pass로 기록하지 않는다.
+메인 통합 worktree의 Node `v24.19.0` 환경에서 `npm run security:validate`가 같은 aggregate(tracked 7,996,
+vendor 6,687, npm dependency 392, workspace 9, deployment contract 3, `binaryPresent=false`)로 다시 통과했다.
+`npm run test:security`는 4 files/18 tests, `npm run typecheck`, `npm run lint`가 모두 통과했다.
+
+사용자 지시에 따라 `npm run build`, `codex:build`, runtime/release/installer 생성, Docker/Electron/full-stack,
+Rust/MSVC 설치는 실행하지 않았다. `bin/codex.exe`가 없으므로 binary-required runtime/release provenance gate도
+실행하지 않았으며 누락을 pass로 기록하지 않는다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 29 변경을 통합 검증한다.** 메인 worktree의 설치된 의존성으로 `test:security`, typecheck와 lint를
-   실행하고 production 역할 fixture에서 migration/application privilege contract를 실제 PostgreSQL로 검증한다.
-2. **P1 — 현재 checkout의 binary 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
