@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/database-recovery-policy-v1.json",
+  "title": "Kodex managed PostgreSQL recovery policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "formatVersion",
+    "profile",
+    "responsibility",
+    "objectives",
+    "walArchive",
+    "baseBackup",
+    "transport",
+    "isolation",
+    "replica",
+    "snapshots",
+    "rotation",
+    "legalHold",
+    "restoreDrill",
+    "physicalDeletion"
+  ],
+  "properties": {
+    "format": { "const": "kodex-database-recovery-policy" },
+    "formatVersion": { "const": 1 },
+    "profile": { "enum": ["acceptance", "development", "production"] },
+    "responsibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlMode", "databaseOperator", "kodexRole", "providerAttestationRef"],
+      "properties": {
+        "controlMode": { "const": "validate-only" },
+        "databaseOperator": { "const": "external-managed-provider" },
+        "kodexRole": { "const": "policy-and-readiness-gate" },
+        "providerAttestationRef": { "$ref": "#/$defs/opsReference" }
+      }
+    },
+    "objectives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rpoMinutes", "rtoMinutes", "pitrWindowHours"],
+      "properties": {
+        "rpoMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "rtoMinutes": { "type": "integer", "minimum": 5, "maximum": 10080 },
+        "pitrWindowHours": { "type": "integer", "minimum": 1, "maximum": 8760 }
+      }
+    },
+    "walArchive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "continuous", "archiveMaximumDelayMinutes", "retentionHours", "encrypted", "worm"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "continuous": { "type": "boolean" },
+        "archiveMaximumDelayMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "retentionHours": { "type": "integer", "minimum": 1, "maximum": 17520 },
+        "encrypted": { "type": "boolean" },
+        "worm": { "type": "boolean" }
+      }
+    },
+    "baseBackup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "cadenceHours", "retentionDays", "encrypted", "worm"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "cadenceHours": { "type": "integer", "minimum": 1, "maximum": 744 },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 730 },
+        "encrypted": { "type": "boolean" },
+        "worm": { "type": "boolean" }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tlsMode"],
+      "properties": { "tlsMode": { "enum": ["disable", "require", "verify-ca", "verify-full"] } }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failureDomainCount", "regionCount", "accountCount", "separateCredentials"],
+      "properties": {
+        "failureDomainCount": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "regionCount": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "accountCount": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "separateCredentials": { "type": "boolean" }
+      }
+    },
+    "replica": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "topology",
+        "maximumLagSeconds",
+        "slotMonitoringEnabled",
+        "slotMaximumWalRetentionBytes",
+        "promotionTargetMinutes",
+        "promotionRunbookRef",
+        "fencingEnabled",
+        "fencingRunbookRef"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "topology": { "enum": ["cross-region-hot-standby", "regional-standby", "single"] },
+        "maximumLagSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "slotMonitoringEnabled": { "type": "boolean" },
+        "slotMaximumWalRetentionBytes": { "type": "integer", "minimum": 1048576, "maximum": 1125899906842624 },
+        "promotionTargetMinutes": { "type": "integer", "minimum": 1, "maximum": 10080 },
+        "promotionRunbookRef": { "$ref": "#/$defs/opsReference" },
+        "fencingEnabled": { "type": "boolean" },
+        "fencingRunbookRef": { "$ref": "#/$defs/opsReference" }
+      }
+    },
+    "snapshots": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "cadenceHours", "retentionDays", "deletionProtectionEnabled", "encrypted", "worm"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "cadenceHours": { "type": "integer", "minimum": 1, "maximum": 744 },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 730 },
+        "deletionProtectionEnabled": { "type": "boolean" },
+        "encrypted": { "type": "boolean" },
+        "worm": { "type": "boolean" }
+      }
+    },
+    "rotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encryptionKeyRef", "encryptionKeyRotationDays", "artifactTrustRef", "artifactTrustRotationDays"],
+      "properties": {
+        "encryptionKeyRef": { "$ref": "#/$defs/keyReference" },
+        "encryptionKeyRotationDays": { "type": "integer", "minimum": 1, "maximum": 730 },
+        "artifactTrustRef": { "$ref": "#/$defs/trustReference" },
+        "artifactTrustRotationDays": { "type": "integer", "minimum": 1, "maximum": 730 }
+      }
+    },
+    "legalHold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "propagationEnabled",
+        "walIncluded",
+        "baseBackupsIncluded",
+        "snapshotsIncluded",
+        "replicasIncluded",
+        "procedureRef"
+      ],
+      "properties": {
+        "propagationEnabled": { "type": "boolean" },
+        "walIncluded": { "type": "boolean" },
+        "baseBackupsIncluded": { "type": "boolean" },
+        "snapshotsIncluded": { "type": "boolean" },
+        "replicasIncluded": { "type": "boolean" },
+        "procedureRef": { "$ref": "#/$defs/opsReference" }
+      }
+    },
+    "restoreDrill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cadenceDays", "evidenceMaxAgeDays", "artifactSignatureRequired", "trustVersionMinimum"],
+      "properties": {
+        "cadenceDays": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "evidenceMaxAgeDays": { "type": "integer", "minimum": 1, "maximum": 730 },
+        "artifactSignatureRequired": { "type": "boolean" },
+        "trustVersionMinimum": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+      }
+    },
+    "physicalDeletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximumResidualDays",
+        "exceptionRequiresLegalHold",
+        "walIncluded",
+        "baseBackupsIncluded",
+        "snapshotsIncluded",
+        "replicasIncluded"
+      ],
+      "properties": {
+        "maximumResidualDays": { "type": "integer", "minimum": 1, "maximum": 730 },
+        "exceptionRequiresLegalHold": { "type": "boolean" },
+        "walIncluded": { "type": "boolean" },
+        "baseBackupsIncluded": { "type": "boolean" },
+        "snapshotsIncluded": { "type": "boolean" },
+        "replicasIncluded": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "opsReference": {
+      "type": "string",
+      "pattern": "^opsref:[a-z0-9][a-z0-9.-]{2,63}$",
+      "not": { "pattern": "(?:access[-.]?key|api[-.]?key|credential|password|private[-.]?key|secret|sk-|token)" }
+    },
+    "keyReference": {
+      "type": "string",
+      "pattern": "^keyref:[a-z0-9][a-z0-9.-]{2,63}$",
+      "not": { "pattern": "(?:access[-.]?key|api[-.]?key|credential|password|private[-.]?key|secret|sk-|token)" }
+    },
+    "trustReference": {
+      "type": "string",
+      "pattern": "^trustref:[a-z0-9][a-z0-9.-]{2,63}$",
+      "not": { "pattern": "(?:access[-.]?key|api[-.]?key|credential|password|private[-.]?key|secret|sk-|token)" }
+    }
+  }
+}

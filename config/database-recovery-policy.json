@@ -1,0 +1,87 @@
+{
+  "format": "kodex-database-recovery-policy",
+  "formatVersion": 1,
+  "profile": "production",
+  "responsibility": {
+    "controlMode": "validate-only",
+    "databaseOperator": "external-managed-provider",
+    "kodexRole": "policy-and-readiness-gate",
+    "providerAttestationRef": "opsref:postgres-recovery-controls-v1"
+  },
+  "objectives": {
+    "rpoMinutes": 15,
+    "rtoMinutes": 60,
+    "pitrWindowHours": 168
+  },
+  "walArchive": {
+    "enabled": true,
+    "continuous": true,
+    "archiveMaximumDelayMinutes": 5,
+    "retentionHours": 192,
+    "encrypted": true,
+    "worm": true
+  },
+  "baseBackup": {
+    "enabled": true,
+    "cadenceHours": 24,
+    "retentionDays": 35,
+    "encrypted": true,
+    "worm": true
+  },
+  "transport": {
+    "tlsMode": "verify-full"
+  },
+  "isolation": {
+    "failureDomainCount": 2,
+    "regionCount": 2,
+    "accountCount": 2,
+    "separateCredentials": true
+  },
+  "replica": {
+    "enabled": true,
+    "topology": "cross-region-hot-standby",
+    "maximumLagSeconds": 60,
+    "slotMonitoringEnabled": true,
+    "slotMaximumWalRetentionBytes": 68719476736,
+    "promotionTargetMinutes": 30,
+    "promotionRunbookRef": "opsref:postgres-promotion-v1",
+    "fencingEnabled": true,
+    "fencingRunbookRef": "opsref:postgres-fencing-v1"
+  },
+  "snapshots": {
+    "enabled": true,
+    "cadenceHours": 24,
+    "retentionDays": 35,
+    "deletionProtectionEnabled": true,
+    "encrypted": true,
+    "worm": true
+  },
+  "rotation": {
+    "encryptionKeyRef": "keyref:postgres-recovery-v1",
+    "encryptionKeyRotationDays": 90,
+    "artifactTrustRef": "trustref:recovery-evidence-v1",
+    "artifactTrustRotationDays": 90
+  },
+  "legalHold": {
+    "propagationEnabled": true,
+    "walIncluded": true,
+    "baseBackupsIncluded": true,
+    "snapshotsIncluded": true,
+    "replicasIncluded": true,
+    "procedureRef": "opsref:recovery-legal-hold-v1"
+  },
+  "restoreDrill": {
+    "cadenceDays": 30,
+    "evidenceMaxAgeDays": 35,
+    "artifactSignatureRequired": true,
+    "trustVersionMinimum": 1
+  },
+  "physicalDeletion": {
+    "maximumResidualDays": 35,
+    "exceptionRequiresLegalHold": true,
+    "walIncluded": true,
+    "baseBackupsIncluded": true,
+    "snapshotsIncluded": true,
+    "replicasIncluded": true
+  }
+}
