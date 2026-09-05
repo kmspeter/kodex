@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 83fbdcd829af9eb8dbf817c5105b6da08f2a26c9..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,14 +27,14 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 35 전용 worktree; 메인 통합 Node 24 검증 완료 |
-| 제품 기준 HEAD | `8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7` |
-| 제품 기준 commit | `fix: cryptographically verify recovery receipts` |
-| 메인 통합 검증 HEAD | `daca46b10bda901eceb95a0402e80de403da1760` |
-| 완료 범위 | Phase 1~35 |
-| 다음 핵심 기능 | 승인된 운영 환경의 실제 provider drill/receipt는 보류; 이 탭에서 다음 Phase로 확장하지 않음 |
+| 준비 branch | detached Phase 36 전용 worktree; 기준 main에서 feature/docs 독립 commit |
+| 제품 기준 HEAD | `83fbdcd829af9eb8dbf817c5105b6da08f2a26c9` |
+| 제품 기준 commit | `feat: add final acceptance gates` |
+| Phase 36 시작 main HEAD | `0482cca87a3ca7b7b7ba5ad62a405d0e0b478e36` |
+| 완료 범위 | Phase 1~36 코드와 문서 계약 |
+| 다음 핵심 기능 | 승인된 실제 build/Electron/PostgreSQL/installer/provider drill/12~72h evidence 실행만 보류; 다음 Phase로 확장하지 않음 |
 
-Phase 1~35에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~36에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
@@ -43,9 +43,10 @@ backfill/reconciliation, PostgreSQL과 tenant data의 streaming encrypted/signed
 forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성, durable data
 lifecycle, 통합 security/provenance/least-privilege gate, offline Ed25519 release authenticity와 Windows per-user
 installer/updater/rollback code boundary, 신규 가입 email verification과 invitation email delivery, managed
-PostgreSQL recovery policy/readiness evidence gate까지 구현했다. 상세 계약은
+PostgreSQL recovery policy/readiness evidence gate, durable long-run acceptance와 fail-closed final release evidence
+matrix까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0034](adr/0034-managed-postgresql-recovery-policy.md)까지가 기준이다.
+[ADR 0035](adr/0035-long-run-and-release-acceptance.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -698,14 +699,83 @@ signed evidence receipt 발행도 운영 provider 환경에서 보류되어 있�
 actual provider drill/receipt, Electron/full-stack와 Rust/MSVC는 실행하지 않았다. 검증 가능한 Phase 35 코드 gate의
 통과는 실제 provider recovery 또는 provider가 발행한 운영 drill evidence의 완료를 뜻하지 않는다.
 
+### Phase 36 — Durable long-run acceptance and final release readiness
+
+Phase 36의 원본 결정은 [ADR 0035](adr/0035-long-run-and-release-acceptance.md), 실제 실행은
+[long-run acceptance runbook](operations/long-run-acceptance.md), release decision은
+[final checklist](operations/final-release-checklist.md)와
+[acceptance matrix](operations/release-acceptance-matrix.md)다.
+
+- Version 1 long-run scenario/config/state/receipt와 여섯 JSON schema를 추가했다. Production catalog는 12시간
+  minimum/72시간 maximum이고 `full-system-soak`, `product-local-postgresql-soak` 두 scenario가 기존 Product/Local/
+  Electron/PostgreSQL/history/RAG/auth/invitation/password-reset/email/lifecycle/backup/recovery/release/security harness를
+  allowlisted command ID로 조합한다. CLI는 arbitrary shell/argv/path payload를 state나 log에 저장하지 않는다.
+- State machine은 same-directory flush+rename atomic checkpoint, UUID run/owner, canonical plan SHA-256, exclusive lease
+  directory/heartbeat/expiry, monotonic iteration-step-completed relation, pre-invocation attempt checkpoint와 deterministic
+  idempotency key를 쓴다. Crash resume는 in-flight attempt를 소비하고 bounded retry하며 live lease의 duplicate runner를
+  `duplicate_runner`로 막는다. SIGINT/SIGTERM, step/global deadline, exponential backoff, iteration cap과 cleanup도 bounded다.
+- Adapter result는 heap/handle/socket/DB pool/outbox/lease/temp/disk 정수 sample과 reconnect/restart count뿐이다. Absolute
+  또는 baseline growth threshold 위반은 `resource_threshold_exceeded`, invocation/iteration/step 불일치는
+  `unordered_result`다. Tenant/user/workspace/email, prompt/tool payload, DB URL, path, token/secret와 raw error/output는
+  state/receipt/summary에 없다.
+- Chaos allowlist는 reconnect/runtime restart/PostgreSQL session recovery/update restart의 reversible isolated acceptance
+  action 네 개다. DB/data/user file 삭제, Docker daemon/volume mutation, approval auto-approve, policy bypass와 catalog 밖
+  command는 코드에서 거부한다.
+- `config/release-acceptance-catalog.json`은 Phase 1~36을 mandatory `REL-001`~`REL-018`에 매핑한다. Fresh/upgrade
+  migration, Product/Local/browserless, runtime isolation, History/reconciliation, RAG, Electron, email/auth recovery,
+  Workspace recovery, filesystem lifecycle, observability/security, backup, build, signing, installer, provider drill과
+  long-run soak가 모두 있어야 한다.
+- Acceptance receipt는 exact current Git HEAD/package version, catalog/recovery-policy/migration-ledger/vendor digest,
+  upstream commit, allowlisted requirement/command/evidence type, timestamp/count/artifact trust metadata만 허용한다.
+  Domain-separated canonical payload를 Phase 30 Ed25519 primitive로 검증하고 external trust store의 loaded version/ref와
+  exact-match한다. `verified` boolean과 private key/repository trust store는 허용하지 않는다.
+- Build/signing은 Phase 30 release artifact verifier, installer는 Phase 31 confirmed state와 같은 artifact, provider
+  drill은 Phase 35 receipt validator, soak는 12~72시간 completed Phase 36 receipt를 source로 다시 확인한다. Wrapper만
+  있고 원본이 없으면 `evidence_source_unverified`다. Dirty/missing/stale/future/failed/mismatched/unsigned/unknown/revoked/
+  tampered evidence는 모두 fail-closed다.
+- `acceptance:validate`는 machine catalog와 여섯 schema digest, package scripts, 13개 immutable migration count,
+  README/ADR/runbook/checklist/matrix/threat/deployment/security/observability drift를 검사한다. `security:validate`도 같은
+  gate를 호출한다.
+
+Feature commit은 `83fbdcd829af9eb8dbf817c5105b6da08f2a26c9`
+(`feat: add final acceptance gates`)다. 요청 기준 main HEAD
+`0482cca87a3ca7b7b7ba5ad62a405d0e0b478e36`의 clean detached worktree에서 시작했다. Migration `0001`~`0013`,
+vendor/generated protocol, upstream pin/manifest를 변경하지 않았다.
+
+이 feature commit에는 최종 review hardening도 함께 squash했다. Windows process adapter는 `npm.cmd`를 shell로 실행하지
+않고 현재 `npm run`의 absolute `npm-cli.js`를 basename/absolute-path 검증 뒤 `node` argv로 실행한다. Timeout/abort는
+runner가 만든 exact child tree만 bounded terminate하고 guard timer/heartbeat write를 terminal checkpoint 전에 drain한다.
+Step timeout은 남은 global deadline 이하이며 cleanup 중 crash에도 원래 terminal result를 보존한다. Catalog는 exact
+18 command/18 sequential requirement, repository identity는 exact 13-entry ledger와 재계산 digest를 요구한다.
+Artifact kind/trust version을 requirement에 묶고 installer는 external candidate뿐 아니라 install root active tree의
+full-tree/Ed25519 signature도 Phase 31 confirmed state와 exact-match해야 한다.
+
+이 worktree의 Node는 `v20.19.4`이고 `node_modules`가 없었다. 설치나 다른 경로 탐색을 하지 않았다. Dependency-free
+`test:long-run-acceptance` 13개 경로와 `test:release-acceptance` 12개 경로가 통과했다. 두 번째 fixture는 명시적으로
+`productionEvidenceCreated=false`를 출력했다. Changed executable의 `node --check`, `recovery:validate`도 통과했다.
+`acceptance:validate` 결과는 catalog digest `43a67b2ae2c11e43014a94483a19ffffe82772f218fb6e4eeb7e94d92a3addda`,
+command/requirement 18, schema 6, document 10, long-run scenario 2다. Sandbox 내부 `security:validate`의 tracked-file
+Git spawn은 `EPERM`이어서 허용된 read-only 경계에서 다시 실행했고 final docs 기준 tracked 8,073, vendor 6,687, dependency 392,
+workspace 9, deployment 3, acceptance command/requirement 18/schema 6, recovery document 8/schema 2,
+bootstrap trust-store version 2/key 0, `binaryPresent=false`로 통과했다. `npx eslint`는 local dependency가 없어
+cache-only `ENOTCACHED`로 시작되지 않았으며 lint/typecheck/targeted Vitest는 메인 Node 22.13+ dependency 환경으로
+넘긴다.
+
+실제 long soak, Product/Local/Electron/full-stack, Docker/PostgreSQL, backup/restore, provider drill, installer/release
+artifact generation, cloud/network, Rust/MSVC/Codex build는 실행하지 않았다. 따라서 현재 clean final HEAD에서
+`npm run release:readiness`의 올바른 결과는 `release_evidence_pending`, pending requirement 18과 category 17개다.
+Fake fixture는 `productionEvidenceCreated=false`이며 그 결과를 actual production acceptance로 해석하거나 서명하면
+안 된다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — Phase 35의 실제 provider drill은 운영 승인 뒤 별도 수행한다.** 메인 통합 Node 24의 targeted Vitest,
-   typecheck, lint, `recovery:validate`, `security:validate`는 완료했다. 승인된 managed PostgreSQL 환경에서만 실제
-   provider drill과 receipt signer/verifier를 수행하며, 코드 gate 결과를 실제 recovery 증거로 대체하지 않는다.
-   이 전용 작업에서는 다음 Phase 기능으로 확장하지 않는다.
-2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
-   `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
+1. **P1 — Phase 36 production acceptance evidence를 승인된 환경에서만 수집한다.** Matrix의 실제 Product/Local/
+   Electron/PostgreSQL/filesystem/email/backup/build/signing/installer/update와 Phase 35 provider drill, 12~72시간 soak를
+   실행한다. 각 receipt를 current final HEAD와 exact-match해 외부 signer/trust store로 검증하고
+   `release:readiness`가 `release_ready`일 때만 exit한다. Code/fake fixture 결과로 대체하지 않는다.
+2. **P2 — 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다.** Pinned Rust/MSVC와 sealed artifact가 없으면
+   build/runtime/installer evidence는 pending으로 유지하고, 실제 인프라 승인 없이 long-run/provider 작업을
+   시작하지 않는다.
 
 ## 표준 실행과 검증
 
@@ -724,6 +794,10 @@ npm run test:release-signing
 npm run test:backup-encryption
 npm run recovery:validate
 npm run test:recovery
+npm run acceptance:validate
+npm run test:long-run-acceptance
+npm run test:release-acceptance
+npm run release:readiness
 npm run test:installer
 npm run test:installer-unit
 npm run typecheck

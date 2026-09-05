@@ -1,10 +1,12 @@
 # Kodex 통합 threat model
 
-- 기준: Phase 35, 2026-09-05
+- 기준: Phase 36, 2026-09-05
 - 대상: Electron/React, Product API, Local Server, 공식 Codex App Server, PostgreSQL/pgvector,
-  tenant filesystem, build/vendor/release, Windows installer state 경로와 managed PostgreSQL recovery evidence
+  tenant filesystem, build/vendor/release, Windows installer state, managed PostgreSQL recovery evidence,
+  long-run acceptance state와 final release readiness evidence
 - 검증 entrypoint: `npm run security:validate`, `npm run test:security`, `npm run test:release-signing`,
-  `npm run test:backup-encryption`, `npm run recovery:validate`, `npm run test:recovery`, `npm run test:installer`
+  `npm run test:backup-encryption`, `npm run recovery:validate`, `npm run test:recovery`, `npm run test:installer`,
+  `npm run acceptance:validate`, `npm run test:long-run-acceptance`, `npm run test:release-acceptance`
 
 ## 자산과 공격자
 
@@ -12,7 +14,8 @@
 provider/operations secret, private History/RAG content, tenant별 `CODEX_HOME`과 outbox, approval 결정,
 release/source provenance, offline signing private key, backup passphrase와 encrypted backup, public trust-store 상태,
 active/last-known-good/rollback pointer와 installer journal, production database recovery policy digest와 signed
-provider drill receipt의 trust version/readiness다. 공격자는
+provider drill receipt의 trust version/readiness, long-run checkpoint/lease/receipt와 final acceptance catalog/evidence
+provenance다. 공격자는
 인증되지 않은 네트워크 client, 다른 user/workspace의 인증 사용자, 악성 repository content, 변조된 dependency/
 vendor/runtime input, 과도한 DB 역할, stale/forged recovery evidence와 로컬의 다른 비관리 process를 포함한다. 운영 host/secret manager와 승인된
 release maintainer 자체가 완전히 장악된 경우, PostgreSQL host 관리자, 서명 key 탈취는 이 모델 밖의 상위 신뢰
@@ -46,6 +49,12 @@ external public trust store -> verify/decrypt/temp validate -> empty DB + new da
 external managed PostgreSQL operator -- provider drill --> payload-free recovery receipt
   | WAL/PITR/base backup/replica/snapshot controls                |
   +--> versioned recovery policy digest/trust version -----------+--> external Ed25519 trust store --> deployment readiness gate
+
+allowlisted Product/Local/Electron/PostgreSQL acceptance commands
+  --> atomic checkpoint + exclusive heartbeat lease --> payload-free 12~72h soak receipt
+
+clean HEAD + catalog/policy/migration/vendor provenance + signed evidence + verified source artifacts
+  --> external Ed25519 trust store --> fail-closed final release readiness
 ```
 
 | 경계 | 주요 위협 | 강제 통제와 증거 |
@@ -70,6 +79,8 @@ external managed PostgreSQL operator -- provider drill --> payload-free recovery
 | Installer state → active code | in-place overwrite, path escape/reparse, unsafe ACL, concurrent/crashed pointer 전환 | signed-first verification, Phase 29 secret scan, external ACL adapter, side-by-side roots, same-directory atomic pointer+journal, exclusive lock, exact-root cleanup; installer fixture/unit |
 | DB schema → binary rollback | forward-only migration 뒤 incompatible binary 자동 downgrade | signed readable-schema metadata, conservative candidate latest-schema journal, incompatible rollback의 `operator_recovery_required`; installer fixture/ADR 0030 |
 | Uninstall → persistent data | tenant/CODEX_HOME/DB/backup 동반 삭제 | per-user code root와 외부 데이터 분리, plan-only uninstall adapter boundary, exact direct-child deletion; layout schema/runbook |
+| Long-run runner → acceptance target | duplicate runner, stale/crash replay, unbounded retry, destructive chaos, resource leak, payload/state 유출 | atomic pre-invocation checkpoint, run/plan digest, expiring heartbeat lease, idempotency key, bounded deadline/retry/backoff, fixed reversible action IDs, aggregate threshold; Phase 36 fake fixture/runbook |
+| Acceptance evidence → release decision | 과거/다른 commit receipt, forged boolean, unsigned/tampered/unknown/revoked evidence, missing source artifact, dirty tree, fake fixture 승격 | exact current HEAD/version/catalog/policy/migration/vendor match, external Ed25519 trust store, Phase 30/31/35/36 source verifier, all-requirement fail-closed matrix; `acceptance:validate`, `release:readiness` |
 
 ## Threat 처리
 
@@ -86,6 +97,9 @@ external managed PostgreSQL operator -- provider drill --> payload-free recovery
   자체를 제외한 timestamp/result/policy digest/objectives/protections/trust ref/version/key ID 전체를 domain-separated
   canonical JSON으로 봉인한다. Phase 30 external trust-store의 active key로 실제 Ed25519 검증하고 loaded store
   version exact match 뒤에만 stale/future/failed/RPO/RTO/protection mismatch를 production promotion 전에 평가한다.
+  Phase 36 evidence도 signature field를 제외한 requirement/command/result/timestamps/current provenance/count/artifact
+  metadata 전체를 별도 domain으로 봉인한다. Release readiness는 wrapper signature뿐 아니라 release artifact,
+  confirmed installer state, Phase 35 recovery receipt와 12~72시간 completed soak source를 다시 검증한다.
 - Repudiation: audit에는 bounded operation/ID/status만 남긴다. Delivery log도 kind/outcome/attempt만 가진다. Prompt,
   response, email, token, URL, 경로와 provider/DB 오류문은 일반 log에 남기지 않는다. Recovery validate/status도
   stable code, policy digest, coarse age bucket/count만 출력하고 resource ID, WAL LSN/timeline, snapshot ID와
@@ -93,18 +107,24 @@ external managed PostgreSQL operator -- provider drill --> payload-free recovery
   signature bytes는 signer 성공/실패 log에
   출력하지 않으며 key를 환경 변수나 CLI 값으로 받지 않는다. Restore audit는 stable `workspace.restored`와
   payload-free operation만 남기고 password, Workspace 이름과 confirmation을 기록하지 않는다.
+  Long-run state/receipt는 run/plan/scenario와 monotonic aggregate만, readiness는 stable code/catalog digest/pending
+  category/count만 출력하며 child stdout/stderr, state/evidence path와 key/signature를 출력하지 않는다.
 - Information disclosure: Verification은 domain-separated hash-only이고 delivery queue에는 target FK와 고정 상태만
   둔다. Raw token/fragment URL은 provider 호출 순간 외 DB/log/audit에 없으며 React bootstrap 전 URL에서 제거한다.
   History/RAG는 `(workspace_id, created_by_user_id)` private scope이고 renderer env, operational status, release scan
   진단에 secret 값이나 payload를 넣지 않는다. Backup passphrase/private key는 argv/env/manifest/log에 없고 tenant
   path/content는 encrypted inner archive에만 있다. Archived Workspace 목록은 owner에게만 보이며 cursor를 account에
   암호화해 묶고 lifecycle 상태를 public DTO에 포함하지 않는다. Secret scan은 path/rule/line/fingerprint만 출력한다.
+  Acceptance receipt에는 tenant/user/workspace/email, prompt/tool payload, filesystem path, DB URL, token/secret와 raw
+  error가 없고 external trust store/private key는 repository/runtime/UI와 분리한다.
 - Denial of service: request/body/page/outbox/file/count/byte/time/provider-response bounds와 PostgreSQL 공유 limiter를
   사용한다. Verification resend는 account/address, consume은 address/token bucket을 공유한다. Local
   runtime 수와 reconciliation, release tree/state JSON/retained release 수를 제한한다. Live installer lock을 깨지
   않고 stale dead-process lock만 recover한다. Backup은 header/signature/record/count/path bounds, fixed scrypt cost와
   signed uncompressed length를 사용하되 실제 대용량 backup의 disk/time capacity planning은 운영자 책임이다. Edge
   DDoS/WAF도 운영자 책임이다.
+  Long-run runner는 72시간/iteration/step timeout/attempt/backoff, JSON/file/count와 모든 resource absolute/growth
+  threshold를 제한하고 live heartbeat lease로 duplicate runner를 막는다.
 - Elevation of privilege: workspace role과 creator scope를 매 경계에서 다시 확인한다. Production application DB
   역할은 DB/schema owner와 broad role attribute/DDL을 가질 수 없고 migration 역할은 application과 달라야 한다.
   Restore는 admin/member 권한으로 승격되지 않으며 다른 tenant와 없는 Workspace를 같은 forbidden 경계로 처리한다.
@@ -112,11 +132,16 @@ external managed PostgreSQL operator -- provider drill --> payload-free recovery
 ## 불변식과 변경 규칙
 
 Payload-free logging, HttpOnly/CSRF, private History/RAG, tenant filesystem, 공식 App Server 및 approval 경계는
-Phase 34 backup이나 Phase 35 recovery policy 작업으로 완화되지 않는다. `recovery:cli status`는 HTTP operations
-status에 연결되지 않으며 기존 operations bearer/Origin/default-404 계약을 바꾸지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
+Phase 34 backup, Phase 35 recovery policy나 Phase 36 acceptance 작업으로 완화되지 않는다. `recovery:cli status`와
+`release:readiness`는 HTTP operations status에 연결되지 않으며 기존 operations bearer/Origin/default-404 계약을
+바꾸지 않는다. Allowlist는 `.secret-scanner-allowlist.json`의 exact path/rule/fingerprint와
 사유만 허용하며 stale entry도 실패한다. 새 데이터 흐름, credential, 외부 provider, filesystem root, DB 권한,
 release input, signing key boundary나 trust anchor가 생기면 이 문서와 ADR, 해당 executable validation/test를
 함께 갱신한다.
+
+Acceptance chaos는 allowlisted reversible fixture action만 사용한다. DB/data/user file 삭제, Docker daemon/volume
+mutation, approval auto-approve, policy bypass는 허용하지 않는다. Fake fixture receipt와 과거 CI 결과를 production
+evidence로 승격하지 않는다.
 
 ## 잔여 위험
 
@@ -138,3 +163,7 @@ recovery material을 잃으면 GCM payload를 복구할 수 없다. Self-service
 거부하지만 trust store 자체의 인증된 배포를 대신하지 않는다. ACL adapter가 손상되면 unsafe root를 승인할 수
 있으므로 packaging trust base에서 보호해야 한다. 현재 checkout의 `bin/codex.exe` 부재로 binary를
 요구하는 runtime/release gate는 실행할 수 없지만, 그 경로는 누락을 성공으로 간주하지 않는다.
+Phase 36 state machine은 승인된 acceptance command를 반복 실행하고 결과를 판정하지만 production capacity planning,
+host-level process-tree accounting, provider 진실성, external evidence issuer/HSM custody와 release 승인 권한을 제공하지
+않는다. 실제 build/Electron/PostgreSQL/installer/provider drill/12~72시간 soak를 실행하지 않은 checkout은
+`release_evidence_pending`으로 blocked다.

@@ -16,7 +16,15 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
    ```
 
    상세 exact-key와 payload-free evidence 계약은 [database recovery runbook](database-recovery.md)을 따른다.
-3. clean checkout에서 새 경로로 artifact를 봉인한다. 이 시점 결과는 unsigned이며 배포 승인 대상이 아니다.
+3. Phase 36 acceptance catalog/schema/docs contract를 확인한다. 이 code gate는 Electron/PostgreSQL/provider/soak나
+   production build 증거가 아니며 evidence가 없으면 final status가 blocked인 것이 정상이다.
+
+   ```powershell
+   npm run acceptance:validate
+   npm run release:readiness
+   ```
+
+4. clean checkout에서 새 경로로 artifact를 봉인한다. 이 시점 결과는 unsigned이며 배포 승인 대상이 아니다.
 
    ```powershell
    npm ci
@@ -25,7 +33,7 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
    npm run release:build -- --path D:\releases\Kodex-0.2.0-windows-x64-<commit12>
    ```
 
-4. [offline signing runbook](artifact-signing.md)에 따라 repository/artifact 밖의 private key로 candidate를
+5. [offline signing runbook](artifact-signing.md)에 따라 repository/artifact 밖의 private key로 candidate를
    서명한다. 외부 versioned public trust store를 signer와 다른 verifier host에 배포한 뒤 다음 두 경로를
    모두 통과시킨다.
 
@@ -34,11 +42,11 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
    D:\releases\Kodex-0.2.0-windows-x64-<commit12>\Kodex-Release-Verify.cmd --trust-store D:\kodex-trust\release-trust-store.json
    ```
 
-5. JSON의 version/commit/fileCount/keyId/manifestSha256/trustStoreVersion을 release record와 대조한다.
+6. JSON의 version/commit/fileCount/keyId/manifestSha256/trustStoreVersion을 release record와 대조한다.
    `release-manifest.json`과 `release-signature.json`은 보존하되 운영 env/data나 private key와 합치지 않는다.
    Restricted immutable storage에 artifact를 복제한다. Unsigned candidate나 artifact가 제공한 trust store는
    배포하지 않는다.
-6. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
+7. Product API container는 같은 clean commit에서 `KODEX_RELEASE_COMMIT` build arg를 주입해 만들고 OCI
    revision label과 `/api/version`을 release record에 대조한다. Mutable tag만으로 배치하지 않는다.
 
 ## 배치 전 준비
@@ -59,8 +67,15 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
   least-privilege secret을 주입한다.
 - 이전 verified artifact/image digest와 이전 환경 계약을 그대로 보존한다. Data root를 release directory 안에
   두지 않는다.
+- [final release checklist](final-release-checklist.md)와 [acceptance matrix](release-acceptance-matrix.md)의 실제
+  Electron/PostgreSQL/filesystem/email/backup/installer/provider evidence 및 12~72시간 long-run soak를 완료한다.
+  External evidence directory/trust store와 release artifact, confirmed install root, Phase 35 recovery receipt,
+  Phase 36 soak receipt를 `release:readiness`에 함께 전달해 `release_ready`인지 확인한다.
 
 ## Deploy/upgrade
+
+아래 mutation 전 final `release:readiness`가 `release_ready`여야 한다. `release_evidence_pending` 또는
+dirty/stale/failed/mismatched/unsigned/unknown/revoked/source-unverified code를 waiver나 수동 boolean으로 바꾸지 않는다.
 
 1. 새 agent mutation을 막고 API/Local Server/Electron을 정상 종료한다. Backup 이후 쓰기가 없음을 확인한다.
 2. Candidate artifact에서 external trust store를 전달한 `Kodex-Release-Verify.cmd --trust-store <path>`를 다시
