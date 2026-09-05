@@ -27,7 +27,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 36 전용 worktree; 기준 main에서 feature/docs 독립 commit |
+| 준비 branch | `main`; Phase 36 feature/docs 커밋 fast-forward 통합 완료 |
 | 제품 기준 HEAD | `970c125b8e137a074cdaf8dad828e2f48a06438c` |
 | 제품 기준 commit | `fix: require observed soak evidence` |
 | Phase 36 시작 main HEAD | `0482cca87a3ca7b7b7ba5ad62a405d0e0b478e36` |
@@ -765,6 +765,11 @@ workspace 9, deployment 3, acceptance command/requirement 18/schema 7, recovery 
 bootstrap trust-store version 2/key 0, `binaryPresent=false`로 통과했다. 요청대로 `npm run typecheck`와 `npm run lint`를
 호출했지만 local dependency가 없어 각각 `tsc`와 `eslint` command-not-found로 시작되지 않았다. 설치나 다른 경로 탐색은
 하지 않았으며 dependency가 준비된 메인 Node 22.13+ 환경으로 넘긴다.
+
+Phase 36의 네 커밋을 `main`에 fast-forward 통합한 뒤 Node `v24.19.0`과 기존 `node_modules`로 같은 코드 경계를
+재검증했다. `acceptance:validate`, long-run fixture 21개, release evidence fixture 15개
+(`productionEvidenceCreated=false`), `recovery:validate`, `security:validate`, `npm run typecheck`, `npm run lint`가
+모두 통과했다. 이 재검증은 build, PostgreSQL/Docker, Electron/full-stack 또는 실제 장시간 soak를 실행하지 않았다.
 
 실제 long soak, Product/Local/Electron/full-stack, Docker/PostgreSQL, backup/restore, provider drill, installer/release
 artifact generation, cloud/network, Rust/MSVC/Codex build는 실행하지 않았다. 따라서 현재 clean final HEAD에서
