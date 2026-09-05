@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only f45f39bc3c142b9a22f769cf935e3714caec3a5d..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only a544d5440b6b977c11f7af1b5e6a00f45bfa49c7..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,10 +28,10 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | detached Phase 32 worktree; 메인 통합 탭이 `main` 반영 담당 |
-| 제품 기준 HEAD | `f45f39bc3c142b9a22f769cf935e3714caec3a5d` |
-| 제품 기준 commit | `fix: keep new accounts pending without a provider` (Phase 32 최종 코드 기준) |
+| 제품 기준 HEAD | `a544d5440b6b977c11f7af1b5e6a00f45bfa49c7` |
+| 제품 기준 commit | `fix: repair phase 32 targeted validation` (Phase 32 최종 코드 기준) |
 | 완료 범위 | Phase 1~32 |
-| 다음 핵심 기능 | 메인 통합 탭에서 Phase 32 targeted 재검증/통합; 이 전용 작업은 확장하지 않음 |
+| 다음 핵심 기능 | 메인 통합 탭에서 Phase 32 통합; 이 전용 작업은 확장하지 않음 |
 
 Phase 1~32에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
@@ -448,7 +448,8 @@ Phase 32의 원본 결정은 [ADR 0031](adr/0031-email-verification-and-email-de
   맞췄다. 기존 migration 0001~0012, vendor/generated protocol, upstream source pin/manifest와 lockfile은 바꾸지 않았다.
 
 Feature commits는 `f247728`(핵심 lifecycle/delivery/API/UI/tests), `230fe1c`(release schema 13 정합),
-`f45f39b`(provider 없이도 신규 가입 pending 불변식)이다. 이 detached worktree의 Node `v20.19.4`에서 변경된/new
+`f45f39b`(provider 없이도 신규 가입 pending 불변식), `a544d54`(UI jsdom 환경과 lint-safe bearer 제어문자 검사)다.
+이 detached worktree의 Node `v20.19.4`에서 변경된/new
 `.mjs`의 `node --check`, package/config JSON parse, staged `git diff --check`와 `node scripts/security-validate.mjs`가
 통과했다. Feature staged security aggregate는 tracked 8,030 files, vendor 6,687 files, npm dependency 392,
 workspace 9, deployment contract 3, trust store version 2/key 0, `binaryPresent=false`였다. 첫 sandbox 실행은 내부
@@ -457,19 +458,24 @@ README/ADR 0031/runbook/threat model/HANDOFF를 stage한 최종 security gate도
 aggregate가 동일한 값으로 통과했다.
 
 이 worktree에는 `node_modules`가 없어 의존성을 설치/탐색하지 않았고 targeted Vitest, typecheck와 lint는 실행하지
-않았다. 사용자 지시에 따라 PostgreSQL/Docker harness, build, Electron/full-stack, 실제 email, Rust/MSVC도 실행하지
-않았다. 메인 통합 탭은 설치된 의존성과 허용된 환경에서 다음만 재검증해야 한다.
+않았다. 이후 메인 통합 worktree의 Node 24와 설치된 dependencies에서 최종 제품 commit
+`a544d5440b6b977c11f7af1b5e6a00f45bfa49c7` 대상으로 다음이 통과했다.
 
-- `vitest run test/unit/email-verification.test.ts test/unit/email-delivery.test.ts test/unit/email-verification-ui.test.tsx test/unit/workspace-management-ui.test.tsx`
-- targeted product-api/product-db/UI typecheck와 lint
-- `npm run test:email-verification-postgres`, `npm run test:retention-postgres`, `npm run test:abuse-rate-limit-postgres`는
-  disposable PostgreSQL을 실행해도 되는 별도 검증 환경에서만 수행
+- Phase 32 targeted Vitest: 7 files, 62 tests
+- `npm run typecheck`
+- `npm run lint`: UI test에 jsdom 환경을 지정하고 bearer control-character 검사를 lint-safe char-code 방식으로
+  보정한 뒤 통과
+- `npm run security:validate`: tracked 8,032 files, vendor 6,687 files, npm dependency 392,
+  `binaryPresent=false`
+
+실제 PostgreSQL fresh 0001~0013과 immutable 0001~0012 → 0013 harness, Docker, build, Electron/full-stack,
+실제 email은 실행하지 않았으며 보류 상태다. Rust/MSVC와 binary-required 검증도 기존 blocker로 유지한다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 메인 통합 탭에서 Phase 32를 재검증하고 반영한다.** 위 targeted Vitest/typecheck/lint를 실행하고,
-   별도 승인된 disposable PostgreSQL 환경이 있으면 fresh 0001~0013과 immutable 0001~0012 → 0013 harness를
-   실행한다. 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다.
+1. **P1 — 메인 통합 탭에서 검증된 Phase 32를 반영한다.** 별도 승인된 disposable PostgreSQL 환경이 있으면
+   fresh 0001~0013과 immutable 0001~0012 → 0013 harness를 실행한다. 이 전용 작업에서 다음 Phase 기능으로
+   확장하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
