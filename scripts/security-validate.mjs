@@ -3,6 +3,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { validateReleaseTrustStore } from './lib/release-signature.mjs';
 import { verifyDatabaseRecoveryRepositoryContracts } from './lib/database-recovery.mjs';
+import { verifyAcceptanceRepositoryContracts } from './lib/release-acceptance.mjs';
 import {
   scanReleaseInputSecrets,
   scanTrackedSecrets,
@@ -20,6 +21,7 @@ const provenance = await verifyRepositoryProvenance(repositoryRoot, { requireBin
 const secrets = await scanTrackedSecrets(repositoryRoot);
 const deployment = await verifyDeploymentContracts(repositoryRoot);
 const databaseRecovery = await verifyDatabaseRecoveryRepositoryContracts(repositoryRoot);
+const acceptance = await verifyAcceptanceRepositoryContracts(repositoryRoot);
 const releaseTrustStore = await validateReleaseTrustStore(
   path.join(repositoryRoot, 'config', 'release-trust-store.json'),
 );
@@ -29,6 +31,9 @@ if (args.length === 2) releaseInput = await scanReleaseInputSecrets(path.resolve
 process.stdout.write(`${JSON.stringify({
   kind: 'kodex_security_validation_passed',
   binaryPresent: provenance.binaryPresent,
+  acceptanceCommandCount: acceptance.commandCount,
+  acceptanceRequirementCount: acceptance.requirementCount,
+  acceptanceSchemaContractCount: acceptance.schemaContractCount,
   dependencyCount: provenance.dependencyCount,
   databaseRecoveryDocumentContractCount: databaseRecovery.documentContractCount,
   databaseRecoveryPolicyFormatVersion: databaseRecovery.policyFormatVersion,

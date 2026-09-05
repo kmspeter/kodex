@@ -1,0 +1,51 @@
+{
+  "format": "kodex-long-run-acceptance-config",
+  "formatVersion": 1,
+  "scenarioId": "full-system-soak",
+  "durationSeconds": 43200,
+  "iterationLimit": 1000,
+  "lease": {
+    "durationSeconds": 90,
+    "heartbeatSeconds": 15
+  },
+  "retry": {
+    "maximumAttempts": 3,
+    "initialBackoffMilliseconds": 1000,
+    "maximumBackoffMilliseconds": 30000
+  },
+  "stepTimeoutSeconds": 3600,
+  "thresholds": {
+    "heapBytes": {
+      "maximum": 1073741824,
+      "maximumGrowth": 268435456
+    },
+    "handleCount": {
+      "maximum": 4096,
+      "maximumGrowth": 128
+    },
+    "socketCount": {
+      "maximum": 2048,
+      "maximumGrowth": 64
+    },
+    "databasePoolCount": {
+      "maximum": 64,
+      "maximumGrowth": 4
+    },
+    "outboxItemCount": {
+      "maximum": 10000,
+      "maximumGrowth": 1000
+    },
+    "leaseCount": {
+      "maximum": 256,
+      "maximumGrowth": 8
+    },
+    "temporaryBytes": {
+      "maximum": 10737418240,
+      "maximumGrowth": 1073741824
+    },
+    "diskBytes": {
+      "maximum": 107374182400,
+      "maximumGrowth": 10737418240
+    }
+  }
+}

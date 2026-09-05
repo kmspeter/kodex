@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/long-run-acceptance-scenarios-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "commands", "scenarios"],
+  "properties": {
+    "format": { "const": "kodex-long-run-acceptance-scenarios" },
+    "formatVersion": { "const": 1 },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "npmScript"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^(acceptance|chaos)\\.[a-z0-9-]+$" },
+          "kind": { "enum": ["workload", "chaos"] },
+          "npmScript": { "type": "string", "pattern": "^[a-z][a-z0-9:-]+$" }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "minimumDurationSeconds", "maximumDurationSeconds", "steps"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+          "minimumDurationSeconds": { "type": "integer", "minimum": 1, "maximum": 259200 },
+          "maximumDurationSeconds": { "type": "integer", "minimum": 1, "maximum": 259200 },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": { "type": "string", "pattern": "^(acceptance|chaos)\\.[a-z0-9-]+$" }
+          }
+        }
+      }
+    }
+  }
+}

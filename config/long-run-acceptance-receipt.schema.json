@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/long-run-acceptance-receipt-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "runId", "planDigest", "scenarioId", "startedAt", "completedAt", "resultCode", "iterationsCompleted", "stepsCompleted", "counters", "metrics"],
+  "properties": {
+    "format": { "const": "kodex-long-run-acceptance-receipt" },
+    "formatVersion": { "const": 1 },
+    "runId": { "type": "string", "format": "uuid" },
+    "planDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "scenarioId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "resultCode": { "enum": ["completed", "aborted", "deadline_exceeded", "iteration_limit_reached", "retry_exhausted", "terminal_step_failure", "resource_threshold_exceeded", "unordered_result", "cleanup_failed"] },
+    "iterationsCompleted": { "type": "integer", "minimum": 0 },
+    "stepsCompleted": { "type": "integer", "minimum": 0 },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passedSteps", "failedAttempts", "retries", "reconnectRecoveries", "restartRecoveries", "duplicateResults"],
+      "properties": {
+        "passedSteps": { "type": "integer", "minimum": 0 },
+        "failedAttempts": { "type": "integer", "minimum": 0 },
+        "retries": { "type": "integer", "minimum": 0 },
+        "reconnectRecoveries": { "type": "integer", "minimum": 0 },
+        "restartRecoveries": { "type": "integer", "minimum": 0 },
+        "duplicateResults": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metrics": { "$ref": "#/$defs/metrics" }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline", "peak", "last"],
+      "properties": {
+        "baseline": { "type": "integer", "minimum": 0 },
+        "peak": { "type": "integer", "minimum": 0 },
+        "last": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampleCount", "heapBytes", "handleCount", "socketCount", "databasePoolCount", "outboxItemCount", "leaseCount", "temporaryBytes", "diskBytes"],
+      "properties": {
+        "sampleCount": { "type": "integer", "minimum": 0 },
+        "heapBytes": { "$ref": "#/$defs/metric" },
+        "handleCount": { "$ref": "#/$defs/metric" },
+        "socketCount": { "$ref": "#/$defs/metric" },
+        "databasePoolCount": { "$ref": "#/$defs/metric" },
+        "outboxItemCount": { "$ref": "#/$defs/metric" },
+        "leaseCount": { "$ref": "#/$defs/metric" },
+        "temporaryBytes": { "$ref": "#/$defs/metric" },
+        "diskBytes": { "$ref": "#/$defs/metric" }
+      }
+    }
+  }
+}

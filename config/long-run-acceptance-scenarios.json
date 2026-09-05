@@ -1,0 +1,107 @@
+{
+  "format": "kodex-long-run-acceptance-scenarios",
+  "formatVersion": 1,
+  "commands": [
+    {
+      "id": "acceptance.backup-recovery",
+      "kind": "workload",
+      "npmScript": "test:backup-encryption"
+    },
+    {
+      "id": "acceptance.browserless-product-local",
+      "kind": "workload",
+      "npmScript": "test:full-stack"
+    },
+    {
+      "id": "acceptance.electron-lifecycle",
+      "kind": "workload",
+      "npmScript": "test:desktop-workspace-lifecycle"
+    },
+    {
+      "id": "acceptance.email-auth-recovery",
+      "kind": "workload",
+      "npmScript": "test:email-verification-postgres"
+    },
+    {
+      "id": "acceptance.history-reconciliation-rag",
+      "kind": "workload",
+      "npmScript": "test:history-postgres"
+    },
+    {
+      "id": "acceptance.invitation-password-reset",
+      "kind": "workload",
+      "npmScript": "test:password-reset-postgres"
+    },
+    {
+      "id": "acceptance.lifecycle-runtime-isolation",
+      "kind": "workload",
+      "npmScript": "test:data-lifecycle-postgres"
+    },
+    {
+      "id": "acceptance.release-installer-update",
+      "kind": "workload",
+      "npmScript": "test:release-deployment"
+    },
+    {
+      "id": "acceptance.security-recovery-contracts",
+      "kind": "workload",
+      "npmScript": "security:validate"
+    },
+    {
+      "id": "chaos.postgres-session-recovery",
+      "kind": "chaos",
+      "npmScript": "test:history-postgres"
+    },
+    {
+      "id": "chaos.runtime-restart-recovery",
+      "kind": "chaos",
+      "npmScript": "test:desktop-full-stack"
+    },
+    {
+      "id": "chaos.update-restart-recovery",
+      "kind": "chaos",
+      "npmScript": "test:installer"
+    },
+    {
+      "id": "chaos.websocket-reconnect",
+      "kind": "chaos",
+      "npmScript": "test:full-stack"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "full-system-soak",
+      "minimumDurationSeconds": 43200,
+      "maximumDurationSeconds": 259200,
+      "steps": [
+        "acceptance.browserless-product-local",
+        "chaos.websocket-reconnect",
+        "acceptance.history-reconciliation-rag",
+        "chaos.postgres-session-recovery",
+        "acceptance.electron-lifecycle",
+        "chaos.runtime-restart-recovery",
+        "acceptance.email-auth-recovery",
+        "acceptance.invitation-password-reset",
+        "acceptance.lifecycle-runtime-isolation",
+        "acceptance.backup-recovery",
+        "acceptance.release-installer-update",
+        "chaos.update-restart-recovery",
+        "acceptance.security-recovery-contracts"
+      ]
+    },
+    {
+      "id": "product-local-postgresql-soak",
+      "minimumDurationSeconds": 43200,
+      "maximumDurationSeconds": 259200,
+      "steps": [
+        "acceptance.browserless-product-local",
+        "chaos.websocket-reconnect",
+        "acceptance.history-reconciliation-rag",
+        "chaos.postgres-session-recovery",
+        "acceptance.email-auth-recovery",
+        "acceptance.invitation-password-reset",
+        "acceptance.lifecycle-runtime-isolation"
+      ]
+    }
+  ]
+}

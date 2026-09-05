@@ -1,0 +1,285 @@
+{
+  "format": "kodex-release-acceptance-catalog",
+  "formatVersion": 1,
+  "receiptFormatVersion": 1,
+  "releaseProfile": "production",
+  "trust": {
+    "algorithm": "Ed25519",
+    "minimumStoreVersion": 1,
+    "reference": "trustref:release-acceptance-v1"
+  },
+  "commands": [
+    {
+      "executionClass": "infrastructure",
+      "id": "acceptance.backup-restore",
+      "npmScript": "test:backup-restore"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.browserless-full-stack",
+      "npmScript": "test:full-stack"
+    },
+    {
+      "executionClass": "infrastructure",
+      "id": "acceptance.database-migrations",
+      "npmScript": "test:auth-lifecycle-postgres"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.electron",
+      "npmScript": "test:desktop-full-stack"
+    },
+    {
+      "executionClass": "infrastructure",
+      "id": "acceptance.email",
+      "npmScript": "test:email-verification-postgres"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.filesystem-lifecycle",
+      "npmScript": "test:desktop-data-lifecycle"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.history-rag",
+      "npmScript": "test:desktop-repository-rag"
+    },
+    {
+      "executionClass": "short",
+      "id": "acceptance.installer-fixture",
+      "npmScript": "test:installer"
+    },
+    {
+      "executionClass": "targeted",
+      "id": "acceptance.observability",
+      "npmScript": "test:observability"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.release-deployment",
+      "npmScript": "test:release-deployment"
+    },
+    {
+      "executionClass": "short",
+      "id": "acceptance.release-signing",
+      "npmScript": "test:release-signing"
+    },
+    {
+      "executionClass": "short",
+      "id": "acceptance.repository-contracts",
+      "npmScript": "acceptance:validate"
+    },
+    {
+      "executionClass": "short",
+      "id": "acceptance.security",
+      "npmScript": "security:validate"
+    },
+    {
+      "executionClass": "full-stack",
+      "id": "acceptance.workspace-recovery",
+      "npmScript": "test:desktop-workspace-lifecycle"
+    },
+    {
+      "executionClass": "external",
+      "id": "operations.installer-artifact",
+      "npmScript": null
+    },
+    {
+      "executionClass": "build",
+      "id": "operations.production-release-build",
+      "npmScript": "release:build"
+    },
+    {
+      "executionClass": "external",
+      "id": "operations.provider-recovery-drill",
+      "npmScript": null
+    },
+    {
+      "executionClass": "long-run",
+      "id": "operations.soak",
+      "npmScript": "acceptance:long-run"
+    }
+  ],
+  "requirements": [
+    {
+      "category": "repository",
+      "commandIds": ["acceptance.repository-contracts", "acceptance.security"],
+      "descriptionCode": "repository_contract_provenance_security",
+      "environments": ["repository"],
+      "evidenceTypes": ["repository-receipt"],
+      "id": "REL-001",
+      "maximumAgeHours": 24,
+      "phases": [1, 28, 29, 30, 35, 36]
+    },
+    {
+      "category": "postgresql",
+      "commandIds": ["acceptance.database-migrations"],
+      "descriptionCode": "migrations_fresh_0001_0013",
+      "environments": ["postgresql"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-002",
+      "maximumAgeHours": 24,
+      "phases": [1, 2, 5, 8, 15, 16, 18, 19, 20, 21, 25, 27, 31, 32, 33, 34, 35, 36]
+    },
+    {
+      "category": "postgresql",
+      "commandIds": ["acceptance.database-migrations"],
+      "descriptionCode": "migrations_upgrade_immutable_ledgers",
+      "environments": ["postgresql"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-003",
+      "maximumAgeHours": 24,
+      "phases": [15, 16, 18, 19, 20, 21, 25, 27, 31, 32, 33, 34, 35, 36]
+    },
+    {
+      "category": "browserless",
+      "commandIds": ["acceptance.browserless-full-stack"],
+      "descriptionCode": "product_local_browser_websocket_approval_abort_resume",
+      "environments": ["local", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-004",
+      "maximumAgeHours": 24,
+      "phases": [2, 3, 6, 9, 10, 12, 15, 16, 19, 20, 21, 22, 23, 25, 26, 27, 31, 32, 33, 36]
+    },
+    {
+      "category": "runtime-isolation",
+      "commandIds": ["acceptance.browserless-full-stack"],
+      "descriptionCode": "tenant_runtime_workspace_session_isolation",
+      "environments": ["local", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-005",
+      "maximumAgeHours": 24,
+      "phases": [3, 6, 9, 12, 19, 21, 22, 23, 28, 36]
+    },
+    {
+      "category": "history",
+      "commandIds": ["acceptance.browserless-full-stack", "acceptance.history-rag"],
+      "descriptionCode": "history_projection_backfill_reconciliation",
+      "environments": ["electron", "local", "postgresql", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-006",
+      "maximumAgeHours": 24,
+      "phases": [4, 7, 10, 11, 22, 23, 36]
+    },
+    {
+      "category": "rag",
+      "commandIds": ["acceptance.history-rag"],
+      "descriptionCode": "private_rag_hnsw_repository_consent",
+      "environments": ["electron", "filesystem", "postgresql", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-007",
+      "maximumAgeHours": 24,
+      "phases": [5, 8, 13, 14, 36]
+    },
+    {
+      "category": "electron",
+      "commandIds": ["acceptance.electron"],
+      "descriptionCode": "electron_renderer_browser_boundary",
+      "environments": ["electron", "local", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-008",
+      "maximumAgeHours": 24,
+      "phases": [6, 11, 14, 17, 21, 26, 28, 31, 32, 33, 36]
+    },
+    {
+      "category": "email",
+      "commandIds": ["acceptance.email"],
+      "descriptionCode": "auth_invitation_password_reset_email_delivery",
+      "environments": ["postgresql", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-009",
+      "maximumAgeHours": 24,
+      "phases": [2, 15, 16, 17, 19, 20, 26, 32, 36]
+    },
+    {
+      "category": "workspace-recovery",
+      "commandIds": ["acceptance.workspace-recovery"],
+      "descriptionCode": "workspace_lifecycle_archive_restore",
+      "environments": ["electron", "filesystem", "postgresql", "product"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-010",
+      "maximumAgeHours": 24,
+      "phases": [12, 18, 21, 22, 28, 33, 36]
+    },
+    {
+      "category": "filesystem",
+      "commandIds": ["acceptance.filesystem-lifecycle"],
+      "descriptionCode": "filesystem_data_lifecycle_exact_cleanup",
+      "environments": ["electron", "filesystem", "local", "postgresql"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-011",
+      "maximumAgeHours": 24,
+      "phases": [3, 6, 13, 21, 24, 28, 33, 34, 36]
+    },
+    {
+      "category": "observability",
+      "commandIds": ["acceptance.observability", "acceptance.security"],
+      "descriptionCode": "payload_free_observability_security",
+      "environments": ["local", "product", "repository"],
+      "evidenceTypes": ["test-receipt"],
+      "id": "REL-012",
+      "maximumAgeHours": 24,
+      "phases": [27, 28, 29, 36]
+    },
+    {
+      "category": "backup-restore",
+      "commandIds": ["acceptance.backup-restore"],
+      "descriptionCode": "offline_encrypted_signed_backup_restore",
+      "environments": ["filesystem", "postgresql"],
+      "evidenceTypes": ["artifact-receipt"],
+      "id": "REL-013",
+      "maximumAgeHours": 24,
+      "phases": [24, 29, 30, 34, 36]
+    },
+    {
+      "category": "build",
+      "commandIds": ["operations.production-release-build"],
+      "descriptionCode": "clean_production_release_build",
+      "environments": ["release"],
+      "evidenceTypes": ["build-receipt"],
+      "id": "REL-014",
+      "maximumAgeHours": 24,
+      "phases": [25, 29, 30, 31, 36]
+    },
+    {
+      "category": "signing",
+      "commandIds": ["acceptance.release-deployment", "acceptance.release-signing"],
+      "descriptionCode": "release_artifact_ed25519_authenticity",
+      "environments": ["release"],
+      "evidenceTypes": ["artifact-receipt"],
+      "id": "REL-015",
+      "maximumAgeHours": 24,
+      "phases": [25, 29, 30, 31, 34, 36]
+    },
+    {
+      "category": "installer",
+      "commandIds": ["acceptance.installer-fixture", "operations.installer-artifact"],
+      "descriptionCode": "windows_installer_updater_rollback",
+      "environments": ["electron", "release"],
+      "evidenceTypes": ["artifact-receipt"],
+      "id": "REL-016",
+      "maximumAgeHours": 24,
+      "phases": [30, 31, 36]
+    },
+    {
+      "category": "provider-drill",
+      "commandIds": ["operations.provider-recovery-drill"],
+      "descriptionCode": "managed_postgresql_recovery_provider_drill",
+      "environments": ["postgresql", "provider"],
+      "evidenceTypes": ["provider-drill-receipt"],
+      "id": "REL-017",
+      "maximumAgeHours": 840,
+      "phases": [24, 34, 35, 36]
+    },
+    {
+      "category": "long-run-soak",
+      "commandIds": ["operations.soak"],
+      "descriptionCode": "twelve_to_seventy_two_hour_soak_chaos",
+      "environments": ["electron", "filesystem", "local", "postgresql", "product", "release"],
+      "evidenceTypes": ["soak-receipt"],
+      "id": "REL-018",
+      "maximumAgeHours": 168,
+      "phases": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+    }
+  ]
+}

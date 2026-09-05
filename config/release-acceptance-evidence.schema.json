@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/release-acceptance-evidence-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "requirementId", "commandId", "evidenceType", "resultCode", "startedAt", "completedAt", "release", "testCounts", "artifactEvidence", "attestation"],
+  "properties": {
+    "format": { "const": "kodex-release-acceptance-evidence" },
+    "formatVersion": { "const": 1 },
+    "requirementId": { "type": "string", "pattern": "^REL-[0-9]{3}$" },
+    "commandId": { "type": "string", "pattern": "^(acceptance|operations)\\.[a-z0-9-]+$" },
+    "evidenceType": { "enum": ["repository-receipt", "test-receipt", "build-receipt", "artifact-receipt", "provider-drill-receipt", "soak-receipt"] },
+    "resultCode": { "enum": ["passed", "failed", "aborted"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalogDigest", "codexUpstreamCommit", "commit", "migrationLedgerDigest", "policyDigest", "vendorManifestSha256", "version"],
+      "properties": {
+        "catalogDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "codexUpstreamCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "migrationLedgerDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "policyDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "vendorManifestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$" }
+      }
+    },
+    "testCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failed", "passed", "skipped", "total"],
+      "properties": {
+        "failed": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifactEvidence": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "manifestDigest", "signatureDigest", "signatureKeyId", "trustStoreVersion"],
+          "properties": {
+            "kind": { "enum": ["release-bundle", "windows-installer", "offline-backup", "database-recovery-receipt", "long-run-receipt"] },
+            "manifestDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "signatureDigest": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+            "signatureKeyId": { "type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+            "trustStoreVersion": { "type": ["integer", "null"], "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "signature", "trustRef", "trustVersion"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+        "signature": { "type": "string" },
+        "trustRef": { "type": "string", "pattern": "^trustref:[a-z0-9][a-z0-9._-]{0,95}$" },
+        "trustVersion": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kodex.invalid/schemas/long-run-acceptance-config-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "scenarioId", "durationSeconds", "iterationLimit", "lease", "retry", "stepTimeoutSeconds", "thresholds"],
+  "properties": {
+    "format": { "const": "kodex-long-run-acceptance-config" },
+    "formatVersion": { "const": 1 },
+    "scenarioId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+    "durationSeconds": { "type": "integer", "minimum": 1, "maximum": 259200 },
+    "iterationLimit": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["durationSeconds", "heartbeatSeconds"],
+      "properties": {
+        "durationSeconds": { "type": "integer", "minimum": 10, "maximum": 3600 },
+        "heartbeatSeconds": { "type": "integer", "minimum": 1, "maximum": 600 }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximumAttempts", "initialBackoffMilliseconds", "maximumBackoffMilliseconds"],
+      "properties": {
+        "maximumAttempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "initialBackoffMilliseconds": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "maximumBackoffMilliseconds": { "type": "integer", "minimum": 1, "maximum": 300000 }
+      }
+    },
+    "stepTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 21600 },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["heapBytes", "handleCount", "socketCount", "databasePoolCount", "outboxItemCount", "leaseCount", "temporaryBytes", "diskBytes"],
+      "properties": {
+        "heapBytes": { "$ref": "#/$defs/threshold" },
+        "handleCount": { "$ref": "#/$defs/threshold" },
+        "socketCount": { "$ref": "#/$defs/threshold" },
+        "databasePoolCount": { "$ref": "#/$defs/threshold" },
+        "outboxItemCount": { "$ref": "#/$defs/threshold" },
+        "leaseCount": { "$ref": "#/$defs/threshold" },
+        "temporaryBytes": { "$ref": "#/$defs/threshold" },
+        "diskBytes": { "$ref": "#/$defs/threshold" }
+      }
+    }
+  },
+  "$defs": {
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum", "maximumGrowth"],
+      "properties": {
+        "maximum": { "type": "integer", "minimum": 0, "maximum": 1125899906842624 },
+        "maximumGrowth": { "type": "integer", "minimum": 0, "maximum": 1125899906842624 }
+      }
+    }
+  }
+}
