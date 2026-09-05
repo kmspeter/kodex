@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only dcfe022e8c1d02f36da3e3a6ae4a7dcddb58c243..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only 2cb7fd710114f4e0565817cc0ff2405eeaf6ce65..HEAD -- apps packages scripts test infra docs/adr .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -26,22 +26,23 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 
 | 항목 | 검증된 값 |
 | --- | --- |
-| 스냅샷 날짜 | 2026-09-04 (Asia/Seoul) |
+| 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `dcfe022e8c1d02f36da3e3a6ae4a7dcddb58c243` |
-| 제품 기준 commit | `feat: add payload-free operational observability` |
-| 완료 범위 | Phase 1~27 |
-| 다음 핵심 기능 | 데이터 수명주기와 사용자 export/delete |
+| 제품 기준 HEAD | `2cb7fd710114f4e0565817cc0ff2405eeaf6ce65` |
+| 제품 기준 commit | `feat: add operational data lifecycle` |
+| 완료 범위 | Phase 1~28 |
+| 다음 핵심 기능 | 통합 threat model과 release/security acceptance |
 
-Phase 1~27에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
+Phase 1~28에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
 workspace 전환, browserless/Electron full-stack acceptance, membership, 명시적 동의 기반 repository RAG,
 인증 수명주기, hash-only invitation, workspace 관리 pagination, bounded retention, PostgreSQL 공유 abuse
 throttling, workspace rename과 one-way soft archive, 공개 App Server pagination 기반 기존 thread History
 backfill/reconciliation, PostgreSQL과 tenant data의 검증된 offline backup/restore, sealed versioned release와
-forward-only deployment/upgrade, secure password-reset recovery와 payload-free 운영 관측성까지 구현했다. 상세 계약은
+forward-only deployment/upgrade, secure password-reset recovery, payload-free 운영 관측성과 durable data
+lifecycle까지 구현했다. 상세 계약은
 [ADR 0001](adr/0001-product-database-boundary.md)부터
-[ADR 0026](adr/0026-payload-free-operational-observability.md)까지가 기준이다.
+[ADR 0027](adr/0027-operational-data-lifecycle.md)까지가 기준이다.
 
 ## 아키텍처와 주요 신뢰 경계
 
@@ -67,8 +68,8 @@ Electron / React renderer
   제품 코드가 직접 읽거나 polling하지 않는다는 [ADR 0004](adr/0004-app-server-history-projection.md)의
   경계를 유지한다.
 - PostgreSQL History와 RAG는 항상 `(workspace_id, created_by_user_id)` private scope다. Workspace
-  owner/admin도 다른 사용자의 row를 읽을 수 없다. Archived workspace는 새 Product/Local 접근에서
-  제외되지만 관련 DB row와 tenant 파일은 현재 보존된다.
+  owner/admin도 다른 사용자의 row를 읽을 수 없다. Soft-archived workspace는 관련 DB row와 tenant 파일을
+  보존한다. 별도의 exact-confirmation permanent deletion만 durable Product/Local worker로 삭제한다.
 - Local Server는 생성 모델이나 tool을 자체 선택하지 않는다. RAG만 명시적 opt-in일 때 허용된 text를
   외부 embedding provider에 보낼 수 있으며, repository 인덱싱은 preview → 선택 → 동의 → confirm을
   거쳐야 한다.
@@ -221,15 +222,54 @@ retention fresh/upgrade, auth lifecycle, browserless full-stack와 실제 Electr
 `DATABASE_URL`을 요구하는 opt-in `test:tenant-auth` 자체는 현재 shell에 값이 없어 시작 전 중단됐지만, 같은 Local
 HTTP/WS 재인가 경계를 self-contained `test:auth-lifecycle-postgres`와 `test:full-stack`이 통과했다.
 
+### Phase 28 — 운영 수준 데이터 수명주기
+
+Phase 28의 원본 결정은 [ADR 0027](adr/0027-operational-data-lifecycle.md), 운영 절차는
+[data lifecycle runbook](operations/data-lifecycle.md)이다.
+
+- Migration `0012`는 bounded export artifact, user/workspace legal hold, Product durable job, path-free Local
+  installation/target와 lease claim index를 추가한다. 기존 `0001~0011`은 변경하지 않았다.
+- Export는 current password를 다시 확인하고 category별 10,000 row/전체 16 MiB 기본 bound 안에서 현재
+  사용자의 private History/RAG와 제한된 audit JSON만 만든다. Password/session/reset/invitation/abuse material,
+  provider credential, embedding/query vector와 Local file은 제외하며 artifact는 기본 7일 뒤 정리한다.
+- Account deletion은 exact `DELETE MY ACCOUNT`, Workspace deletion은 owner current password, 현재 이름과 exact
+  `DELETE WORKSPACE`를 요구한다. 요청 transaction은 즉시 session/access/invitation을 차단하고 중복 open job을
+  합친다. 다른 member가 남은 owned Workspace와 creator scope가 어긋난 legacy project/thread는 fail-closed 한다.
+- Product/Local worker는 `FOR UPDATE SKIP LOCKED`, expiring lease, fixed error code와 idempotent retry를 사용한다.
+  Local은 자기 installation의 strict UUID scope만 처리하고 active runtime lease/live `instance.lock` 동안 기다리며,
+  exact tenant root와 빈 parent만 지운다. 실제 발견된 완료 root가 restore되면 target을 다시 열어 재정리한다.
+- User/Workspace hold는 operations bearer와 Origin 없는 server request로만 생성·해제한다. Product finalization,
+  Local cleanup과 hold 생성은 같은 application scope row lock으로 선형화되며, hold가 먼저 commit되면 DB와 file
+  삭제가 모두 멈춘다. 승인 정책이나 official App Server 내부 저장소를 우회하지 않는다.
+- 완료 뒤에도 영구 offline/늦게 연결되는 설치를 조정하기 위한 content-free job/local-target UUID tombstone은
+  남는다. 일반 `DELETE`는 secure erasure, WAL/replica/snapshot/backup/manual copy/disconnected device 삭제를
+  보장하지 않으며 이 한계를 UI, policy API, README와 runbook에 공개한다.
+
+2026-09-05에 제품 commit `2cb7fd710114f4e0565817cc0ff2405eeaf6ce65` 대상으로 typecheck, lint, build,
+전체 236 test, UI bundle integrity와 production smoke가 통과했다. `test:data-lifecycle-postgres`는 disposable
+PostgreSQL 17+pgvector에서 fresh `0001~0012`와 immutable `0001~0011 → 0012` upgrade를 각각 통과했고, 중복
+요청/두 worker claim/lease takeover, export 비밀·vector 제외, cross-user read와 creator-scope cascade 차단,
+operations hold/retry, active runtime/hold 대기, exact root만 삭제, account/shared workspace 격리, 완료 뒤 복원된
+root 재조정을 검증했다. `test:history-postgres` 8개도 새 creator-scope FK 위에서 통과했다.
+
+새 `test:desktop-data-lifecycle`은 실제 Electron renderer DOM에서 register → Local runtime 연결 → export 생성/
+다운로드 → exact Workspace permanent deletion → PostgreSQL application row와 exact tenant root 삭제를 통과했다.
+이 환경의 checkout에는 sealed `bin/codex.exe`가 없어 설치된 공식 Codex app의 `codex-cli 0.149.0-alpha.4.3`을
+명시적으로 사용했다. 따라서 이 결과는 Phase 28 Electron 경계를 검증하지만 repository-pinned release provenance를
+대체하지 않는다. `codex:verify-source`는 checkout에 manifest-listed vendor fixture 6개가 없어서 실패했고,
+`test:full-stack`/`test:release-deployment`는 `bin/codex.exe` 부재로 preflight에서 중단됐다. 이 파일들을 임의로
+복원하거나 외부 binary로 sealed release를 가장하지 않았다. 누락 목록은 `.vscode/`의 `extensions.json`,
+`launch.json`, `settings.json`과 `codex-rs/http-client/tests/fixtures/`의 `test-ca-trusted.pem`, `test-ca.pem`,
+`test-intermediate.pem`이다.
+
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 데이터 수명주기를 운영 수준으로 확장한다.** History/RAG/audit/local tenant file의 보존 기간과
-   legal hold를 결정하고, 사용자 export와 계정/workspace delete를 asynchronous bounded job으로 구현한다.
-   Exit: cross-tenant/경합/중단·재개를 실제 PostgreSQL+filesystem에서 검증하고, application delete와
-   backup/WAL/replica/snapshot의 물리 보존 한계를 UI·API·runbook에 명시해야 한다.
-2. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
+1. **P1 — 보안 및 release acceptance를 닫는다.** Threat model, dependency/vendor provenance, artifact signing,
    least privilege, installer/update, recovery와 release checklist를 합친다. Exit: release candidate가 고정
    acceptance matrix, secret scan, vendor integrity, migration/restore drill과 서명 검증을 모두 통과해야 한다.
+2. **P1 — 현재 checkout의 release 검증 입력을 정상화한다.** Manifest-listed vendor fixture 6개와 sealed
+   repository `bin/codex.exe`를 승인된 upstream/provenance 절차로 복구한 뒤 source integrity, browserless full-stack,
+   기존 Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
 ## 표준 실행과 검증
 
@@ -248,6 +288,7 @@ npm run build
 npm run verify:ui-bundle
 npm run smoke:production
 npm run test:observability
+npm run test:data-lifecycle-postgres
 ```
 
 History/backfill 변경의 최소 직접 검증은 다음이다.
@@ -265,7 +306,7 @@ npm run test:release-deployment
 `pgvector/pgvector:0.8.6-pg17` image를 요구하며
 자신의 `--rm` container를 정리한다. Docker daemon 자체를 시작하거나 종료하지 않는다.
 
-Phase 22 회귀와 Electron acceptance 4종은 다음으로 재검증한다.
+주요 PostgreSQL 회귀와 Electron acceptance는 다음으로 재검증한다.
 
 ```powershell
 npm run test:workspace-postgres
@@ -277,6 +318,8 @@ npm run test:rag-postgres
 npm run test:desktop-full-stack
 npm run test:desktop-workspace-lifecycle
 npm run test:desktop-workspace-invitation
+npm run test:desktop-password-reset
+npm run test:desktop-data-lifecycle
 npm run test:desktop-repository-rag
 ```
 
@@ -291,7 +334,7 @@ git status --short
 ## 안전 규칙
 
 - 적용된 migration은 checksum ledger 계약이다. `packages/product-db/migrations/0001_*.sql`부터
-  `0011_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
+  `0012_*.sql`까지 수정·이름 변경·재정렬하지 않는다. Schema 변경은 다음 연속 번호의 새 migration과
   fresh DB 및 실제 upgrade ledger 검증으로 추가한다.
 - `vendor/openai-codex/`, `VENDOR_SOURCE_SHA256.json`, `CODEX_UPSTREAM_COMMIT`, `bin/codex-build.json`,
   `packages/codex-protocol/src/generated/`와 `schema/`를 일반 기능 작업에서 손대지 않는다. Upstream pin을
@@ -314,10 +357,11 @@ git status --short
 - 현재 제품은 SSR/cloud task/Kodex 전용 cloud backend, installer/update service와 자동 배포 control plane을
   제공하지 않는다. Portable runtime은 외부 PostgreSQL 설치·기동·upgrade를 관리하지 않는다. Offline
   backup 도구는 application-level 암호화/서명, retention scheduler, WAL/PITR을 제공하지 않는다.
-- Email verification, SMTP invitation delivery, self-service workspace restore, hard delete,
-  secure erasure, 사용자 export, workspace별 content retention은 아직 없다.
-- Retention은 일부 terminal auth/invitation/password-reset/abuse row의 bounded cleanup이다. PostgreSQL MVCC, autovacuum,
-  WAL/replica/snapshot/backup과 로컬 tenant file의 삭제를 보장하지 않는다.
+- Email verification, SMTP invitation delivery와 self-service workspace restore는 아직 없다. Permanent deletion은
+  online application DB와 연결·재연결되는 Local tenant root에 한정되며 cryptographic/secure erasure가 아니다.
+- Retention은 일부 terminal auth/invitation/password-reset/abuse row와 만료 export artifact의 bounded cleanup이다.
+  Lifecycle tombstone에는 늦은 Local reconciliation용 UUID가 남고 자동 만료가 없다. PostgreSQL MVCC/autovacuum,
+  WAL/replica/snapshot/backup, manual copy와 영구 disconnected device의 물리 삭제는 별도 운영 정책이 필요하다.
 - History는 사용자 private projection이고 bounded backfill/reconciliation 때문에 지연되거나 configured
   limit 밖 record가 누락될 수 있다. Outbox가 가득 차거나 손상되면 새 event 수신이 fail-visible하게 멈춘다.
   운영 metric/alert와 repair 도구는 아직 제한적이다.
@@ -331,3 +375,6 @@ git status --short
 - Full-stack harness는 production 운영 수명, 외부 OpenAI/remote MCP/Web Search, 실제 email,
   installer/signing과 장시간 authorization cadence를 증명하지 않는다. 각 운영 기능에는 별도 acceptance와
   runbook이 필요하다.
+- 현재 checkout에는 sealed `bin/codex.exe`와 manifest-listed vendor fixture 6개가 없어 repository-pinned
+  full-stack/release/source-integrity gate를 재현할 수 없다. 승인된 provenance 절차로 입력을 복구하기 전까지
+  설치된 외부 Codex binary의 Phase 28 Electron 통과를 release proof로 해석하지 않는다.
