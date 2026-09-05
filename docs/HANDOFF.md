@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only 1c98825f5d33f9664c8abd7bd9aecb2fe376c41d..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 42a0767e10fff7b7d8af3ccd12855c490dbc6ee9..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -27,11 +27,11 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | 항목 | 검증된 값 |
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
-| 준비 branch | detached Phase 33 worktree; 메인 통합 탭이 `main` 반영 담당 |
-| 제품 기준 HEAD | `1c98825f5d33f9664c8abd7bd9aecb2fe376c41d` |
-| 제품 기준 commit | `feat: add self-service workspace restore` |
+| 준비 branch | detached Phase 33 handoff worktree; 메인 `main` fast-forward 통합 검증 완료 |
+| 제품 기준 HEAD | `42a0767e10fff7b7d8af3ccd12855c490dbc6ee9` |
+| 제품 기준 commit | `docs: document workspace recovery boundary` (Phase 33 main fast-forward 기준) |
 | 완료 범위 | Phase 1~33 |
-| 다음 핵심 기능 | 메인 통합 탭에서 Phase 33 feature/docs commit 통합; 이 전용 작업은 확장하지 않음 |
+| 다음 핵심 기능 | Phase 33 통합 완료; 이 전용 작업에서 다음 Phase로 확장하지 않음 |
 
 Phase 1~33에서 제품 DB와 인증, 인증 UI, 사용자·workspace별 runtime 격리, 공개 App Server event 기반
 history projection, private pgvector RAG, Electron 제품 runtime, Saved DB History UI, HNSW 기본 검색,
@@ -513,13 +513,29 @@ contract 3, trust store version 2/key 0과 `binaryPresent=false`는 동일했다
 targeted Vitest, typecheck와 lint는 실행하지 않았다. System Node 20은 `.ts/.tsx`의 `node --check`와
 `--experimental-strip-types`를 지원하지 않아 TypeScript dependency-free parse도 보류했다. 실제 Docker/PostgreSQL,
 Electron/full-stack, build, tenant filesystem mutation과 Rust/MSVC는 금지 범위라 실행하지 않았다. 메인 통합 탭은
-Node 22.13 이상과 설치된 의존성에서 ADR/runbook의 targeted suite와 PostgreSQL harness를 실행해야 한다.
+Node 22.13 이상과 설치된 의존성에서 dependency 기반 검증을 이어받았고 결과는 아래와 같다.
+
+이후 메인 통합 탭은 `main`을 `42a0767e10fff7b7d8af3ccd12855c490dbc6ee9`로 fast-forward한 뒤
+Node `v24.19.0`과 설치된 dependencies에서 Phase 33을 검토했다. 다음 targeted Vitest 6 files, 62 tests가
+실제로 통과했다.
+
+- `test/unit/data-lifecycle.test.ts`
+- `test/unit/product-auth-client.test.ts`
+- `test/unit/workspace-api.test.ts`
+- `test/unit/workspace-management-ui.test.tsx`
+- `test/unit/workspace-name-contract.test.ts`
+- `test/unit/workspace-switching-ui.test.tsx`
+
+같은 HEAD에서 `npm run typecheck`와 `npm run lint`도 통과했다. `npm run security:validate`는 tracked 8,034 files,
+vendor 6,687 files, dependency 392, workspace 9, deployment contract 3과 `binaryPresent=false`로 통과했다.
+Build, Docker/PostgreSQL harness, Electron/full-stack과 Rust/MSVC는 지시대로 실행하지 않았으며 통과로 기록하지
+않는다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 메인 통합 탭에서 Phase 33 feature/docs commit을 반영하고 보류 검증을 실행한다.** Node 22.13 이상과
-   설치된 dependencies에서 targeted Vitest/typecheck/lint를, 별도 승인된 disposable PostgreSQL 환경에서
-   workspace harness를 실행한다. 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다.
+1. **P1 — Phase 33 main 통합은 완료됐다.** 이 전용 작업에서 다음 Phase 기능으로 확장하지 않는다. 실제
+   PostgreSQL/Electron/full-stack/build 검증은 이번 결과에 포함하지 않으며 별도 명시적 범위와 승인 없이는
+   실행하거나 통과로 기록하지 않는다.
 2. **P2 — 기존 binary/release 검증 blocker는 별도 범위로 유지한다.** Pinned Rust 1.95/MSVC와 sealed
    `bin/codex.exe`가 없는 한 runtime/release 결과를 통과로 기록하지 않는다.
 
