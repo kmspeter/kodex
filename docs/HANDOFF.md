@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only dd9d4a9c967e5fbbe0140dfb296a8a38200420ec..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 74c820fa1b6b977fe3c6e11113f2a9bc28245d9c..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | detached Phase 34 전용 worktree; 메인 `main` 통합 대기 |
-| 제품 기준 HEAD | `dd9d4a9c967e5fbbe0140dfb296a8a38200420ec` |
-| 제품 기준 commit | `feat: encrypt and sign offline backups` |
+| 제품 기준 HEAD | `74c820fa1b6b977fe3c6e11113f2a9bc28245d9c` |
+| 제품 기준 commit | `fix: remove phase 34 unused imports` |
 | 완료 범위 | Phase 1~34 |
 | 다음 핵심 기능 | Phase 34 메인 통합·dependency 기반 검증; 이 탭에서 다음 Phase로 확장하지 않음 |
 
@@ -562,7 +562,8 @@ Phase 34의 원본 결정은 [ADR 0033](adr/0033-encrypted-signed-offline-backup
   tenant ID, path나 DB diagnostic 없이 stable `backup_*` code와 exit 1~7만 출력한다. Migration 0001~0013,
   vendor/generated protocol, upstream pin/manifest와 lockfile은 변경하지 않았다.
 
-Feature commit은 `dd9d4a9c967e5fbbe0140dfb296a8a38200420ec` (`feat: encrypt and sign offline backups`)다.
+Feature commit은 `dd9d4a9c967e5fbbe0140dfb296a8a38200420ec` (`feat: encrypt and sign offline backups`),
+lint correction commit은 `74c820fa1b6b977fe3c6e11113f2a9bc28245d9c` (`fix: remove phase 34 unused imports`)다.
 Expected main base `3dfdeefb863c697099730c296d51195d849ca17b`의 clean detached worktree에서 시작했다. System Node
 `v20.19.4`로 changed/new executable `.mjs`의 `node --check`, `node scripts/test-backup-encryption.mjs`, 기존
 `node scripts/test-release-signing.mjs`와 `git diff --check`가 통과했다. Encryption fixture는 ephemeral key/store와
@@ -577,10 +578,32 @@ Aggregate는 tracked 8,040 files, vendor 6,687 files, npm dependency 392, worksp
 bootstrap trust store version 2/key 0과 `binaryPresent=false`였다. 첫 sandbox 실행은 내부 `git` spawn이 EPERM이어서
 동일 read-only command를 허용된 경계에서 다시 실행했다.
 
-이 worktree에는 `node_modules`가 없어 설치하거나 다른 worktree dependency를 탐색하지 않았다. 따라서 targeted
-Vitest, typecheck, lint와 dependency를 요구하는 source CLI/runtime import는 실행하지 않았다. 실제 PostgreSQL/Docker,
-`pg_dump`/`pg_restore`, build, Electron/full-stack, Rust/MSVC와 사용자 tenant 경로 mutation도 지시대로 실행하지 않았고
-통과로 기록하지 않는다.
+이후 메인 통합 worktree의 Node 24와 설치된 dependencies에서 feature/docs commit 대상으로 다음을 실제로
+확인했다.
+
+- `node scripts/test-backup-encryption.mjs` 통과: archive 391,081 bytes, ciphertext 390,862 bytes, envelope format
+  version 2, `multiChunk=true`, trust-store version 7
+- `node scripts/test-release-signing.mjs` 통과
+- `npm run typecheck` 통과
+- 변경된 `.mjs` 4개의 `node --check` 통과
+- `npm run security:validate` 통과: tracked 8,040 files, vendor 6,687 files, npm dependency 392, workspace 9,
+  deployment contract 3, `binaryPresent=false`
+- `npm run lint`는 `scripts/lib/offline-backup-envelope.mjs`의 미사용 `readFile` import와
+  `scripts/test-backup-encryption.mjs`의 미사용 `randomUUID` import, 정확히 두 오류로 실패
+
+Correction commit은 두 import만 제거했다. 그 뒤 이 worktree의 Node `v20.19.4`에서 두 수정 파일의 `node --check`,
+`node scripts/test-backup-encryption.mjs`, `node scripts/test-release-signing.mjs`, import 부재 정적 검색과
+`git diff --check`가 통과했다. Encryption fixture 결과는 메인과 동일하게 archive 391,081 bytes, ciphertext 390,862
+bytes, envelope format version 2, `multiChunk=true`, trust-store version 7이었다. Correction 뒤
+`node scripts/security-validate.mjs`도 tracked 8,040 files, vendor 6,687 files, npm dependency 392, workspace 9,
+deployment contract 3, `binaryPresent=false`로 통과했다. 첫 sandbox 실행의 내부 `git` spawn `EPERM` 뒤 같은 read-only
+command를 허용된 경계에서 재실행했다. 이 worktree에는 `node_modules`가 없어
+`npm run lint` 재시도는 ESLint 실행 파일을 찾지 못해 시작되지 않았고 dependency를 설치하거나 다른 worktree에서
+탐색하지 않았다. 따라서 correction 뒤 최종 lint 통과 여부는 메인 통합 worktree에서 다시 확인해야 한다.
+
+Targeted Vitest와 dependency를 요구하는 source CLI/runtime import는 이 worktree에서 실행하지 않았다. 실제
+PostgreSQL/Docker, `pg_dump`/`pg_restore`, build, Electron/full-stack, Rust/MSVC와 사용자 tenant 경로 mutation도
+지시대로 실행하지 않았고 통과로 기록하지 않는다.
 
 ## 다음 작업 우선순위와 exit criterion
 
