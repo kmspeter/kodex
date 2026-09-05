@@ -750,7 +750,7 @@ async function beginActivation(paths, operation, fromReleaseId, target, database
 
 export async function activateWindowsInstallerRelease(options) {
   const { paths } = await commandContext(options);
-  const target = await installedCandidate(paths, options.releaseId, options.trustStorePath, options.aclAdapter);
+  await installedCandidate(paths, options.releaseId, options.trustStorePath, options.aclAdapter);
   await ensureInstallRoot(paths, options.aclAdapter);
   return withLock(paths, false, async () => {
     const verified = await installedCandidate(paths, options.releaseId, options.trustStorePath, options.aclAdapter);
