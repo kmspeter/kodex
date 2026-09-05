@@ -39,6 +39,12 @@ describe('email delivery boundary', () => {
       AUTH_EMAIL_PUBLIC_ORIGIN: 'https://kodex.example',
       AUTH_EMAIL_DELIVERY_BEARER_TOKEN: 'weak',
     })).toThrow('32 to 4096');
+    expect(() => emailDeliveryConfigFromEnv({
+      AUTH_EMAIL_DELIVERY_ENABLED: 'true',
+      AUTH_EMAIL_DELIVERY_URL: 'https://mailer.example/deliver',
+      AUTH_EMAIL_PUBLIC_ORIGIN: 'https://kodex.example',
+      AUTH_EMAIL_DELIVERY_BEARER_TOKEN: `${'x'.repeat(32)}\u007f`,
+    })).toThrow('32 to 4096');
   });
 
   it('uses a fragment-only URL, server bearer, redirect refusal, timeout signal, and response bound', async () => {

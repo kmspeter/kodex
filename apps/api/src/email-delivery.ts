@@ -32,6 +32,13 @@ function integer(
   return parsed;
 }
 
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  });
+}
+
 function exactOrigin(value: string, production: boolean): string {
   let url: URL;
   try { url = new URL(value); } catch {
@@ -76,7 +83,7 @@ export function emailDeliveryConfigFromEnv(
   if (!deliveryUrl || !publicOrigin || !bearerToken) {
     throw new ProductApiConfigurationError('Enabled email delivery requires delivery URL, public origin, and bearer token');
   }
-  if (bearerToken.length < 32 || bearerToken.length > 4_096 || /[\u0000-\u001f\u007f]/u.test(bearerToken)) {
+  if (bearerToken.length < 32 || bearerToken.length > 4_096 || hasControlCharacter(bearerToken)) {
     throw new ProductApiConfigurationError('AUTH_EMAIL_DELIVERY_BEARER_TOKEN must contain 32 to 4096 safe characters');
   }
   const timeoutMs = integer(env.AUTH_EMAIL_DELIVERY_TIMEOUT_MS, 5_000, 500, 30_000, 'AUTH_EMAIL_DELIVERY_TIMEOUT_MS');
