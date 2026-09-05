@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only a5006236bcd3bccad47a937d337dd8871e9dd207..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205` |
-| 제품 기준 commit | `feat: verify release artifact authenticity` (Phase 30 기능 기준) |
+| 제품 기준 HEAD | `a5006236bcd3bccad47a937d337dd8871e9dd207` |
+| 제품 기준 commit | `fix: preserve canonical trust store line endings` (Phase 30 최종 기능 기준) |
 | 완료 범위 | Phase 1~30 |
 | 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 30에서 종료 |
 
@@ -332,25 +332,31 @@ Phase 30의 원본 결정은 [ADR 0029](adr/0029-release-artifact-authenticity.m
   Unit/acceptance는 ephemeral key와 OS temp directory로 unsigned, unknown/revoked key, malformed/non-canonical
   JSON/base64, manifest/artifact tamper, unlisted file, key-file/stdin과 packaged verifier 경계를 검증하도록 갱신했다.
 
-Phase 30 기능 commit은 `c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205`다. 이 전용 worktree의 dependency-free
+Phase 30 기능 commit은 `c8716f8ece765224ad42bd2cdc5b8f7a1c4e5205`, Windows checkout의 canonical trust-store
+LF 보정은 `a5006236bcd3bccad47a937d337dd8871e9dd207`이다. 이 전용 worktree의 dependency-free
 Node `v20.19.4` 환경에서 변경된 executable `.mjs`의 `node --check`, bootstrap trust-store CLI validation,
 `node scripts/test-release-signing.mjs`가 통과했다. Fixture는 ephemeral Ed25519 key/temp artifact만 사용해
 trust-store version 1/2/3, 정상 signature, unsigned/revoked, base64 ambiguity, canonical manifest digest,
 artifact checksum과 unlisted file 거부를 확인하고 전부 정리했다. JSON schema parse, `git diff --check`와
 수정 금지 영역 무변경도 통과했다.
 
-이 worktree에는 `node_modules`가 없어 첫 targeted Vitest 시도는 test discovery 전에 npm cache miss로 시작하지
-못했다. 추가 dependency 탐색/설치는 중단했다. 사용자 지시에 따라 targeted Vitest, `npm run typecheck`,
-`npm run lint`, `npm run security:validate`는 이 탭에서 실행하지 않았으며 메인 탭이 fast-forward 뒤 설치된
-dependencies와 Node 24로 실행해야 한다. Build, `codex:build`, runtime/release/installer artifact 실제 생성,
-Docker, Electron/full-stack과 Rust/MSVC 설치도 실행하지 않았다.
+이 전용 worktree에는 `node_modules`가 없어 첫 targeted Vitest 시도는 test discovery 전에 npm cache miss로
+시작하지 못했고 추가 dependency 탐색/설치는 중단했다. 이후 메인 통합 worktree의 Node `v24.19.0`과 설치된
+dependencies에서 최종 제품 commit `a5006236bcd3bccad47a937d337dd8871e9dd207` 대상으로 다음이 통과했다.
+
+- `npm run test:release-signing`: bootstrap trust store version 2를 포함한 dependency-free signing fixture
+- `npm run test:security`: 5 files, 25 tests
+- `npm run typecheck`
+- `npm run lint`
+- LF 보정 뒤 `npm run security:validate`: tracked 8,005 files, vendor 6,687 files, npm dependency 392,
+  workspace 9, deployment contract 3, trust store version 2/key 0, `binaryPresent=false`
+
+사용자 지시에 따라 실제 artifact build, `codex:build`, runtime/release/installer artifact 생성,
+Docker, Electron/full-stack, binary-required provenance/release gate와 Rust/MSVC 설치는 계속 보류했다.
 
 ## 다음 작업 우선순위와 exit criterion
 
-1. **P1 — 메인 탭 통합 검증을 완료한다.** Feature와 이 docs-only commit을 fast-forward한 뒤 Node 24/설치된
-   dependencies에서 targeted release/security Vitest, typecheck, lint와 `security:validate`를 실행한다. 실제
-   통과 결과만 메인 handoff에 추가한다.
-2. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
+1. **P1 — 보류된 binary/release 검증 입력을 정상화한다.** Pinned Rust 1.95와 MSVC VCTools를 승인된 절차로
    준비해 `npm run codex:build`로 sealed repository `bin/codex.exe`를 재현한 뒤 browserless full-stack, 기존
    Electron acceptance와 release deployment를 다시 실행한다. 외부 설치 binary를 release 증거로 대체하지 않는다.
 
