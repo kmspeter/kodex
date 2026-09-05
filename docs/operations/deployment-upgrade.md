@@ -12,7 +12,7 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
    ```powershell
    npm run recovery:validate
-   npm run recovery:cli -- status --receipt <absolute-receipt-path> --at <canonical-utc-evaluation-time>
+   npm run recovery:cli -- status --receipt <absolute-receipt-path> --trust-store <absolute-trust-store-path> --at <canonical-utc-evaluation-time>
    ```
 
    상세 exact-key와 payload-free evidence 계약은 [database recovery runbook](database-recovery.md)을 따른다.
@@ -45,7 +45,9 @@ credential은 환경/secret manager에서 주입하고 artifact, manifest, 명�
 
 - Phase 34 encrypted/signed offline backup을 만들고 external trust store와 passphrase 경계로 `backup:verify`를
   통과시킨다. Exact release provenance, 허용 RPO, 예상 RTO와 복원 담당자를 기록한다.
-- Phase 35 policy digest와 fresh `recovery_ready` receipt 결과를 release record에 연결한다. DB URL, provider
+- Phase 35 policy digest와 external trust-store에서 실제 Ed25519 검증된 fresh `recovery_ready` receipt 결과를
+  release record에 연결한다. Loaded store version은 signed receipt version과 같고 policy minimum 이상이어야 한다.
+  DB URL, provider
   resource/snapshot/replica ID, WAL LSN/timeline, host/path와 provider error text는 release record에 넣지 않는다.
 - Release record의 trust-store version/digest가 현재 승인 상태보다 오래되지 않았는지 확인한다. Revoked key로
   서명된 이전 artifact도 rollback 대상으로 활성화하지 않는다.

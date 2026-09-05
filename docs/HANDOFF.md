@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-    git diff --name-only f12ea5e697d0a3f1796932fe97dc718ef8c584e9..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+    git diff --name-only 8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7..HEAD -- apps packages scripts test infra config docs/adr docs/operations docs/security .env.example .secret-scanner-allowlist.json package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | detached Phase 35 전용 worktree; 메인 `main` 통합 대기 |
-| 제품 기준 HEAD | `f12ea5e697d0a3f1796932fe97dc718ef8c584e9` |
-| 제품 기준 commit | `feat: add database recovery policy gate` |
+| 제품 기준 HEAD | `8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7` |
+| 제품 기준 commit | `fix: cryptographically verify recovery receipts` |
 | 완료 범위 | Phase 1~35 |
 | 다음 핵심 기능 | Phase 35 메인 통합·Node 22.13+ dependency 기반 검증과 실제 provider drill; 이 탭에서 다음 Phase로 확장하지 않음 |
 
@@ -614,7 +614,7 @@ Phase 35의 원본 결정은 [ADR 0034](adr/0034-managed-postgresql-recovery-pol
 [threat model](security/threat-model.md)이다. Phase 34 encrypted/signed offline backup은 별도 보완 통제이며 이
 Phase의 provider recovery gate가 대체하거나 실행하지 않는다.
 
-- Versioned `config/database-recovery-policy.json`/schema와 dependency-free exact-key parser가 production
+- Versioned `config/database-recovery-policy.json`, policy/receipt schema와 dependency-free exact-key parser가 production
   RPO/RTO/PITR, continuous WAL archive/cadence/retention, base backup, encryption/WORM/TLS `verify-full`, 분리된
   failure domain/region/account, cross-region replica lag/slot/promotion/fencing, provider snapshot, key/trust rotation
   reference, legal-hold propagation, restore evidence freshness와 logical deletion 뒤 physical-copy 잔존 상한을 묶는다.
@@ -626,13 +626,16 @@ Phase의 provider recovery gate가 대체하거나 실행하지 않는다.
   receipt는 regular bounded file만 허용하며 symlink/special/oversized/invalid UTF-8 JSON을 거부한다.
 - `recovery:cli validate|drill-plan|receipt-validate|status`는 실제 DB/cloud/provider action을 하지 않는다. Drill
   plan은 12개의 고정 step code만 가진다. Receipt는 timestamp/result code, exact policy digest, Ed25519 artifact
-  trust ref/version/verified, 관측 RPO/RTO와 여섯 protection boolean만 허용한다. Failed/stale/future/digest/trust/
-  objective/protection mismatch는 readiness를 차단한다.
+  trust ref/version/key ID/canonical 64-byte signature, 관측 RPO/RTO와 여섯 protection boolean만 허용한다.
+  `verified` 자기신고 boolean은 exact-key parser가 거부한다. Signature field 외 모든 semantic field는 domain-separated
+  canonical JSON으로 서명된다. Phase 30 external trust-store primitive가 active key와 signature를 실제 검증하고
+  loaded store version이 receipt version과 정확히 같고 policy minimum 이상인 뒤에만 freshness/objectives를 평가한다.
+  Failed/stale/future/digest/trust/objective/protection mismatch는 readiness를 차단한다.
 - 성공 출력은 format, stable code, policy digest, profile/readiness, coarse age bucket/count만, 실패는
   `kind/code/ok=false`만 가진다. Tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline, snapshot ID,
   payload/error text, credential/token/secret을 출력하지 않는다. HTTP operations status에는 연결하지 않아 기존
   bearer/Origin/default-404/payload-free 계약을 유지한다.
-- `recovery:validate`는 policy와 canonical schema digest, package scripts 및 README/ADR/runbook/threat/lifecycle/
+- `recovery:validate`는 policy와 두 canonical schema digest, package scripts 및 README/ADR/runbook/threat/lifecycle/
   backup/deployment docs drift를 확인한다. `security:validate`도 같은 gate를 호출한다. Migration 0001~0013,
   vendor/generated protocol, upstream pin/manifest와 lockfile은 변경하지 않았다.
 
@@ -650,6 +653,27 @@ policy digest `4bfa79415734d6589ac26ea238a57d5fed81a62f044c292a50fe9dd6f5472dbc`
 read-only gate를 허용된 경계에서 다시 실행했다. 최종 결과는 tracked 8,050 files, vendor 6,687 files,
 npm dependency 392, workspace 9, deployment contract 3, recovery document contract 8/policy format 1,
 bootstrap trust store version 2/key 0과 `binaryPresent=false`로 통과했다.
+
+메인 코드 리뷰에서 최초 receipt의 `artifactSignature.verified=true`가 위조 가능한 자기신고라는 readiness blocker를
+발견했다. 독립 fix commit `8f670f9b9f877d2667abc7bc16a6b4d84bfe3dd7`
+(`fix: cryptographically verify recovery receipts`)은 Phase 30 `signEd25519Payload`/
+`verifyTrustedEd25519Payload`를 재사용해 이 경계를 닫았다. `receipt-validate`/`status`는 explicit absolute
+`--trust-store`를 필수로 받고 unknown/revoked/wrong key, invalid signature, non-canonical/missing store, 실제
+store/receipt version mismatch와 policy minimum/ref mismatch를 payload-free stable code로 거부한다. Exported signing
+helper는 private key를 policy/receipt/config/log에 넣지 않고 receipt semantics 전체를 서명한다.
+
+Correction 뒤 dependency-free fixture는 기존 33개 범위를 포함한 51개로 확장했다. Ephemeral Ed25519 keys와 temp
+external trust stores만 사용해 valid signature, forged verified boolean, altered timestamp/objectives/protections/
+policy digest, unknown/revoked/wrong key, wrong signature, missing store, trust version/reference mismatch와 relative
+trust-store path를 검증해 통과했다. 이 결과도 실제 provider drill이나 production key custody 증거가 아니다.
+
+Correction feature/docs를 stage한 상태에서 changed executable 5개의 `node --check`,
+`node scripts/test-database-recovery.mjs`, `node scripts/recovery-validate.mjs`와 `git diff --check`가 통과했다.
+Recovery gate 결과는 document contract 8, policy/receipt schema contract 2, 두 format version 1과 policy digest
+`4bfa79415734d6589ac26ea238a57d5fed81a62f044c292a50fe9dd6f5472dbc`다. 허용된 read-only 경계에서 다시 실행한
+`node scripts/security-validate.mjs`도 tracked 8,051 files, vendor 6,687 files, npm dependency 392, workspace 9,
+deployment contract 3, recovery document 8/schema 2/policy+receipt format 1, bootstrap trust store version 2/key 0과
+`binaryPresent=false`로 통과했다.
 
 Targeted Vitest `test/unit/database-recovery.test.ts`, typecheck와 lint는 dependency 부재 때문에 이 worktree에서
 시작하지 않았고 메인 검증으로 넘긴다. 실제 PostgreSQL/Docker/WAL/base backup/snapshot/replica/promotion/restore,

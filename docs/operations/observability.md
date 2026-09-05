@@ -71,5 +71,6 @@ offline backup runbook을 따른다. Status endpoint 자체는 삭제나 repair 
 
 Phase 35의 `recovery:cli status`는 이 HTTP endpoint에 연결되지 않는 배포 전 파일 검증 명령이다. 따라서 기존
 operations bearer, Origin 거부, default `404`와 payload-free response를 변경하지 않는다. Managed PostgreSQL
-복구 readiness는 [database recovery runbook](database-recovery.md)의 policy digest, receipt validation 결과와 coarse age bucket으로
+복구 readiness는 [database recovery runbook](database-recovery.md)의 external trust-store Ed25519 receipt validation,
+policy digest와 coarse age bucket으로
 별도 확인하며 provider resource ID, WAL LSN/timeline, snapshot ID나 evidence payload를 operations status에 넣지 않는다.

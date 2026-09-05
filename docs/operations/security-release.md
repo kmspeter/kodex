@@ -6,6 +6,8 @@
    `npm run test:security`를 실행한다.
    Phase 35부터 `security:validate`는 default production database recovery policy와 schema/package/docs drift도
    함께 검사한다. Recovery-only 확인은 `npm run recovery:validate`, temp fixture는 `npm run test:recovery`다.
+   Recovery `status`는 artifact 밖 absolute external trust-store의 active key로 canonical receipt signature를 실제
+   검증해야 하며 `verified=true` 자기신고나 artifact-provided key/store를 승인 evidence로 받지 않는다.
 2. Secret 후보가 나오면 값은 ticket/log에 복사하지 않는다. 해당 credential을 폐기·회전하고 파일을 제거한다.
    의도적인 test fixture만 exact path/rule/fingerprint/reason allowlist로 review한다. Directory/prefix 예외는 금지한다.
 3. `security:validate`가 key 없는 bootstrap release trust store까지 strict parser로 검증하는지 확인한다.

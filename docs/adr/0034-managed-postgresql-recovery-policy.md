@@ -44,11 +44,19 @@ cadence, 잔존 상한을 넘는 복사본, 너무 느슨한 evidence freshness�
 
 `recovery:cli drill-plan`은 12개의 고정 step code만 반환하는 bounded plan이다. 실제 restore나 provider mutation을
 하지 않는다. External drill receipt v1은 canonical UTC timestamp, stable result code, exact policy SHA-256,
-Ed25519 artifact trust reference/version/verified 결과, 관측 RPO/RTO와 충족 여부, WAL/base backup/replica/snapshot/
-legal hold/physical-deletion 검증 boolean만 허용한다. Tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline,
-snapshot ID, artifact payload/signature bytes, provider error text, credential/token/secret와 extra key는 허용하지 않는다.
+Ed25519 artifact trust reference/version/key ID/canonical 64-byte signature, 관측 RPO/RTO와 충족 여부, WAL/base backup/
+replica/snapshot/legal hold/physical-deletion 검증 boolean만 허용한다. Forgeable `verified` boolean은 제거한다.
+Tenant/user/workspace ID, DB URL, host/path, WAL LSN/timeline, snapshot ID, artifact payload, provider error text,
+credential/token/secret와 extra key는 허용하지 않는다.
 
-Receipt가 stale/future/failed이거나 policy digest·trust reference/minimum version이 다르고, signature verification,
+서명 payload는 domain `kodex-database-recovery-drill-receipt-signature-v1`과 signature field 자체를 제외한 receipt의
+모든 semantic field를 canonical JSON object로 묶는다. Exported signing helper는 Phase 30의 `signEd25519Payload`를,
+validator는 `verifyTrustedEd25519Payload`를 재사용한다. Private key bytes는 provider의 격리 signer 입력에만 있고
+policy/receipt/config/log에는 없다. `receipt-validate`와 `status`는 explicit absolute external trust-store를 요구한다.
+그 store의 `trusted` key로 signature가 유효하고 실제 loaded store version이 receipt `trustVersion`과 정확히 같으며
+policy minimum 이상이고 `trustRef`가 policy와 일치한 뒤에만 freshness/objectives/protection을 평가한다.
+
+Receipt가 stale/future/failed이거나 policy digest·trust reference/store/minimum version이 다르고, signature verification,
 RPO/RTO 또는 보호 항목 하나라도 실패하면 readiness를 차단한다. 평가 시각은 `--at`의 canonical UTC 값으로
 명시해 같은 입력의 결과가 항상 같다. 성공 JSON은 policy digest, format version, stable code,
 profile/readiness, coarse age bucket, plan step count만 포함한다. 실패 JSON도 `kind`, stable `code`, `ok=false`만
@@ -56,12 +64,13 @@ profile/readiness, coarse age bucket, plan step count만 포함한다. 실패 JS
 
 ## Gate와 결과
 
-`npm run recovery:validate`는 default production policy, schema canonical digest, package script와 README/ADR/runbook/
+`npm run recovery:validate`는 default production policy, policy/receipt schema canonical digest, package script와 README/ADR/runbook/
 threat/lifecycle/backup/deployment 문서 연결을 함께 확인한다. `security:validate`도 같은 검증을 호출하므로 정책이나
 문서가 따로 drift하면 release gate가 닫힌다. Dependency-free fixture는 temp 파일만 사용해 weak 조합,
-exact key/reference, legal hold, evidence freshness/result/digest/trust/objective/protection, 결정성, byte bound와
-symlink/special file을 검증한다.
+exact key/reference, legal hold, evidence freshness/result/digest/trust/objective/protection, semantic tamper, unknown/
+revoked/wrong key, missing external store, trust version/ref, 결정성, byte bound와 symlink/special file을 검증한다.
 
-이 결정은 provider의 진실성을 원격으로 조회하거나 receipt를 스스로 서명·발행하지 않는다. HSM/key custody,
+이 결정은 provider의 진실성을 원격으로 조회하거나 receipt를 자동 발행하지 않는다. Signing helper는 provider
+drill evidence pipeline이 호출하는 primitive일 뿐 private-key custody나 signer service가 아니다. HSM/key custody,
 provider API attestation, 실제 production-scale restore timing과 disaster declaration은 운영자 통제다. Readiness
 receipt는 그 외부 절차의 제한된 증거이며 backup 자체도 아니다.

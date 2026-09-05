@@ -2,7 +2,8 @@
 
 이 문서는 Phase 35의 production WAL/PITR/replica/provider snapshot 정책과 배포 전 readiness gate를 운영하는
 절차다. 결정은 [ADR 0034](../adr/0034-managed-postgresql-recovery-policy.md), 기본 정책은
-`config/database-recovery-policy.json`, 구조 계약은 `config/database-recovery-policy.schema.json`이 기준이다.
+`config/database-recovery-policy.json`, 구조 계약은 `config/database-recovery-policy.schema.json`과
+`config/database-recovery-receipt.schema.json`이 기준이다.
 
 ## Shared responsibility
 
@@ -11,9 +12,10 @@ Kodex는 managed PostgreSQL/cloud를 생성·설정·삭제하지 않는다. `re
 physical deletion을 실행하지 않는다. Provider operator가 별도 change control에서 실제 통제를 구성하고 provider
 drill을 수행한 뒤, 승인된 evidence signer/verifier 경계가 payload-free receipt를 발행해야 한다.
 
-정책/receipt, command output과 ticket에는 tenant/user/workspace ID, DB URL, hostname/IP, filesystem/object path,
+정책, command output과 ticket에는 tenant/user/workspace ID, DB URL, hostname/IP, filesystem/object path,
 WAL LSN/timeline, snapshot/replica ID, SQL/content payload, signature bytes, provider/DB error text, credential/token/
-secret을 넣지 않는다. Key와 trust material 자체 대신 승인 registry의 `keyref:`, `trustref:`, `opsref:`만 쓴다.
+secret을 넣지 않는다. Receipt에는 schema가 요구하는 canonical signature만 있으며 evidence payload나 private key는
+없다. Key와 trust material 자체 대신 승인 registry의 `keyref:`, `trustref:`, `opsref:`만 쓴다.
 
 ## 정책 검토
 
@@ -58,21 +60,44 @@ Receipt v1은 다음 exact key만 가진다.
 
 - top level: `format`, `formatVersion`, `performedAt`, `resultCode`, `policyDigest`, `artifactSignature`, `objectives`,
   `protections`
-- `artifactSignature`: `algorithm=Ed25519`, policy의 `trustRef`, integer `trustVersion`, `verified`
+- `artifactSignature`: `algorithm=Ed25519`, policy의 `trustRef`, integer `trustVersion`, `keyId`, canonical 64-byte
+  Ed25519 `signature`
 - `objectives`: `rpoMet`, `rtoMet`, 관측 recovery-point age와 recovery time의 분 단위 integer
 - `protections`: WAL archive, base backup, replica, snapshot, legal-hold propagation, physical-deletion bound의
-  verified boolean
+  result boolean
+
+`verified=true` 자기신고 field는 허용하지 않는다. 서명 payload는 다음 semantic structure를 canonical JSON으로
+직렬화한 bytes다. Signature field 자체는 제외되지만 그 밖의 receipt field는 모두 포함된다.
+
+```text
+{
+  domain: kodex-database-recovery-drill-receipt-signature-v1,
+  receipt: { format, formatVersion, performedAt, resultCode, policyDigest,
+             artifactSignature: { algorithm, trustRef, trustVersion, keyId },
+             objectives, protections }
+}
+```
+
+Provider evidence signer는 exported `signDatabaseRecoveryReceipt` helper를 격리 signer 안에서 호출할 수 있다.
+Helper는 Phase 30 `signEd25519Payload`를 재사용한다. Private key bytes는 그 호출의 bounded memory input일 뿐 config,
+receipt, environment, argument, artifact나 log에 저장하지 않는다. Validator는 Phase 30
+`verifyTrustedEd25519Payload`로 artifact 밖의 canonical release trust-store v1을 읽는다. Artifact/receipt가 제공한
+public key나 trust store를 신뢰하지 않는다.
 
 Receipt를 release artifact나 repository에 상시 commit하지 않는다. 승인된 receipt의 absolute path와 명시적
 canonical UTC 평가 시각을 배포 job에 전달한다.
 
 ```powershell
-npm run recovery:cli -- receipt-validate --receipt <absolute-receipt-path> --at 2026-09-05T00:00:00.000Z
-npm run recovery:cli -- status --receipt <absolute-receipt-path> --at 2026-09-05T00:00:00.000Z
+npm run recovery:cli -- receipt-validate --receipt <absolute-receipt-path> --trust-store <absolute-trust-store-path> --at 2026-09-05T00:00:00.000Z
+npm run recovery:cli -- status --receipt <absolute-receipt-path> --trust-store <absolute-trust-store-path> --at 2026-09-05T00:00:00.000Z
 ```
 
 다른 policy를 검증할 때만 `--policy <absolute-policy-path>`를 추가한다. `--at`을 현재 승인된 deployment evaluation
-timestamp로 갱신하되 receipt timestamp를 다시 쓰지 않는다. 성공 status는 `recovery_ready`, policy digest,
+timestamp로 갱신하되 receipt timestamp를 다시 쓰지 않는다. Receipt와 trust store path는 모두 absolute여야 한다.
+Store에서 `keyId`가 `trusted`이고 signature가 유효하며 실제 loaded `storeVersion`이 receipt `trustVersion`과 정확히
+같고 policy `trustVersionMinimum` 이상이며 receipt/policy `trustRef`가 일치해야 freshness/objectives를 평가한다.
+Unknown/revoked key, wrong key/signature, malformed/non-canonical store와 version/ref mismatch는 readiness 전에
+fail-closed한다. 성공 status는 `recovery_ready`, policy digest,
 `ready`, production promotion flag와 coarse evidence age bucket만 반환한다.
 
 ## Fail-closed 처리
@@ -86,7 +111,10 @@ timestamp로 갱신하되 receipt timestamp를 다시 쓰지 않는다. 성공 s
 | `receipt_stale` / `receipt_from_future` | 승인 시간 기준의 새 provider drill evidence를 만든다. timestamp를 임의 수정하지 않는다. |
 | `receipt_failed` / `receipt_objectives_missed` / `receipt_protection_failed` | 배포를 중단하고 해당 provider control/RPO/RTO를 복구한 뒤 새 drill을 수행한다. |
 | `receipt_policy_mismatch` | 변경된 exact policy digest로 새 drill을 수행한다. |
-| `receipt_trust_rejected` | 외부 trust registry/version과 artifact verification을 복구하고 새 receipt를 발행한다. |
+| `receipt_trust_store_invalid` | 누락·상대 경로·비정규·non-canonical external store를 고치고 authenticated 배포를 확인한다. |
+| `receipt_key_untrusted` / `receipt_key_revoked` | 승인된 active key로 evidence를 다시 발행하고 store custody를 조사한다. |
+| `receipt_signature_invalid` | Wrong key 또는 semantic tamper로 처리하고 receipt를 수정하지 말고 격리 signer에서 다시 발행한다. |
+| `receipt_trust_version_mismatch` / `receipt_trust_reference_mismatch` | 실제 loaded store version과 policy trust registry를 맞춘 새 receipt를 발행한다. |
 
 실패 JSON에는 stable code 외 원인이 없다. 상세 조사는 restricted provider evidence에서 수행하며 일반 CI log에
 경로, 식별자, payload/error text를 추가하지 않는다. `security:validate` 실패를 release flag나 non-production
