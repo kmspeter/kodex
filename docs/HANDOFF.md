@@ -16,7 +16,7 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
   다음 명령으로 범위를 확인한다.
 
   ```powershell
-  git diff --name-only 87abf7d121a5cce1b9239c8a2c07b5261a20310b..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
+  git diff --name-only 3e12455f200288bc9ab98a37afd3fa39f16de677..HEAD -- apps packages scripts test infra docs/adr docs/security .env.example package.json package-lock.json CODEX_UPSTREAM_COMMIT VENDOR_SOURCE_SHA256.json bin/codex-build.json
   ```
 
 - 이 handoff 자체의 docs-only commit은 아래 제품 기준 commit 다음에 위치한다. 현재 checkout은 항상
@@ -28,8 +28,8 @@ handoff다. 실행법과 공개 제품 계약은 [README](../README.md), 이미 
 | --- | --- |
 | 스냅샷 날짜 | 2026-09-05 (Asia/Seoul) |
 | 준비 branch | `main` |
-| 제품 기준 HEAD | `87abf7d121a5cce1b9239c8a2c07b5261a20310b` |
-| 제품 기준 commit | `feat: enforce phase 29 security boundaries` |
+| 제품 기준 HEAD | `3e12455f200288bc9ab98a37afd3fa39f16de677` |
+| 제품 기준 commit | `fix: isolate compose database privileges` (Phase 29 기능 기준) |
 | 완료 범위 | Phase 1~29 |
 | 다음 핵심 기능 | 메인 로드맵에서 지정; 이 작업은 Phase 29에서 종료 |
 
@@ -292,7 +292,8 @@ Phase 29의 원본 결정은 [ADR 0028](adr/0028-integrated-security-boundaries.
   변경하지 않았다. 기존 migration `0001~0012`, vendored source, generated protocol, upstream manifest/pin과
   `package-lock.json`, 현재 `bin/codex-build.json`은 수정하지 않았다.
 
-2026-09-05에 제품 commit `87abf7d121a5cce1b9239c8a2c07b5261a20310b`의 동일 staged content 대상으로
+Phase 29 기능은 commit `87abf7d121a5cce1b9239c8a2c07b5261a20310b`, Compose profile 보정은 commit
+`3e12455f200288bc9ab98a37afd3fa39f16de677`이다. 2026-09-05에 최종 제품 commit의 동일 content 대상으로
 `npm run security:validate`가 통과했다. 결과는 tracked 7,996 files, vendor 6,687 files, npm dependency 392,
 workspace 9, deployment contract 3이며 `binaryPresent=false`를 명시했다. `scripts/lib/security-validation.mjs`,
 `scripts/security-validate.mjs`, `scripts/build-runtime.mjs`, `scripts/kodex-release.mjs`의 `node --check`와
